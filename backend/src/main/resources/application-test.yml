@@ -1,0 +1,4 @@
+gomove:
+  auth:
+    jwt-secret: test-only-secret-at-least-thirty-two-bytes-long
+

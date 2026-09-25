@@ -1,0 +1,10 @@
+CREATE TABLE foundation_spatial_check (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    public_id UUID NOT NULL UNIQUE,
+    name VARCHAR(100) NOT NULL,
+    location GEOGRAPHY(Point, 4326) NOT NULL,
+    version BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_spatial_check_location ON foundation_spatial_check USING GIST (location);

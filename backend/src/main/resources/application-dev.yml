@@ -1,0 +1,8 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/gomove
+    username: gomove
+    password: gomove_dev_password
+  jpa:
+    show-sql: false
+

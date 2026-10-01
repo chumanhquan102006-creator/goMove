@@ -44,7 +44,7 @@ class AuthMockDataSourceImpl implements AuthMockDataSource {
 
     if (identifier == '0901234567') {
       // Mock Customer (Sinh viên đặt xe)
-      final user = const UserModel(
+      const user = UserModel(
         publicId: '550e8400-e29b-41d4-a716-446655440001',
         phoneNumber: '0901234567',
         fullName: 'Nguyễn Văn Sinh Viên',
@@ -56,7 +56,7 @@ class AuthMockDataSourceImpl implements AuthMockDataSource {
         avatarUrl: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150',
       );
 
-      final tokens = const AuthTokenModel(
+      const tokens = AuthTokenModel(
         accessToken: 'mock_jwt_access_token_customer_uuid_0001',
         refreshToken: 'mock_jwt_refresh_token_customer_uuid_0001',
         tokenType: 'Bearer',
@@ -67,7 +67,7 @@ class AuthMockDataSourceImpl implements AuthMockDataSource {
       return {'token': tokens, 'user': user};
     } else if (identifier == '0909876543') {
       // Mock Driver (Sinh viên chạy xe)
-      final user = const UserModel(
+      const user = UserModel(
         publicId: '550e8400-e29b-41d4-a716-446655440002',
         phoneNumber: '0909876543',
         fullName: 'Trần Văn Tài Xế',
@@ -79,7 +79,7 @@ class AuthMockDataSourceImpl implements AuthMockDataSource {
         avatarUrl: 'https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?w=150',
       );
 
-      final tokens = const AuthTokenModel(
+      const tokens = AuthTokenModel(
         accessToken: 'mock_jwt_access_token_driver_uuid_0002',
         refreshToken: 'mock_jwt_refresh_token_driver_uuid_0002',
         tokenType: 'Bearer',
@@ -108,7 +108,7 @@ class AuthMockDataSourceImpl implements AuthMockDataSource {
         isStudentVerified: false,
       );
 
-      final tokens = const AuthTokenModel(
+      const tokens = AuthTokenModel(
         accessToken: 'mock_jwt_access_token_generic',
         refreshToken: 'mock_jwt_refresh_token_generic',
       );

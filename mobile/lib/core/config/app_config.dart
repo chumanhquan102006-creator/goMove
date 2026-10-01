@@ -34,7 +34,8 @@ class AppConfig {
   });
 
   /// Singleton instance có thể truy cập toàn ứng dụng
-  static late final AppConfig instance;
+  static AppConfig? _instance;
+  static AppConfig get instance => _instance!;
 
   /// Tự động xác định default host theo từng nền tảng:
   /// - Android Emulator: http://10.0.2.2:8080
@@ -74,12 +75,12 @@ class AppConfig {
     final String rawBaseUrl = customBaseUrl ?? (envBaseUrl.isNotEmpty ? envBaseUrl : defaultHost);
     final String finalBaseUrl = normalizeBaseUrl(rawBaseUrl);
 
-    final String wsUrl = const String.fromEnvironment(
+    const String wsUrl = String.fromEnvironment(
       'WS_BASE_URL',
       defaultValue: 'ws://10.0.2.2:8080/ws',
     );
 
-    instance = AppConfig(
+    _instance = AppConfig(
       environment: env,
       appTitle: 'GoMove - Ride Hailing',
       apiBaseUrl: finalBaseUrl,
@@ -90,6 +91,11 @@ class AppConfig {
       isMock: enableMock,
     );
 
-    return instance;
+    return _instance!;
+  }
+
+  /// Reset cấu hình singleton để cô lập trạng thái giữa các unit test.
+  static void reset() {
+    _instance = null;
   }
 }

@@ -31,7 +31,7 @@ class AuthLoginSubmitted extends AuthEvent {
 
 /// Alias tương thích ngược
 class LoginRequestedEvent extends AuthLoginSubmitted {
-  LoginRequestedEvent({
+  const LoginRequestedEvent({
     required String phoneNumber,
     required super.password,
   }) : super(identifier: phoneNumber);

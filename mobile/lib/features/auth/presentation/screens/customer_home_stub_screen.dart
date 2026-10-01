@@ -81,7 +81,7 @@ class CustomerHomeStubScreen extends StatelessWidget {
                         decoration: BoxDecoration(
                           color: Colors.green.shade50,
                           borderRadius: BorderRadius.circular(20),
-                          border: BorderSide(color: Colors.green.shade300),
+                          border: Border.all(color: Colors.green.shade300),
                         ),
                         child: Text(
                           user.role == UserRole.customer ? 'VAI TRÒ: KHÁCH HÀNG (CUSTOMER)' : 'VAI TRÒ: TÀI XẾ (DRIVER)',
@@ -139,7 +139,7 @@ class CustomerHomeStubScreen extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(8),
-        border: BorderSide(color: Colors.grey.shade200),
+        border: Border.all(color: Colors.grey.shade200),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,

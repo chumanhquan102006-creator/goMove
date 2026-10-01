@@ -24,7 +24,7 @@ dependencies:
 
   # Real-time WebSocket / STOMP Protocol
   web_socket_channel: ^3.0.1
-  stomp_dart_client: ^1.2.2
+  stomp_dart_client: 3.0.1
 
   # Secure Storage for JWT & Tokens (Article 139)
   flutter_secure_storage: ^9.2.2

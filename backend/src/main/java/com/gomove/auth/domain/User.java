@@ -18,5 +18,6 @@ public class User extends BaseEntity {
     public void resetFailedAttempts() { failedLoginAttempts=0; lockedUntil=null; if (status == UserStatus.LOCKED) status=UserStatus.ACTIVE; }
     public boolean isAccountNonLocked() { return status != UserStatus.LOCKED || (lockedUntil != null && !lockedUntil.isAfter(Instant.now())); }
     public String getPhone() { return phone; } public String getEmail() { return email; } public String getPasswordHash() { return passwordHash; } public String getFullName() { return fullName; } public UserRole getRole() { return role; } public UserStatus getStatus() { return status; } public int getFailedLoginAttempts() { return failedLoginAttempts; } public Instant getLockedUntil() { return lockedUntil; }
+    public void setRole(UserRole role) { this.role = role; }
     public void setStatus(UserStatus status) { this.status=status; } public void setLockedUntil(Instant lockedUntil) { this.lockedUntil=lockedUntil; }
 }

@@ -44,9 +44,9 @@ public class VehicleService {
     @Transactional
     public Vehicle setActiveVehicle(UUID driverPublicId, UUID vehiclePublicId) {
         Driver driver = findDriver(driverPublicId);
-        List<Vehicle> byDriver = vehicles.findByDriverId(driver.getId());
-        byDriver.forEach(v -> v.setActive(false));
-
+        vehicles.findByPublicIdAndDriverId(vehiclePublicId, driver.getId())
+                .orElseThrow(() -> new DomainException(HttpStatus.NOT_FOUND, "VEHICLE_NOT_FOUND", "Vehicle not found for driver"));
+        vehicles.deactivateActiveVehiclesByDriverId(driver.getId());
         Vehicle target = vehicles.findByPublicIdAndDriverId(vehiclePublicId, driver.getId())
                 .orElseThrow(() -> new DomainException(HttpStatus.NOT_FOUND, "VEHICLE_NOT_FOUND", "Vehicle not found for driver"));
         target.setActive(true);

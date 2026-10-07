@@ -16,7 +16,10 @@ import com.gomove.vehicle.domain.VehicleType;
 import com.gomove.vehicle.service.VehicleService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
+
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -58,6 +61,54 @@ class DriverVehicleIntegrationTest extends BaseIntegrationTest {
         assertThat(vehiclesTable).isEqualTo(1);
         assertThat(driversIdx).isEqualTo(1);
         assertThat(vehiclesIdx).isEqualTo(1);
+    }
+
+    @Test
+    void flywayV7ShouldCreateDriverVehicleIntegrityConstraints() {
+        Integer activeVehicleIndex = jdbc.queryForObject(
+                "select count(*) from pg_indexes where schemaname='public' and indexname='ux_vehicles_one_active_per_driver'",
+                Integer.class
+        );
+        Integer constraints = jdbc.queryForObject(
+                "select count(*) from pg_constraint where conrelid = 'drivers'::regclass and conname in " +
+                        "('chk_drivers_operating_requires_approved', 'chk_drivers_rating_average_range', 'chk_drivers_total_trips_non_negative')",
+                Integer.class
+        );
+
+        assertThat(activeVehicleIndex).isEqualTo(1);
+        assertThat(constraints).isEqualTo(3);
+    }
+
+    @Test
+    void databaseShouldRejectTwoActiveVehiclesForOneDriver() {
+        Driver driver = createDriver("active-vehicles");
+
+        insertVehicle(driver.getId(), "ACTIVE-ONE", true);
+
+        assertThatThrownBy(() -> insertVehicle(driver.getId(), "ACTIVE-TWO", true))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void databaseShouldRejectOnlineOrBusyDriverUnlessApproved() {
+        assertThatThrownBy(() -> insertDriverWithState("pending-online", "PENDING", "ONLINE", "5.00", 0))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> insertDriverWithState("suspended-busy", "SUSPENDED", "BUSY", "5.00", 0))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void databaseShouldRejectRatingOutsideAllowedRange() {
+        assertThatThrownBy(() -> insertDriverWithState("rating-low", "APPROVED", "OFFLINE", "-0.01", 0))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> insertDriverWithState("rating-high", "APPROVED", "OFFLINE", "5.01", 0))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void databaseShouldRejectNegativeTotalTrips() {
+        assertThatThrownBy(() -> insertDriverWithState("negative-trips", "APPROVED", "OFFLINE", "5.00", -1))
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
@@ -108,5 +159,35 @@ class DriverVehicleIntegrationTest extends BaseIntegrationTest {
 
         assertThat(latestFirst.isActive()).isFalse();
         assertThat(latestSecond.isActive()).isTrue();
+    }
+
+    private Driver createDriver(String suffix) {
+        User user = users.save(new User("09" + uniqueDigits(), suffix + "@example.test", "bcrypt", "Driver " + suffix));
+        return driverService.registerDriver(user.getId(), "LIC-" + UUID.randomUUID());
+    }
+
+    private void insertVehicle(Long driverId, String licensePlatePrefix, boolean active) {
+        jdbc.update(
+                "insert into vehicles (driver_id, public_id, license_plate, vehicle_type, is_active, version, created_at, updated_at) " +
+                        "values (?, ?, ?, 'MOTORBIKE', ?, 0, current_timestamp, current_timestamp)",
+                driverId, UUID.randomUUID(), licensePlatePrefix + '-' + uniqueCode(), active
+        );
+    }
+
+    private void insertDriverWithState(String suffix, String approvalStatus, String operatingStatus, String ratingAverage, int totalTrips) {
+        User user = users.save(new User("08" + uniqueDigits(), suffix + "@example.test", "bcrypt", "Driver " + suffix));
+        jdbc.update(
+                "insert into drivers (user_id, public_id, license_number, approval_status, operating_status, rating_average, total_trips, version, created_at, updated_at) " +
+                        "values (?, ?, ?, ?, ?, ?, ?, 0, current_timestamp, current_timestamp)",
+                user.getId(), UUID.randomUUID(), "LIC-" + UUID.randomUUID(), approvalStatus, operatingStatus, new java.math.BigDecimal(ratingAverage), totalTrips
+        );
+    }
+
+    private String uniqueDigits() {
+        return String.valueOf(System.nanoTime()).replace('-', '7');
+    }
+
+    private String uniqueCode() {
+        return UUID.randomUUID().toString().substring(0, 8);
     }
 }

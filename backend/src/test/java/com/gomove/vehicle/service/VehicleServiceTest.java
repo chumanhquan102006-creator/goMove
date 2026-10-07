@@ -15,13 +15,13 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
-import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -64,12 +64,11 @@ class VehicleServiceTest {
         ReflectionTestUtils.setField(target, "publicId", targetPublicId);
 
         when(drivers.findByPublicId(driver.getPublicId())).thenReturn(Optional.of(driver));
-        when(vehicles.findByDriverId(6L)).thenReturn(List.of(oldActive, target));
-        when(vehicles.findByPublicIdAndDriverId(targetPublicId, 6L)).thenReturn(Optional.of(target));
+        when(vehicles.findByPublicIdAndDriverId(targetPublicId, 6L)).thenReturn(Optional.of(target), Optional.of(target));
 
         Vehicle activated = service.setActiveVehicle(driver.getPublicId(), targetPublicId);
 
-        assertThat(oldActive.isActive()).isFalse();
+        verify(vehicles).deactivateActiveVehiclesByDriverId(6L);
         assertThat(activated.isActive()).isTrue();
     }
 
@@ -79,7 +78,6 @@ class VehicleServiceTest {
         UUID missingVehicle = UUID.randomUUID();
 
         when(drivers.findByPublicId(driver.getPublicId())).thenReturn(Optional.of(driver));
-        when(vehicles.findByDriverId(7L)).thenReturn(List.of());
         when(vehicles.findByPublicIdAndDriverId(missingVehicle, 7L)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.setActiveVehicle(driver.getPublicId(), missingVehicle))

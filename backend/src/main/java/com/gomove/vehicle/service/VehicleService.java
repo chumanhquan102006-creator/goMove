@@ -1,8 +1,9 @@
 package com.gomove.vehicle.service;
 
+import com.gomove.auth.domain.UserRole;
 import com.gomove.common.exception.DomainException;
 import com.gomove.driver.domain.Driver;
-import com.gomove.driver.domain.DriverRepository;
+import com.gomove.driver.service.DriverService;
 import com.gomove.vehicle.api.CreateVehicleRequest;
 import com.gomove.vehicle.domain.Vehicle;
 import com.gomove.vehicle.domain.VehicleRepository;
@@ -16,20 +17,20 @@ import java.util.UUID;
 @Service
 public class VehicleService {
     private final VehicleRepository vehicles;
-    private final DriverRepository drivers;
+    private final DriverService driverService;
 
-    public VehicleService(VehicleRepository vehicles, DriverRepository drivers) {
+    public VehicleService(VehicleRepository vehicles, DriverService driverService) {
         this.vehicles = vehicles;
-        this.drivers = drivers;
+        this.driverService = driverService;
     }
 
     @Transactional
-    public Vehicle addVehicle(UUID driverPublicId, CreateVehicleRequest request) {
+    public Vehicle addVehicleForCurrentDriver(UUID userPublicId, UserRole authenticatedRole, CreateVehicleRequest request) {
         if (vehicles.existsByLicensePlate(request.licensePlate())) {
             throw new DomainException(HttpStatus.CONFLICT, "LICENSE_PLATE_EXISTS", "Vehicle license plate already exists");
         }
 
-        Driver driver = findDriver(driverPublicId);
+        Driver driver = driverService.requireDriverProfile(userPublicId, authenticatedRole);
         Vehicle vehicle = new Vehicle(
                 driver,
                 request.licensePlate(),
@@ -42,8 +43,8 @@ public class VehicleService {
     }
 
     @Transactional
-    public Vehicle setActiveVehicle(UUID driverPublicId, UUID vehiclePublicId) {
-        Driver driver = findDriver(driverPublicId);
+    public Vehicle setActiveVehicleForCurrentDriver(UUID userPublicId, UserRole authenticatedRole, UUID vehiclePublicId) {
+        Driver driver = driverService.requireDriverProfile(userPublicId, authenticatedRole);
         vehicles.findByPublicIdAndDriverId(vehiclePublicId, driver.getId())
                 .orElseThrow(() -> new DomainException(HttpStatus.NOT_FOUND, "VEHICLE_NOT_FOUND", "Vehicle not found for driver"));
         vehicles.deactivateActiveVehiclesByDriverId(driver.getId());
@@ -54,13 +55,9 @@ public class VehicleService {
     }
 
     @Transactional(readOnly = true)
-    public List<Vehicle> findByDriverPublicId(UUID driverPublicId) {
-        Driver driver = findDriver(driverPublicId);
+    public List<Vehicle> findVehiclesForCurrentDriver(UUID userPublicId, UserRole authenticatedRole) {
+        Driver driver = driverService.requireDriverProfile(userPublicId, authenticatedRole);
         return vehicles.findByDriverId(driver.getId());
     }
 
-    private Driver findDriver(UUID driverPublicId) {
-        return drivers.findByPublicId(driverPublicId)
-                .orElseThrow(() -> new DomainException(HttpStatus.NOT_FOUND, "DRIVER_NOT_FOUND", "Driver not found"));
-    }
 }

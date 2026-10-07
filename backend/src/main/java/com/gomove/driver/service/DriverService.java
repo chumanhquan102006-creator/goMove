@@ -2,6 +2,7 @@ package com.gomove.driver.service;
 
 import com.gomove.auth.domain.User;
 import com.gomove.auth.domain.UserRepository;
+import com.gomove.auth.domain.UserRole;
 import com.gomove.common.exception.DomainException;
 import com.gomove.driver.domain.Driver;
 import com.gomove.driver.domain.DriverApprovalStatus;
@@ -27,24 +28,30 @@ public class DriverService {
     }
 
     @Transactional
-    public Driver registerDriver(Long userId, String licenseNumber) {
+    public Driver onboardCurrentCustomer(UUID userPublicId, UserRole authenticatedRole, String licenseNumber) {
+        requireRole(authenticatedRole, UserRole.CUSTOMER);
+        User user = users.findByPublicId(userPublicId)
+                .orElseThrow(() -> new DomainException(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", "Authenticated user was not found"));
+        if (user.getRole() != UserRole.CUSTOMER) {
+            throw new DomainException(HttpStatus.FORBIDDEN, "DRIVER_ONBOARDING_NOT_ALLOWED", "Only customer accounts can request driver onboarding");
+        }
+        if (drivers.findByUserId(user.getId()).isPresent()) {
+            throw new DomainException(HttpStatus.CONFLICT, "USER_ALREADY_DRIVER", "User is already registered as a driver");
+        }
         if (drivers.existsByLicenseNumber(licenseNumber)) {
             throw new DomainException(HttpStatus.CONFLICT, "LICENSE_NUMBER_EXISTS", "Driver license number already exists");
         }
-        if (drivers.findByUserId(userId).isPresent()) {
-            throw new DomainException(HttpStatus.CONFLICT, "USER_ALREADY_DRIVER", "User is already registered as a driver");
-        }
-        User user = users.findById(userId)
-                .orElseThrow(() -> new DomainException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User not found"));
 
         Driver driver = new Driver(user, licenseNumber);
         driver.setApprovalStatus(DriverApprovalStatus.PENDING);
         driver.setOperatingStatus(DriverOperatingStatus.OFFLINE);
+        user.setRole(UserRole.DRIVER);
         return drivers.save(driver);
     }
 
     @Transactional
-    public Driver updateApprovalStatus(UUID driverPublicId, DriverApprovalStatus newStatus) {
+    public Driver updateApprovalStatusAsAdmin(UserRole authenticatedRole, UUID driverPublicId, DriverApprovalStatus newStatus) {
+        requireRole(authenticatedRole, UserRole.ADMIN);
         Driver driver = findDriver(driverPublicId);
         driver.setApprovalStatus(newStatus);
         if (newStatus == DriverApprovalStatus.SUSPENDED || newStatus == DriverApprovalStatus.REJECTED) {
@@ -54,8 +61,11 @@ public class DriverService {
     }
 
     @Transactional
-    public Driver setOperatingStatus(UUID driverPublicId, DriverOperatingStatus targetStatus) {
-        Driver driver = findDriver(driverPublicId);
+    public Driver setOwnOperatingStatus(UUID userPublicId, UserRole authenticatedRole, DriverOperatingStatus targetStatus) {
+        Driver driver = requireDriverProfile(userPublicId, authenticatedRole);
+        if (targetStatus == DriverOperatingStatus.BUSY) {
+            throw new DomainException(HttpStatus.FORBIDDEN, "BUSY_STATUS_SYSTEM_MANAGED", "BUSY status is managed by the trip lifecycle");
+        }
         if (targetStatus == DriverOperatingStatus.ONLINE) {
             if (driver.getApprovalStatus() != DriverApprovalStatus.APPROVED) {
                 throw new DomainException("DRIVER_NOT_APPROVED", "Driver is not approved to go online");
@@ -71,6 +81,19 @@ public class DriverService {
     @Transactional(readOnly = true)
     public Driver findByPublicId(UUID driverPublicId) {
         return findDriver(driverPublicId);
+    }
+
+    @Transactional(readOnly = true)
+    public Driver requireDriverProfile(UUID userPublicId, UserRole authenticatedRole) {
+        requireRole(authenticatedRole, UserRole.DRIVER);
+        return drivers.findByUserPublicId(userPublicId)
+                .orElseThrow(() -> new DomainException(HttpStatus.FORBIDDEN, "DRIVER_PROFILE_REQUIRED", "Driver profile is required"));
+    }
+
+    private void requireRole(UserRole actualRole, UserRole expectedRole) {
+        if (actualRole != expectedRole) {
+            throw new DomainException(HttpStatus.FORBIDDEN, "FORBIDDEN", "You are not authorized to perform this action");
+        }
     }
 
     private Driver findDriver(UUID driverPublicId) {

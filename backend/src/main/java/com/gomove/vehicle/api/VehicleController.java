@@ -1,21 +1,19 @@
 package com.gomove.vehicle.api;
 
 import com.gomove.common.api.ApiResponse;
+import com.gomove.common.security.CustomUserPrincipal;
 import com.gomove.vehicle.service.VehicleService;
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.media.Content;
-import io.swagger.v3.oas.annotations.media.Schema;
-import io.swagger.v3.oas.annotations.responses.ApiResponses;
-import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.UUID;
 
 @RestController
-@RequestMapping("/api/v1/drivers/{driverPublicId}/vehicles")
-@Tag(name = "Vehicle", description = "Vehicle management APIs")
+@RequestMapping("/api/v1/drivers/me/vehicles")
+@PreAuthorize("hasRole('DRIVER')")
 public class VehicleController {
     private final VehicleService service;
 
@@ -24,38 +22,28 @@ public class VehicleController {
     }
 
     @PostMapping
-    @Operation(summary = "Add a vehicle for a driver")
-    @ApiResponses({
-            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "Vehicle added"),
-            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "Driver not found", content = @Content(schema = @Schema(hidden = true))),
-            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409", description = "License plate exists", content = @Content(schema = @Schema(hidden = true)))
-    })
     public ApiResponse<VehicleResponse> addVehicle(
-            @PathVariable UUID driverPublicId,
+            @AuthenticationPrincipal CustomUserPrincipal principal,
             @Valid @RequestBody CreateVehicleRequest request
     ) {
         return ApiResponse.success("VEHICLE_ADDED", "Vehicle added successfully",
-                VehicleResponse.from(service.addVehicle(driverPublicId, request)));
+                VehicleResponse.from(service.addVehicleForCurrentDriver(principal.publicId(), principal.role(), request)));
     }
 
     @PatchMapping("/{vehiclePublicId}/activate")
-    @Operation(summary = "Set one active vehicle for driver")
-    @ApiResponses({
-            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "Vehicle activated"),
-            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "Driver/vehicle not found", content = @Content(schema = @Schema(hidden = true)))
-    })
     public ApiResponse<VehicleResponse> setActiveVehicle(
-            @PathVariable UUID driverPublicId,
+            @AuthenticationPrincipal CustomUserPrincipal principal,
             @PathVariable UUID vehiclePublicId
     ) {
         return ApiResponse.success("VEHICLE_ACTIVATED", "Vehicle activated successfully",
-                VehicleResponse.from(service.setActiveVehicle(driverPublicId, vehiclePublicId)));
+                VehicleResponse.from(service.setActiveVehicleForCurrentDriver(principal.publicId(), principal.role(), vehiclePublicId)));
     }
 
     @GetMapping
-    @Operation(summary = "List vehicles by driver")
-    public ApiResponse<List<VehicleResponse>> listVehicles(@PathVariable UUID driverPublicId) {
-        List<VehicleResponse> data = service.findByDriverPublicId(driverPublicId).stream().map(VehicleResponse::from).toList();
+    public ApiResponse<List<VehicleResponse>> listVehicles(@AuthenticationPrincipal CustomUserPrincipal principal) {
+        List<VehicleResponse> data = service.findVehiclesForCurrentDriver(principal.publicId(), principal.role()).stream()
+                .map(VehicleResponse::from)
+                .toList();
         return ApiResponse.success("OK", "Vehicles fetched", data);
     }
 }

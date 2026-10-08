@@ -62,11 +62,9 @@ class DriverLocationPostGisIntegrationTest extends BaseIntegrationTest {
                 """, String.class);
         assertThat(indexDefinition).containsIgnoringCase("USING gist (current_location)");
         assertThat(jdbc.queryForObject("""
-                SELECT version FROM flyway_schema_history
-                WHERE success = TRUE
-                ORDER BY installed_rank DESC
-                LIMIT 1
-                """, String.class)).isEqualTo("8");
+                SELECT COUNT(*) FROM flyway_schema_history
+                WHERE version = '8' AND success = TRUE
+                """, Integer.class)).isEqualTo(1);
     }
 
     @Test

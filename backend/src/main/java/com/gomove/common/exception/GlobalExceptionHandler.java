@@ -5,6 +5,7 @@ import org.springframework.http.*;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import java.util.Map;
@@ -19,6 +20,8 @@ public class GlobalExceptionHandler {
         Map<String, String> details = ex.getBindingResult().getFieldErrors().stream().collect(Collectors.toMap(FieldError::getField, f -> f.getDefaultMessage() == null ? "Invalid value" : f.getDefaultMessage(), (a,b) -> a));
         return ResponseEntity.badRequest().body(ErrorResponse.of("VALIDATION_ERROR", "Request validation failed", request.getRequestURI(), details));
     }
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    ResponseEntity<ErrorResponse> malformedRequest(HttpMessageNotReadableException ex, HttpServletRequest request) { return ResponseEntity.badRequest().body(ErrorResponse.of("VALIDATION_ERROR", "Malformed or unexpected request content", request.getRequestURI(), Map.of())); }
     @ExceptionHandler(AccessDeniedException.class)
     ResponseEntity<ErrorResponse> forbidden(AccessDeniedException ex, HttpServletRequest request) { return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ErrorResponse.of("FORBIDDEN", "You are not authorized to perform this action", request.getRequestURI(), Map.of())); }
     @ExceptionHandler(NoResourceFoundException.class)

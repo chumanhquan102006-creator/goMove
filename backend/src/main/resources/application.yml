@@ -21,4 +21,5 @@ gomove:
     refresh-token-validity: 30d
     max-failed-login-attempts: 5
     lock-duration: 15m
-
+  location:
+    dispatch-freshness-seconds: 30

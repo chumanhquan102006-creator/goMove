@@ -229,8 +229,8 @@ class QuoteIntegrationTest extends BaseIntegrationTest {
         assertThat(quote.getDropoffLocation().getSRID()).isEqualTo(4326);
 
         assertThat(jdbc.queryForObject("SELECT to_regclass('public.quotes') IS NOT NULL", Boolean.class)).isTrue();
-        assertThat(jdbc.queryForObject("SELECT version FROM flyway_schema_history WHERE success=TRUE ORDER BY installed_rank DESC LIMIT 1", String.class))
-                .isEqualTo("9");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM flyway_schema_history WHERE version='9' AND success=TRUE", Integer.class))
+                .isEqualTo(1);
         assertThat(jdbc.queryForObject("""
                 SELECT data_type FROM information_schema.columns
                 WHERE table_name='quotes' AND column_name='pricing_snapshot'

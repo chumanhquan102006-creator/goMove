@@ -1,6 +1,7 @@
 package com.gomove.pricing.domain;
 
 import com.gomove.auth.domain.User;
+import com.gomove.common.exception.DomainException;
 import com.gomove.common.persistence.BaseEntity;
 import com.gomove.pricing.engine.FareBreakdown;
 import com.gomove.vehicle.domain.VehicleType;
@@ -14,6 +15,7 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
+import org.springframework.http.HttpStatus;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Point;
@@ -148,6 +150,18 @@ public class Quote extends BaseEntity {
 
     public boolean isUsableAt(Instant now) {
         return status == QuoteStatus.ISSUED && now.isBefore(expiresAt);
+    }
+
+    public void consume(Instant now) {
+        if (now == null) throw new IllegalArgumentException("Consumption time is required");
+        if (status == QuoteStatus.CONSUMED) {
+            throw new DomainException(HttpStatus.CONFLICT, "QUOTE_ALREADY_CONSUMED", "Quote has already been consumed");
+        }
+        if (status != QuoteStatus.ISSUED || !now.isBefore(expiresAt)) {
+            throw new DomainException(HttpStatus.CONFLICT, "QUOTE_EXPIRED", "Quote has expired");
+        }
+        status = QuoteStatus.CONSUMED;
+        consumedAt = now;
     }
 
     public User getCustomer() { return customer; }

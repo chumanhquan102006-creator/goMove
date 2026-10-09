@@ -149,7 +149,7 @@ class DispatchIntegrationTest extends BaseIntegrationTest {
         assertThat(drivers.findById(eligible.getId()).orElseThrow().getOperatingStatus())
                 .isEqualTo(DriverOperatingStatus.ONLINE);
         assertThat(jdbc.queryForObject("SELECT version FROM flyway_schema_history WHERE success=TRUE ORDER BY installed_rank DESC LIMIT 1", String.class))
-                .isEqualTo("11");
+                .isEqualTo("12");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM pg_constraint WHERE conname='chk_offer_exact_lease'", Integer.class))
                 .isEqualTo(1);
         for (String index : new String[]{"uq_offer_pending_booking", "uq_offer_pending_driver",

@@ -85,7 +85,7 @@ public class DispatchStore {
                   )
                   AND NOT EXISTS (
                       SELECT 1 FROM bookings assigned
-                      WHERE assigned.assigned_driver_id = d.id AND assigned.status = 'DRIVER_ACCEPTED'
+                      WHERE assigned.assigned_driver_id = d.id AND assigned.driver_released_at IS NULL
                   )
                 ORDER BY ST_Distance(dl.current_location, b.pickup_location), d.id
                 LIMIT 1 FOR UPDATE OF d SKIP LOCKED
@@ -176,7 +176,7 @@ public class DispatchStore {
     public boolean hasActiveAssignment(Long driverId) {
         return Boolean.TRUE.equals(jdbc.queryForObject("""
                 SELECT EXISTS (SELECT 1 FROM bookings
-                               WHERE assigned_driver_id = ? AND status = 'DRIVER_ACCEPTED')
+                               WHERE assigned_driver_id = ? AND driver_released_at IS NULL)
                 """, Boolean.class, driverId));
     }
 

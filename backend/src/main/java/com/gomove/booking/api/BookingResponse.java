@@ -20,7 +20,11 @@ public record BookingResponse(
         Instant createdAt,
         UUID driverPublicId,
         UUID vehiclePublicId,
-        Instant driverAcceptedAt
+        Instant driverAcceptedAt,
+        Instant driverArrivedAt,
+        Instant passengerOnboardAt,
+        Instant tripStartedAt,
+        Instant tripCompletedAt
 ) {
     public static BookingResponse from(Booking booking) {
         return new BookingResponse(booking.getPublicId(), booking.getQuote().getPublicId(),
@@ -28,6 +32,7 @@ public record BookingResponse(
                 booking.getFinalFare(), booking.getCreatedAt(),
                 booking.getAssignedDriver() == null ? null : booking.getAssignedDriver().getPublicId(),
                 booking.getAssignedVehicle() == null ? null : booking.getAssignedVehicle().getPublicId(),
-                booking.getDriverAcceptedAt());
+                booking.getDriverAcceptedAt(), booking.getDriverArrivedAt(),
+                booking.getPassengerOnboardAt(), booking.getTripStartedAt(), booking.getTripCompletedAt());
     }
 }

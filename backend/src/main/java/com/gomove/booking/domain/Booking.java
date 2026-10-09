@@ -49,6 +49,21 @@ public class Booking extends BaseEntity {
     @Column(name = "driver_accepted_at")
     private Instant driverAcceptedAt;
 
+    @Column(name = "driver_arrived_at")
+    private Instant driverArrivedAt;
+
+    @Column(name = "passenger_onboard_at")
+    private Instant passengerOnboardAt;
+
+    @Column(name = "trip_started_at")
+    private Instant tripStartedAt;
+
+    @Column(name = "trip_completed_at")
+    private Instant tripCompletedAt;
+
+    @Column(name = "driver_released_at")
+    private Instant driverReleasedAt;
+
     @Column(name = "pickup_location", nullable = false, updatable = false, columnDefinition = "geography(Point,4326)")
     private Point pickupLocation;
 
@@ -109,6 +124,11 @@ public class Booking extends BaseEntity {
     public Driver getAssignedDriver() { return assignedDriver; }
     public Vehicle getAssignedVehicle() { return assignedVehicle; }
     public Instant getDriverAcceptedAt() { return driverAcceptedAt; }
+    public Instant getDriverArrivedAt() { return driverArrivedAt; }
+    public Instant getPassengerOnboardAt() { return passengerOnboardAt; }
+    public Instant getTripStartedAt() { return tripStartedAt; }
+    public Instant getTripCompletedAt() { return tripCompletedAt; }
+    public Instant getDriverReleasedAt() { return driverReleasedAt; }
     public Point getPickupLocation() { return pickupLocation; }
     public Point getDropoffLocation() { return dropoffLocation; }
     public BigDecimal getDistanceMeters() { return distanceMeters; }

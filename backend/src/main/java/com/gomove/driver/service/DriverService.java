@@ -53,6 +53,11 @@ public class DriverService {
     public Driver updateApprovalStatusAsAdmin(UserRole authenticatedRole, UUID driverPublicId, DriverApprovalStatus newStatus) {
         requireRole(authenticatedRole, UserRole.ADMIN);
         Driver driver = findDriver(driverPublicId);
+        if ((newStatus == DriverApprovalStatus.SUSPENDED || newStatus == DriverApprovalStatus.REJECTED)
+                && drivers.hasUnreleasedBooking(driver.getId())) {
+            throw new DomainException(HttpStatus.CONFLICT, "DRIVER_HAS_UNRELEASED_BOOKING",
+                    "Driver approval cannot change while an assigned Booking is unreleased");
+        }
         driver.setApprovalStatus(newStatus);
         if (newStatus == DriverApprovalStatus.SUSPENDED || newStatus == DriverApprovalStatus.REJECTED) {
             driver.setOperatingStatus(DriverOperatingStatus.OFFLINE);
@@ -65,6 +70,11 @@ public class DriverService {
         Driver driver = requireDriverProfile(userPublicId, authenticatedRole);
         if (targetStatus == DriverOperatingStatus.BUSY) {
             throw new DomainException(HttpStatus.FORBIDDEN, "BUSY_STATUS_SYSTEM_MANAGED", "BUSY status is managed by the trip lifecycle");
+        }
+        if (driver.getOperatingStatus() == DriverOperatingStatus.BUSY
+                && drivers.hasUnreleasedBooking(driver.getId())) {
+            throw new DomainException(HttpStatus.CONFLICT, "DRIVER_HAS_UNRELEASED_BOOKING",
+                    "Driver remains busy until the assigned Booking is released");
         }
         if (targetStatus == DriverOperatingStatus.ONLINE) {
             if (driver.getApprovalStatus() != DriverApprovalStatus.APPROVED) {

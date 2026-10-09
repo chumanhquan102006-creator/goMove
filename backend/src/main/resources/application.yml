@@ -23,6 +23,12 @@ gomove:
     lock-duration: 15m
   location:
     dispatch-freshness-seconds: 30
+  dispatch:
+    enabled: true
+    poll-interval-ms: 1000
+    batch-size: 25
+    radius-meters: 5000
+    retry-seconds: 5
   routing:
     osrm:
       base-url: ${OSRM_BASE_URL:http://localhost:5000}

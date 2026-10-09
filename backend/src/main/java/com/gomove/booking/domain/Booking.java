@@ -2,7 +2,9 @@ package com.gomove.booking.domain;
 
 import com.gomove.auth.domain.User;
 import com.gomove.common.persistence.BaseEntity;
+import com.gomove.driver.domain.Driver;
 import com.gomove.pricing.domain.Quote;
+import com.gomove.vehicle.domain.Vehicle;
 import com.gomove.vehicle.domain.VehicleType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -18,6 +20,7 @@ import org.hibernate.type.SqlTypes;
 import org.locationtech.jts.geom.Point;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.Map;
 
 @Entity
@@ -34,6 +37,17 @@ public class Booking extends BaseEntity {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 24)
     private BookingStatus status;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "assigned_driver_id")
+    private Driver assignedDriver;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "assigned_vehicle_id")
+    private Vehicle assignedVehicle;
+
+    @Column(name = "driver_accepted_at")
+    private Instant driverAcceptedAt;
 
     @Column(name = "pickup_location", nullable = false, updatable = false, columnDefinition = "geography(Point,4326)")
     private Point pickupLocation;
@@ -92,6 +106,9 @@ public class Booking extends BaseEntity {
     public User getCustomer() { return customer; }
     public Quote getQuote() { return quote; }
     public BookingStatus getStatus() { return status; }
+    public Driver getAssignedDriver() { return assignedDriver; }
+    public Vehicle getAssignedVehicle() { return assignedVehicle; }
+    public Instant getDriverAcceptedAt() { return driverAcceptedAt; }
     public Point getPickupLocation() { return pickupLocation; }
     public Point getDropoffLocation() { return dropoffLocation; }
     public BigDecimal getDistanceMeters() { return distanceMeters; }

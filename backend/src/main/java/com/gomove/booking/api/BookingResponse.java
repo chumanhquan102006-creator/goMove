@@ -1,5 +1,6 @@
 package com.gomove.booking.api;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.gomove.booking.domain.Booking;
 import com.gomove.booking.domain.BookingStatus;
 import com.gomove.vehicle.domain.VehicleType;
@@ -8,6 +9,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public record BookingResponse(
         UUID bookingPublicId,
         UUID quotePublicId,
@@ -15,11 +17,17 @@ public record BookingResponse(
         VehicleType vehicleType,
         String currency,
         BigDecimal finalFare,
-        Instant createdAt
+        Instant createdAt,
+        UUID driverPublicId,
+        UUID vehiclePublicId,
+        Instant driverAcceptedAt
 ) {
     public static BookingResponse from(Booking booking) {
         return new BookingResponse(booking.getPublicId(), booking.getQuote().getPublicId(),
                 booking.getStatus(), booking.getVehicleType(), booking.getCurrencyCode(),
-                booking.getFinalFare(), booking.getCreatedAt());
+                booking.getFinalFare(), booking.getCreatedAt(),
+                booking.getAssignedDriver() == null ? null : booking.getAssignedDriver().getPublicId(),
+                booking.getAssignedVehicle() == null ? null : booking.getAssignedVehicle().getPublicId(),
+                booking.getDriverAcceptedAt());
     }
 }

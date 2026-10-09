@@ -1,5 +1,7 @@
 package com.gomove.booking.domain;
 
 public enum BookingStatus {
-    REQUESTED
+    REQUESTED,
+    SEARCHING_DRIVER,
+    DRIVER_ACCEPTED
 }

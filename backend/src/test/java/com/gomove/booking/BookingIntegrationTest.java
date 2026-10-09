@@ -214,8 +214,8 @@ class BookingIntegrationTest extends BaseIntegrationTest {
                 .path("data").path("bookingPublicId").asText());
         Booking another = bookings.findOwned(secondBooking, customer.getPublicId()).orElseThrow();
 
-        assertThat(jdbc.queryForObject("SELECT version FROM flyway_schema_history WHERE success=TRUE ORDER BY installed_rank DESC LIMIT 1", String.class))
-                .isEqualTo("10");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM flyway_schema_history WHERE version='10' AND success=TRUE", Integer.class))
+                .isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT to_regclass('public.bookings') IS NOT NULL", Boolean.class)).isTrue();
         assertThat(jdbc.queryForObject("SELECT to_regclass('public.booking_idempotency') IS NOT NULL", Boolean.class)).isTrue();
         for (String column : new String[]{"pickup_location", "dropoff_location"}) {
@@ -237,7 +237,9 @@ class BookingIntegrationTest extends BaseIntegrationTest {
                 WHERE table_name='bookings' AND column_name='final_fare'
                 """, Integer.class)).isEqualTo(2);
         assertThat(jdbc.queryForObject("""
-                SELECT COUNT(*) FROM pg_constraint WHERE conrelid='bookings'::regclass AND contype='f'
+                SELECT COUNT(*) FROM pg_constraint
+                WHERE conrelid='bookings'::regclass AND contype='f'
+                  AND confrelid IN ('users'::regclass, 'quotes'::regclass)
                 """, Integer.class)).isEqualTo(2);
         assertThat(jdbc.queryForObject("""
                 SELECT COUNT(*) FROM pg_constraint

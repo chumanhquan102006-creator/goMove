@@ -8,6 +8,7 @@ import com.gomove.auth.domain.UserRole;
 import com.gomove.booking.api.BookingResponse;
 import com.gomove.booking.domain.Booking;
 import com.gomove.booking.domain.BookingRepository;
+import com.gomove.cash.infrastructure.CashSettlementStore;
 import com.gomove.common.api.ApiResponse;
 import com.gomove.common.exception.DomainException;
 import com.gomove.pricing.domain.Quote;
@@ -26,15 +27,18 @@ public class BookingTransactionService {
     private final QuoteRepository quotes;
     private final BookingRepository bookings;
     private final BookingIdempotencyStore idempotency;
+    private final CashSettlementStore cash;
     private final ObjectMapper mapper;
     private final Clock clock;
 
     public BookingTransactionService(UserRepository users, QuoteRepository quotes, BookingRepository bookings,
-                                     BookingIdempotencyStore idempotency, ObjectMapper mapper, Clock clock) {
+                                     BookingIdempotencyStore idempotency, CashSettlementStore cash,
+                                     ObjectMapper mapper, Clock clock) {
         this.users = users;
         this.quotes = quotes;
         this.bookings = bookings;
         this.idempotency = idempotency;
+        this.cash = cash;
         this.mapper = mapper;
         this.clock = clock;
     }
@@ -58,6 +62,7 @@ public class BookingTransactionService {
         quote.consume(consumedAt);
 
         Booking booking = bookings.saveAndFlush(new Booking(customer, quote));
+        cash.initializePayment(booking.getId(), booking.getFinalFare(), booking.getCurrencyCode());
         quotes.flush(); // Persist status, consumedAt and optimistic version before storing the replay outcome.
         ApiResponse<BookingResponse> response = new ApiResponse<>(true, "BOOKING_CREATED", "Booking created",
                 BookingResponse.from(booking), clock.instant());

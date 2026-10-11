@@ -195,7 +195,7 @@ class TripLifecycleIntegrationTest extends BaseIntegrationTest {
     void migrationAndUnreleasedUniquenessCoverCompletedTrips() {
         Ride ride = ride();
         assertThat(jdbc.queryForObject("SELECT version FROM flyway_schema_history WHERE success=TRUE ORDER BY installed_rank DESC LIMIT 1",
-                String.class)).isEqualTo("12");
+                String.class)).isEqualTo("13");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('chk_bookings_trip_status','chk_bookings_trip_timestamps','chk_bookings_assignment_state')",
                 Integer.class)).isEqualTo(3);
         assertThatThrownBy(() -> jdbc.update("UPDATE bookings SET status='COMPLETED' WHERE id=?", ride.booking().getId()))

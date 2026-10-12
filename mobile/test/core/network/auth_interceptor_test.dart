@@ -9,12 +9,50 @@ class FakeSecureStorageService implements SecureStorageService {
   String? accessToken;
   String? refreshToken;
   String? userPublicId;
+  int generation = 0;
   int clearAllCallCount = 0;
 
   @override
-  Future<void> saveTokens({required String accessToken, required String refreshToken}) async {
+  Future<void> saveTokens({required String accessToken,
+      required String refreshToken, String? userPublicId}) async {
     this.accessToken = accessToken;
     this.refreshToken = refreshToken;
+    this.userPublicId = userPublicId;
+    generation++;
+  }
+
+  @override
+  Future<AuthSessionSnapshot> getSession() async =>
+      AuthSessionSnapshot(generation, accessToken, refreshToken);
+
+  @override
+  Future<bool> isCurrentSession(int expected) async => generation == expected;
+
+  @override
+  Future<bool> rotateTokensIfCurrent({required int generation,
+      required String expectedRefreshToken, required String accessToken,
+      required String refreshToken}) async {
+    if (this.generation != generation ||
+        this.refreshToken != expectedRefreshToken) {
+      return false;
+    }
+    this.accessToken = accessToken;
+    this.refreshToken = refreshToken;
+    return true;
+  }
+
+  @override
+  Future<bool> saveUserPublicIdIfCurrent(int generation, String publicId) async {
+    if (this.generation != generation) return false;
+    userPublicId = publicId;
+    return true;
+  }
+
+  @override
+  Future<bool> clearIfCurrent(int generation) async {
+    if (this.generation != generation) return false;
+    await clearAll();
+    return true;
   }
 
   @override
@@ -33,6 +71,7 @@ class FakeSecureStorageService implements SecureStorageService {
 
   @override
   Future<void> clearAll() async {
+    generation++;
     accessToken = null;
     refreshToken = null;
     userPublicId = null;
@@ -92,7 +131,7 @@ void main() {
     test('Tự động gắn Bearer Token cho các endpoint bảo mật', () async {
       fakeStorage.accessToken = 'test_valid_access_token';
 
-      final options = RequestOptions(path: '/rides/estimate');
+      final options = RequestOptions(path: '/quotes');
       final handler = FakeRequestInterceptorHandler();
 
       await interceptor.onRequest(options, handler);
@@ -121,7 +160,7 @@ void main() {
       expect(refreshHandler.nextOptions!.headers.containsKey('Authorization'), isFalse);
     });
 
-    test('Khi endpoint /auth/refresh bị lỗi 401: Xóa storage và KHÔNG gọi refresh lặp vô hạn', () async {
+    test('Public /auth/refresh 401 does not clear an unrelated session', () async {
       fakeStorage.refreshToken = 'expired_refresh_token';
 
       final refreshOptions = RequestOptions(path: '/auth/refresh');
@@ -137,7 +176,7 @@ void main() {
       await interceptor.onError(dioError, handler);
 
       expect(handler.nextError, equals(dioError));
-      expect(fakeStorage.clearAllCallCount, equals(1));
+      expect(fakeStorage.clearAllCallCount, equals(0));
       expect(tokenRefresher.isRefreshing, isFalse);
     });
   });

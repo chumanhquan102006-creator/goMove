@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:bloc_test/bloc_test.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gomove_mobile/core/error/failures.dart';
@@ -17,6 +18,7 @@ class FakeAuthRepository implements AuthRepository {
   Result<User>? registerResult;
   Result<User>? checkAuthStatusResult;
   Result<void>? logoutResult;
+  Completer<Result<void>>? logoutPending;
 
   @override
   Future<Result<User>> login({required String identifier, required String password}) async {
@@ -40,6 +42,7 @@ class FakeAuthRepository implements AuthRepository {
 
   @override
   Future<Result<void>> logout() async {
+    if (logoutPending != null) return logoutPending!.future;
     return logoutResult ?? const Success(null);
   }
 
@@ -129,6 +132,30 @@ void main() {
     );
 
     blocTest<AuthBloc, AuthState>(
+      'Registration field errors reach the presentation state',
+      build: () {
+        fakeRepository.registerResult = const Error(ValidationFailure(
+          message: 'Thông tin đăng ký chưa hợp lệ. Vui lòng kiểm tra các trường.',
+          fieldErrors: {'password': 'Mật khẩu phải có từ 8 đến 128 ký tự.'},
+        ));
+        return buildBloc();
+      },
+      act: (bloc) => bloc.add(const AuthRegisterSubmitted(
+        phone: '0901234567',
+        password: 'Password123',
+        fullName: 'Nguyễn Văn An',
+      )),
+      expect: () => [
+        const AuthLoadingState(),
+        const AuthErrorState(
+          message: 'Thông tin đăng ký chưa hợp lệ. Vui lòng kiểm tra các trường.',
+          code: 'VALIDATION_ERROR',
+          fieldErrors: {'password': 'Mật khẩu phải có từ 8 đến 128 ký tự.'},
+        ),
+      ],
+    );
+
+    blocTest<AuthBloc, AuthState>(
       'Khôi phục phiên thành công tại Splash (AuthCheckRequested) phát ra [AuthLoadingState, AuthenticatedState]',
       build: () {
         fakeRepository.checkAuthStatusResult = const Success(tUser);
@@ -155,6 +182,22 @@ void main() {
     );
 
     blocTest<AuthBloc, AuthState>(
+      'Lỗi mạng khi khôi phục phiên giữ ở Splash để thử lại',
+      build: () {
+        fakeRepository.checkAuthStatusResult = const Error(NetworkFailure());
+        return buildBloc();
+      },
+      act: (bloc) => bloc.add(const AuthCheckRequested()),
+      expect: () => [
+        const AuthLoadingState(),
+        const AuthErrorState(
+          message: 'Không thể kết nối đến máy chủ GoMove. Vui lòng kiểm tra lại mạng.',
+          code: 'NETWORK_UNAVAILABLE',
+        ),
+      ],
+    );
+
+    blocTest<AuthBloc, AuthState>(
       'Đăng xuất thành công phát ra [AuthLoadingState, UnauthenticatedState]',
       build: () {
         fakeRepository.logoutResult = const Success(null);
@@ -166,5 +209,21 @@ void main() {
         const UnauthenticatedState(),
       ],
     );
+
+    test('Late A logout cannot replace a newer B authenticated UI state',
+        () async {
+      fakeRepository.logoutPending = Completer<Result<void>>();
+      fakeRepository.loginResult = const Success(tUser);
+      final bloc = buildBloc();
+      addTearDown(bloc.close);
+      bloc.add(const AuthLogoutRequested());
+      await Future<void>.delayed(Duration.zero);
+      bloc.add(const AuthLoginSubmitted(
+          identifier: 'B', password: 'Password123'));
+      await bloc.stream.firstWhere((state) => state is AuthenticatedState);
+      fakeRepository.logoutPending!.complete(const Success(null));
+      await Future<void>.delayed(Duration.zero);
+      expect(bloc.state, const AuthenticatedState(tUser));
+    });
   });
 }

@@ -43,8 +43,8 @@ class AuthRepositoryImpl implements AuthRepository {
       await _localDataSource.saveTokens(
         accessToken: token.accessToken,
         refreshToken: token.refreshToken,
+        userPublicId: user.publicId,
       );
-      await _localDataSource.saveUserPublicId(user.publicId);
 
       return Success(user);
     } on ServerException catch (e) {
@@ -52,6 +52,7 @@ class AuthRepositoryImpl implements AuthRepository {
         code: e.errorCode,
         serverMessage: e.message,
         statusCode: e.statusCode,
+        details: e.details,
       ));
     } on UnauthorizedException catch (e) {
       return Error(AuthFailureMapper.map(
@@ -61,8 +62,8 @@ class AuthRepositoryImpl implements AuthRepository {
       ));
     } on NetworkException catch (e) {
       return Error(NetworkFailure(message: e.message));
-    } catch (e) {
-      return Error(ServerFailure(message: 'Lỗi không xác định: $e'));
+    } catch (_) {
+      return const Error(ServerFailure(message: 'Không thể đăng nhập. Vui lòng thử lại.'));
     }
   }
 
@@ -89,18 +90,25 @@ class AuthRepositoryImpl implements AuthRepository {
         code: e.errorCode,
         serverMessage: e.message,
         statusCode: e.statusCode,
+        details: e.details,
       ));
     } on NetworkException catch (e) {
       return Error(NetworkFailure(message: e.message));
-    } catch (e) {
-      return Error(ServerFailure(message: 'Lỗi đăng ký tài khoản: $e'));
+    } on UnauthorizedException catch (_) {
+      return const Error(UnauthorizedFailure());
+    } catch (_) {
+      return const Error(ServerFailure(message: 'Không thể đăng ký tài khoản.'));
     }
   }
 
   @override
   Future<Result<User>> getCurrentUser() async {
     try {
+      final session = await _localDataSource.getSession();
       final user = await _remoteDataSource.getCurrentUser();
+      if (!await _localDataSource.isCurrentSession(session.generation)) {
+        return const Error(UnauthorizedFailure());
+      }
       return Success(user);
     } on ServerException catch (e) {
       return Error(AuthFailureMapper.map(
@@ -116,15 +124,18 @@ class AuthRepositoryImpl implements AuthRepository {
       ));
     } on NetworkException catch (e) {
       return Error(NetworkFailure(message: e.message));
-    } catch (e) {
-      return Error(ServerFailure(message: 'Lỗi lấy thông tin người dùng: $e'));
+    } catch (_) {
+      return const Error(ServerFailure(message: 'Không thể lấy thông tin người dùng.'));
     }
   }
 
   @override
   Future<Result<void>> logout() async {
+    int? generation;
     try {
-      final refreshToken = await _localDataSource.getRefreshToken();
+      final session = await _localDataSource.getSession();
+      generation = session.generation;
+      final refreshToken = session.refreshToken;
       if (refreshToken != null && refreshToken.isNotEmpty) {
         try {
           await _remoteDataSource.logout(
@@ -134,11 +145,13 @@ class AuthRepositoryImpl implements AuthRepository {
           // Vẫn tiến hành xóa sạch bộ nhớ local dù server có lỗi mạng
         }
       }
-      await _localDataSource.clearAuthData();
+      await _localDataSource.clearAuthDataIfCurrent(generation);
       return const Success(null);
-    } catch (e) {
-      await _localDataSource.clearAuthData();
-      return Error(CacheFailure(message: 'Không thể xóa dữ liệu phiên làm việc: $e'));
+    } catch (_) {
+      if (generation != null) {
+        await _localDataSource.clearAuthDataIfCurrent(generation);
+      }
+      return const Error(CacheFailure(message: 'Không thể xóa dữ liệu phiên làm việc.'));
     }
   }
 
@@ -147,44 +160,39 @@ class AuthRepositoryImpl implements AuthRepository {
     try {
       final refreshToken = await _localDataSource.getRefreshToken();
       return Success(refreshToken != null && refreshToken.isNotEmpty);
-    } catch (e) {
-      return Error(CacheFailure(message: 'Lỗi kiểm tra trạng thái đăng nhập: $e'));
+    } catch (_) {
+      return const Error(CacheFailure(message: 'Lỗi kiểm tra trạng thái đăng nhập.'));
     }
   }
 
   @override
   Future<Result<User>> checkAuthStatus() async {
+    int? generation;
     try {
-      final refreshToken = await _localDataSource.getRefreshToken();
+      final session = await _localDataSource.getSession();
+      generation = session.generation;
+      final refreshToken = session.refreshToken;
       if (refreshToken == null || refreshToken.isEmpty) {
         return const Error(UnauthorizedFailure());
       }
 
-      // Thử lấy thông tin User hiện tại trước
-      try {
-        final user = await _remoteDataSource.getCurrentUser();
-        return Success(user);
-      } catch (_) {
-        // Nếu Access Token hết hạn, thử refresh token
-        final refreshResult = await _remoteDataSource.refreshToken(
-          RefreshTokenRequestModel(refreshToken: refreshToken),
-        );
-
-        final token = refreshResult['token'] as AuthTokenModel;
-        await _localDataSource.saveTokens(
-          accessToken: token.accessToken,
-          refreshToken: token.refreshToken,
-        );
-
-        UserModel? user = refreshResult['user'] as UserModel?;
-        user ??= await _remoteDataSource.getCurrentUser();
-        await _localDataSource.saveUserPublicId(user.publicId);
-
-        return Success(user);
+      // ApiClient refreshes a 401 exactly once; never rotate again here.
+      final user = await _remoteDataSource.getCurrentUser();
+      if (!await _localDataSource.saveUserPublicIdIfCurrent(generation, user.publicId)) {
+        return const Error(UnauthorizedFailure());
       }
-    } catch (e) {
-      await _localDataSource.clearAuthData();
+      return Success(user);
+    } on NetworkException catch (e) {
+      return Error(NetworkFailure(message: e.message));
+    } on ServerException catch (e) {
+      return Error(AuthFailureMapper.map(code: e.errorCode, serverMessage: e.message, statusCode: e.statusCode));
+    } on UnauthorizedException catch (_) {
+      if (generation != null) {
+        await _localDataSource.clearAuthDataIfCurrent(generation);
+      }
       return const Error(UnauthorizedFailure());
+    } catch (_) {
+      return const Error(ServerFailure(message: 'Không thể khôi phục phiên đăng nhập.'));
     }
   }
 }

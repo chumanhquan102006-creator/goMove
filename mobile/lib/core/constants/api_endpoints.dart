@@ -11,21 +11,8 @@ class ApiEndpoints {
   static const String logout = '/auth/logout';
   static const String me = '/auth/me';
 
-  // Ride Hailing & Booking
-  static const String estimateFare = '/rides/estimate';
-  static const String createBooking = '/rides/booking';
-  static String rideDetail(String publicId) => '/rides/$publicId';
-  static String cancelRide(String publicId) => '/rides/$publicId/cancel';
-
-  // Driver Operations
-  static String acceptRide(String publicId) => '/driver/rides/$publicId/accept';
-  static String startRide(String publicId) => '/driver/rides/$publicId/start';
-  static String completeRide(String publicId) => '/driver/rides/$publicId/complete';
-  static const String updateLocation = '/driver/location';
-
-  // WebSocket STOMP Topics & Destinations
-  static const String wsEndpoint = '/ws';
-  static const String wsTopicRides = '/topic/rides';
-  static String wsUserRideUpdates(String userPublicId) => '/user/$userPublicId/queue/rides';
-  static String wsDriverRideUpdates(String driverPublicId) => '/driver/$driverPublicId/queue/rides';
+  static const String quotes = '/quotes';
+  static String quote(String publicId) => '/quotes/$publicId';
+  static const String bookings = '/bookings';
+  static String booking(String publicId) => '/bookings/$publicId';
 }

@@ -3,15 +3,17 @@ class ServerException implements Exception {
   final String message;
   final int? statusCode;
   final String? errorCode;
+  final Map<String, String> details;
 
   const ServerException({
     required this.message,
     this.statusCode,
     this.errorCode,
+    this.details = const {},
   });
 
   @override
-  String toString() => 'ServerException(status: $statusCode, code: $errorCode, message: $message)';
+  String toString() => 'ServerException(status: $statusCode, code: $errorCode)';
 }
 
 class NetworkException implements Exception {
@@ -33,7 +35,7 @@ class UnauthorizedException implements Exception {
   ]);
 
   @override
-  String toString() => 'UnauthorizedException(code: $errorCode, message: $message)';
+  String toString() => 'UnauthorizedException(code: $errorCode)';
 }
 
 class CacheException implements Exception {

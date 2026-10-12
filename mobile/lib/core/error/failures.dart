@@ -50,10 +50,15 @@ class CacheFailure extends Failure {
 }
 
 class ValidationFailure extends Failure {
+  final Map<String, String> fieldErrors;
   const ValidationFailure({
     required super.message,
-    super.code = 'VALIDATION_FAILED',
+    super.code = 'VALIDATION_ERROR',
+    this.fieldErrors = const {},
   });
+
+  @override
+  List<Object?> get props => [message, code, fieldErrors];
 }
 
 class MockDataFailure extends Failure {
@@ -115,8 +120,27 @@ class AuthFailureMapper {
     String? code,
     String? serverMessage,
     int? statusCode,
+    Map<String, String> details = const {},
   }) {
     switch (code) {
+      case 'VALIDATION_ERROR':
+        final fieldErrors = <String, String>{};
+        if (details.containsKey('password')) {
+          fieldErrors['password'] = 'Mật khẩu phải có từ 8 đến 128 ký tự.';
+        }
+        if (details.containsKey('fullName')) {
+          fieldErrors['fullName'] = 'Họ và tên là bắt buộc và tối đa 100 ký tự.';
+        }
+        if (details.containsKey('phone')) {
+          fieldErrors['phone'] = 'Số điện thoại là bắt buộc và tối đa 20 ký tự.';
+        }
+        if (details.containsKey('email')) {
+          fieldErrors['email'] = 'Email không hợp lệ hoặc vượt quá 100 ký tự.';
+        }
+        return ValidationFailure(
+          message: 'Thông tin đăng ký chưa hợp lệ. Vui lòng kiểm tra các trường.',
+          fieldErrors: fieldErrors,
+        );
       case 'INVALID_CREDENTIALS':
         return const InvalidCredentialsFailure();
       case 'PHONE_ALREADY_EXISTS':
@@ -134,12 +158,14 @@ class AuthFailureMapper {
         return const NetworkFailure();
       default:
         if (statusCode == 401) {
-          return UnauthorizedFailure(
-            message: serverMessage ?? 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.',
-          );
+          return const UnauthorizedFailure();
+        }
+        if (statusCode == 409) {
+          return const ServerFailure(message: 'Yêu cầu bị xung đột. Vui lòng kiểm tra và thử lại.',
+            statusCode: 409);
         }
         return ServerFailure(
-          message: serverMessage ?? 'Đã có lỗi xảy ra từ máy chủ.',
+          message: 'Máy chủ chưa xử lý được yêu cầu. Vui lòng thử lại.',
           code: code,
           statusCode: statusCode,
         );

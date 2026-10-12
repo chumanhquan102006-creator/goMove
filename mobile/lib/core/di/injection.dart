@@ -11,6 +11,12 @@ import '../../features/auth/domain/usecases/login_usecase.dart';
 import '../../features/auth/domain/usecases/logout_usecase.dart';
 import '../../features/auth/domain/usecases/register_usecase.dart';
 import '../../features/auth/presentation/bloc/auth_bloc.dart';
+import '../../features/customer/data/booking_intent_store.dart';
+import '../../features/customer/data/repositories/customer_repository_impl.dart';
+import '../../features/customer/domain/repositories/customer_repository.dart';
+import '../../features/customer/domain/usecases/customer_usecases.dart';
+import '../../features/customer/presentation/bloc/booking_cubit.dart';
+import '../../features/customer/presentation/bloc/quote_cubit.dart';
 import '../config/app_config.dart';
 import '../network/api_client.dart';
 import '../network/auth_interceptor.dart';
@@ -130,4 +136,15 @@ Future<void> setupServiceLocator({required AppConfig config}) async {
       checkAuthStatusUseCase: sl<CheckAuthStatusUseCase>(),
     ),
   );
+
+  sl.registerLazySingleton<CustomerRepository>(() => CustomerRepositoryImpl(sl<ApiClient>()));
+  sl.registerLazySingleton<BookingIntentStore>(() => SecureBookingIntentStore());
+  sl.registerLazySingleton<RequestQuoteUseCase>(() => RequestQuoteUseCase(sl<CustomerRepository>()));
+  sl.registerLazySingleton<GetBookingUseCase>(() => GetBookingUseCase(sl<CustomerRepository>()));
+  sl.registerLazySingleton<CreateBookingUseCase>(() => CreateBookingUseCase(
+    sl<CustomerRepository>(), sl<BookingIntentStore>()));
+  sl.registerFactory<QuoteCubit>(() => QuoteCubit(sl<RequestQuoteUseCase>()));
+  sl.registerFactoryParam<BookingCubit, String, void>(
+      (customerPublicId, _) =>
+          BookingCubit(sl<CreateBookingUseCase>(), customerPublicId));
 }

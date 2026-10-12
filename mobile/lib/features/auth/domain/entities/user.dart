@@ -3,6 +3,8 @@ import 'package:equatable/equatable.dart';
 enum UserRole {
   customer,
   driver,
+  admin,
+  unknown,
 }
 
 /// Thực thể người dùng trong hệ thống GoMove (Clean Architecture Domain Entity).

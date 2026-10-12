@@ -42,8 +42,8 @@ class MockAuthRepositoryImpl implements AuthRepository {
       await _localDataSource.saveTokens(
         accessToken: token.accessToken,
         refreshToken: token.refreshToken,
+        userPublicId: user.publicId,
       );
-      await _localDataSource.saveUserPublicId(user.publicId);
 
       return Success(user);
     } on ServerException catch (e) {
@@ -89,7 +89,11 @@ class MockAuthRepositoryImpl implements AuthRepository {
   @override
   Future<Result<User>> getCurrentUser() async {
     try {
+      final session = await _localDataSource.getSession();
       final user = await _mockDataSource.getCurrentUser();
+      if (!await _localDataSource.isCurrentSession(session.generation)) {
+        return const Error(UnauthorizedFailure());
+      }
       return Success(user);
     } on UnauthorizedException catch (e) {
       return Error(UnauthorizedFailure(message: e.message));
@@ -101,7 +105,8 @@ class MockAuthRepositoryImpl implements AuthRepository {
   @override
   Future<Result<void>> logout() async {
     try {
-      await _localDataSource.clearAuthData();
+      final session = await _localDataSource.getSession();
+      await _localDataSource.clearAuthDataIfCurrent(session.generation);
       return const Success(null);
     } catch (e) {
       return Error(CacheFailure(message: 'Lỗi dọn dẹp phiên làm việc Mock: $e'));
@@ -121,11 +126,15 @@ class MockAuthRepositoryImpl implements AuthRepository {
   @override
   Future<Result<User>> checkAuthStatus() async {
     try {
-      final token = await _localDataSource.getRefreshToken();
+      final session = await _localDataSource.getSession();
+      final token = session.refreshToken;
       if (token == null || token.isEmpty) {
         return const Error(UnauthorizedFailure());
       }
       final user = await _mockDataSource.getCurrentUser();
+      if (!await _localDataSource.isCurrentSession(session.generation)) {
+        return const Error(UnauthorizedFailure());
+      }
       return Success(user);
     } catch (_) {
       return const Error(UnauthorizedFailure());

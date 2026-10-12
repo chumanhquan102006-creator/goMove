@@ -6,7 +6,9 @@ import 'token_refresher.dart';
 /// 1. Tự động đính kèm Access Token vào Header của các Request cần bảo mật.
 /// 2. Bắt lỗi 401 Unauthorized, kích hoạt TokenRefresher để thực hiện Token Rotation an toàn,
 ///    sau đó retry lại request ban đầu với Access Token mới (Mục D.2 & F).
-class AuthInterceptor extends QueuedInterceptor {
+class AuthInterceptor extends Interceptor {
+  static const _retried = 'authRetried';
+  static const _sessionGeneration = 'gomoveAuthSessionGeneration';
   final SecureStorageService _storageService;
   final TokenRefresher _tokenRefresher;
   final Dio Function() _getDio;
@@ -31,9 +33,24 @@ class AuthInterceptor extends QueuedInterceptor {
         path.contains('/auth/refresh');
 
     if (!isPublicPath) {
-      final token = await _storageService.getAccessToken();
+      final session = await _storageService.getSession();
+      final origin = options.extra[_sessionGeneration];
+      if (origin != null && origin != session.generation) {
+        return handler.reject(DioException(
+          requestOptions: options,
+          type: DioExceptionType.cancel,
+          message: 'Authenticated session changed',
+        ));
+      }
+      final token = session.accessToken;
       if (token != null && token.isNotEmpty) {
+        options.extra[_sessionGeneration] ??= session.generation;
         options.headers['Authorization'] = 'Bearer $token';
+      } else {
+        if (session.refreshToken != null && session.refreshToken!.isNotEmpty) {
+          options.extra[_sessionGeneration] ??= session.generation;
+        }
+        options.headers.remove('Authorization');
       }
     }
 
@@ -44,31 +61,64 @@ class AuthInterceptor extends QueuedInterceptor {
   }
 
   @override
+  Future<void> onResponse(Response<dynamic> response,
+      ResponseInterceptorHandler handler) async {
+    final origin = response.requestOptions.extra[_sessionGeneration];
+    if (origin is int &&
+        !await _storageService.isCurrentSession(origin)) {
+      return handler.reject(DioException(
+        requestOptions: response.requestOptions,
+        type: DioExceptionType.cancel,
+        message: 'Authenticated session changed',
+      ));
+    }
+    return handler.next(response);
+  }
+
+  @override
   Future<void> onError(DioException err, ErrorInterceptorHandler handler) async {
     final response = err.response;
     final statusCode = response?.statusCode;
     final requestPath = err.requestOptions.path;
 
     // Chỉ can thiệp khi gặp lỗi 401 Unauthorized
-    if (statusCode == 401) {
-      // 1. Nếu chính request `/auth/refresh` hoặc `/auth/login` bị 401:
-      // Tuyệt đối KHÔNG thử refresh lại để tránh vòng lặp vô hạn (Infinite loop).
+    if (statusCode == 401 && err.requestOptions.extra[_retried] != true) {
+      // Public auth calls are not tied to a protected request session. In
+      // particular, their late 401 must never clear a newer login session.
       if (requestPath.contains('/auth/refresh') ||
           requestPath.contains('/auth/login') ||
           requestPath.contains('/auth/register')) {
-        if (requestPath.contains('/auth/refresh')) {
-          await _storageService.clearAll();
-          _tokenRefresher.onAuthenticationExpired?.call();
-        }
         return handler.next(err);
       }
 
-      // 2. Với các request nghiệp vụ thông thường: Kích hoạt Token Rotation qua Mutex Lock
-      final newAccessToken = await _tokenRefresher.refreshToken();
+      final requestOptions = err.requestOptions;
+      final origin = requestOptions.extra[_sessionGeneration];
+      if (origin is! int) return handler.next(err);
+      var current = await _storageService.getSession();
+      if (current.generation != origin) return handler.next(err);
+      final failedBearer = requestOptions.headers['Authorization'];
+      final currentAccess = current.accessToken;
+      String? newAccessToken;
+      var transientFailure = false;
+      if (currentAccess != null && currentAccess.isNotEmpty &&
+          failedBearer != 'Bearer $currentAccess') {
+        newAccessToken = currentAccess;
+      } else {
+        final result = await _tokenRefresher.refreshToken(origin);
+        newAccessToken = result.accessToken;
+        transientFailure = result.transientFailure;
+      }
+
+      current = await _storageService.getSession();
+      if (current.generation != origin) return handler.next(err);
 
       if (newAccessToken != null && newAccessToken.isNotEmpty) {
+        // A second same-session rotation may have completed; use its latest token.
+        newAccessToken = current.accessToken;
+      }
+      if (newAccessToken != null && newAccessToken.isNotEmpty) {
         // Cập nhật header với token mới và thực hiện retry request
-        final requestOptions = err.requestOptions;
+        requestOptions.extra[_retried] = true;
         requestOptions.headers['Authorization'] = 'Bearer $newAccessToken';
 
         try {
@@ -77,6 +127,13 @@ class AuthInterceptor extends QueuedInterceptor {
         } on DioException catch (retryError) {
           return handler.next(retryError);
         }
+      }
+      if (transientFailure) {
+        return handler.next(DioException(
+          requestOptions: err.requestOptions,
+          type: DioExceptionType.connectionError,
+          message: 'Token refresh transport unavailable',
+        ));
       }
     }
 

@@ -47,12 +47,14 @@ class AuthRegistrationSuccessState extends AuthState {
 class AuthErrorState extends AuthState {
   final String message;
   final String? code;
+  final Map<String, String> fieldErrors;
 
   const AuthErrorState({
     required this.message,
     this.code,
+    this.fieldErrors = const {},
   });
 
   @override
-  List<Object?> get props => [message, code];
+  List<Object?> get props => [message, code, fieldErrors];
 }

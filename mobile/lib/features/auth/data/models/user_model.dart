@@ -21,9 +21,12 @@ class UserModel extends User {
       phoneNumber: (json['phone'] ?? json['phoneNumber']) as String,
       fullName: json['fullName'] as String,
       email: json['email'] as String?,
-      role: (json['role'] as String? ?? 'CUSTOMER').toUpperCase() == 'DRIVER'
-          ? UserRole.driver
-          : UserRole.customer,
+      role: switch ((json['role'] as String? ?? '').toUpperCase()) {
+        'CUSTOMER' => UserRole.customer,
+        'DRIVER' => UserRole.driver,
+        'ADMIN' => UserRole.admin,
+        _ => UserRole.unknown,
+      },
       status: json['status'] as String? ?? 'ACTIVE',
       isStudentVerified: json['isStudentVerified'] as bool? ?? false,
       studentCardId: json['studentCardId'] as String?,
@@ -38,7 +41,7 @@ class UserModel extends User {
       'phoneNumber': phoneNumber,
       'fullName': fullName,
       'email': email,
-      'role': role == UserRole.driver ? 'DRIVER' : 'CUSTOMER',
+      'role': role.name.toUpperCase(),
       'status': status,
       'isStudentVerified': isStudentVerified,
       'studentCardId': studentCardId,

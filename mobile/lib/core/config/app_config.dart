@@ -53,7 +53,7 @@ class AppConfig {
   /// Chuẩn hóa URL để luôn có tiền tố `/api/v1`
   static String normalizeBaseUrl(String url) {
     var trimmed = url.trim();
-    if (trimmed.endsWith('/')) {
+    while (trimmed.endsWith('/')) {
       trimmed = trimmed.substring(0, trimmed.length - 1);
     }
     if (!trimmed.endsWith('/api/v1')) {
@@ -75,13 +75,19 @@ class AppConfig {
     final String rawBaseUrl = customBaseUrl ?? (envBaseUrl.isNotEmpty ? envBaseUrl : defaultHost);
     final String finalBaseUrl = normalizeBaseUrl(rawBaseUrl);
 
-    const String wsUrl = String.fromEnvironment(
-      'WS_BASE_URL',
-      defaultValue: 'ws://10.0.2.2:8080/ws',
-    );
+    const String envWsUrl = String.fromEnvironment('WS_BASE_URL');
+    final apiUri = Uri.parse(finalBaseUrl);
+    final defaultWsUrl = apiUri.replace(
+      scheme: apiUri.scheme == 'https' ? 'wss' : 'ws',
+      path: '/ws',
+      query: null,
+      fragment: null,
+    ).toString();
+    final wsUrl = envWsUrl.isEmpty ? defaultWsUrl : envWsUrl;
 
     _instance = AppConfig(
-      environment: env,
+      environment: enableMock ? AppEnvironment.mock :
+          (env == AppEnvironment.mock ? AppEnvironment.dev : env),
       appTitle: 'GoMove - Ride Hailing',
       apiBaseUrl: finalBaseUrl,
       wsBaseUrl: wsUrl,

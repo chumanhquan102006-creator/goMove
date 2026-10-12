@@ -4,7 +4,7 @@ import '../../../../core/config/app_config.dart';
 import '../bloc/auth_bloc.dart';
 import '../bloc/auth_event.dart';
 import '../bloc/auth_state.dart';
-import 'customer_home_stub_screen.dart';
+import 'role_home.dart';
 import 'register_screen.dart';
 
 /// Màn hình Đăng nhập (Mục D.7):
@@ -19,8 +19,8 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _identifierController = TextEditingController(text: '0901234567');
-  final _passwordController = TextEditingController(text: '123456');
+  final _identifierController = TextEditingController();
+  final _passwordController = TextEditingController();
   bool _obscurePassword = true;
 
   @override
@@ -80,7 +80,7 @@ class _LoginScreenState extends State<LoginScreen> {
           } else if (state is AuthenticatedState) {
             Navigator.of(context).pushReplacement(
               MaterialPageRoute<void>(
-                builder: (_) => CustomerHomeStubScreen(user: state.user),
+                builder: (_) => RoleHome(user: state.user),
               ),
             );
           }

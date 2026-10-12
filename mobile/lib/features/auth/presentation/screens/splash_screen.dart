@@ -3,7 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../bloc/auth_bloc.dart';
 import '../bloc/auth_event.dart';
 import '../bloc/auth_state.dart';
-import 'customer_home_stub_screen.dart';
+import 'role_home.dart';
 import 'login_screen.dart';
 
 /// Màn hình Splash: Kiểm tra và phục hồi phiên đăng nhập khi khởi động (Mục G)
@@ -29,7 +29,7 @@ class _SplashScreenState extends State<SplashScreen> {
         if (state is AuthenticatedState) {
           Navigator.of(context).pushReplacement(
             MaterialPageRoute<void>(
-              builder: (_) => CustomerHomeStubScreen(user: state.user),
+              builder: (_) => RoleHome(user: state.user),
             ),
           );
         } else if (state is UnauthenticatedState) {
@@ -40,19 +40,19 @@ class _SplashScreenState extends State<SplashScreen> {
           );
         }
       },
-      child: const Scaffold(
+      child: Scaffold(
         backgroundColor: Colors.white,
         body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
+              const Icon(
                 Icons.electric_moped_rounded,
                 size: 96,
                 color: Color(0xFF0066FF),
               ),
-              SizedBox(height: 20),
-              Text(
+              const SizedBox(height: 20),
+              const Text(
                 'GoMove',
                 style: TextStyle(
                   fontSize: 34,
@@ -61,23 +61,27 @@ class _SplashScreenState extends State<SplashScreen> {
                   color: Color(0xFF1E293B),
                 ),
               ),
-              SizedBox(height: 8),
-              Text(
+              const SizedBox(height: 8),
+              const Text(
                 'Di chuyển thông minh & an toàn cho sinh viên',
                 style: TextStyle(
                   fontSize: 14,
                   color: Color(0xFF64748B),
                 ),
               ),
-              SizedBox(height: 48),
-              SizedBox(
-                width: 28,
-                height: 28,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2.5,
-                  valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF0066FF)),
-                ),
-              ),
+              const SizedBox(height: 48),
+              BlocBuilder<AuthBloc, AuthState>(builder: (context, state) {
+                if (state is AuthErrorState) {
+                  return Column(mainAxisSize: MainAxisSize.min, children: [
+                    Text(state.message, textAlign: TextAlign.center),
+                    TextButton(onPressed: () => context.read<AuthBloc>().add(
+                      const AuthCheckRequested()), child: const Text('Thử kết nối lại')),
+                  ]);
+                }
+                return const SizedBox(width: 28, height: 28,
+                  child: CircularProgressIndicator(strokeWidth: 2.5,
+                    valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF0066FF))));
+              }),
             ],
           ),
         ),

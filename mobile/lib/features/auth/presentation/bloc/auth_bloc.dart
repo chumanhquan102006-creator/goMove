@@ -1,4 +1,5 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../../../core/error/failures.dart';
 import '../../domain/usecases/check_auth_status_usecase.dart';
 import '../../domain/usecases/login_usecase.dart';
 import '../../domain/usecases/logout_usecase.dart';
@@ -14,6 +15,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   final RegisterUseCase _registerUseCase;
   final LogoutUseCase _logoutUseCase;
   final CheckAuthStatusUseCase _checkAuthStatusUseCase;
+  int _authRevision = 0;
 
   AuthBloc({
     required LoginUseCase loginUseCase,
@@ -36,13 +38,18 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     AuthCheckRequested event,
     Emitter<AuthState> emit,
   ) async {
+    final revision = ++_authRevision;
     emit(const AuthLoadingState());
 
     final result = await _checkAuthStatusUseCase();
+    if (revision != _authRevision) return;
 
     result.fold(
       onSuccess: (user) => emit(AuthenticatedState(user)),
-      onFailure: (_) => emit(const UnauthenticatedState()),
+      onFailure: (failure) => emit(failure is UnauthorizedFailure ||
+              failure is RefreshTokenExpiredFailure
+          ? const UnauthenticatedState()
+          : AuthErrorState(message: failure.message, code: failure.code)),
     );
   }
 
@@ -50,18 +57,21 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     AuthLoginSubmitted event,
     Emitter<AuthState> emit,
   ) async {
+    final revision = ++_authRevision;
     emit(const AuthLoadingState());
 
     final result = await _loginUseCase(
       identifier: event.identifier,
       password: event.password,
     );
+    if (revision != _authRevision) return;
 
     result.fold(
       onSuccess: (user) => emit(AuthenticatedState(user)),
       onFailure: (failure) => emit(AuthErrorState(
         message: failure.message,
         code: failure.code,
+        fieldErrors: failure is ValidationFailure ? failure.fieldErrors : const {},
       )),
     );
   }
@@ -84,6 +94,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       onFailure: (failure) => emit(AuthErrorState(
         message: failure.message,
         code: failure.code,
+        fieldErrors: failure is ValidationFailure ? failure.fieldErrors : const {},
       )),
     );
   }
@@ -92,8 +103,10 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     AuthLogoutRequested event,
     Emitter<AuthState> emit,
   ) async {
+    final revision = ++_authRevision;
     emit(const AuthLoadingState());
     await _logoutUseCase();
+    if (revision != _authRevision) return;
     emit(const UnauthenticatedState());
   }
 
@@ -101,6 +114,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     AuthForceUnauthenticated event,
     Emitter<AuthState> emit,
   ) {
+    _authRevision++;
     emit(const UnauthenticatedState());
   }
 }

@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gomove_mobile/core/utils/result.dart';
+import 'package:gomove_mobile/core/storage/secure_storage_service.dart';
 import 'package:gomove_mobile/features/auth/data/datasources/auth_local_datasource.dart';
 import 'package:gomove_mobile/features/auth/data/datasources/auth_mock_datasource.dart';
 import 'package:gomove_mobile/features/auth/data/repositories/mock_auth_repository_impl.dart';
@@ -9,11 +10,33 @@ class FakeAuthLocalDataSource implements AuthLocalDataSource {
   String? accessToken;
   String? refreshToken;
   String? userPublicId;
+  int generation = 0;
 
   @override
-  Future<void> saveTokens({required String accessToken, required String refreshToken}) async {
+  Future<void> saveTokens({required String accessToken,
+      required String refreshToken, String? userPublicId}) async {
     this.accessToken = accessToken;
     this.refreshToken = refreshToken;
+    this.userPublicId = userPublicId;
+    generation++;
+  }
+
+  @override
+  Future<AuthSessionSnapshot> getSession() async =>
+      AuthSessionSnapshot(generation, accessToken, refreshToken);
+  @override
+  Future<bool> isCurrentSession(int expected) async => generation == expected;
+  @override
+  Future<bool> saveUserPublicIdIfCurrent(int expected, String publicId) async {
+    if (generation != expected) return false;
+    userPublicId = publicId;
+    return true;
+  }
+  @override
+  Future<bool> clearAuthDataIfCurrent(int expected) async {
+    if (generation != expected) return false;
+    await clearAuthData();
+    return true;
   }
 
   @override
@@ -32,6 +55,7 @@ class FakeAuthLocalDataSource implements AuthLocalDataSource {
 
   @override
   Future<void> clearAuthData() async {
+    generation++;
     accessToken = null;
     refreshToken = null;
     userPublicId = null;

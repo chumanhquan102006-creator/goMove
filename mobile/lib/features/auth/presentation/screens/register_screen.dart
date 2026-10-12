@@ -3,6 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../bloc/auth_bloc.dart';
 import '../bloc/auth_event.dart';
 import '../bloc/auth_state.dart';
+import '../registration_validation.dart';
 
 /// Màn hình Đăng ký tài khoản khách hàng mới (CUSTOMER ONLY - Mục A.4 & C.11)
 /// Tuyệt đối KHÔNG có Role Selector, mặc định 100% vai trò là Customer.
@@ -23,6 +24,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
+  bool _submitting = false;
+  Map<String, String> _serverFieldErrors = {};
+
+  void _clearServerError(String field) {
+    if (_serverFieldErrors.containsKey(field)) {
+      setState(() => _serverFieldErrors.remove(field));
+    }
+  }
 
   @override
   void dispose() {
@@ -35,7 +44,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   void _onRegisterPressed() {
+    if (_submitting || context.read<AuthBloc>().state is AuthLoadingState) return;
     if (_formKey.currentState?.validate() ?? false) {
+      setState(() => _submitting = true);
       context.read<AuthBloc>().add(
             AuthRegisterSubmitted(
               phone: _phoneController.text.trim(),
@@ -57,6 +68,19 @@ class _RegisterScreenState extends State<RegisterScreen> {
       body: BlocConsumer<AuthBloc, AuthState>(
         listener: (context, state) {
           if (state is AuthErrorState) {
+            setState(() {
+              _submitting = false;
+              _serverFieldErrors = {
+                ...state.fieldErrors,
+                if (state.code == 'PHONE_ALREADY_EXISTS')
+                  'phone': state.message,
+                if (state.code == 'EMAIL_ALREADY_EXISTS')
+                  'email': state.message,
+              };
+            });
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _formKey.currentState?.validate();
+            });
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(state.message),
@@ -65,6 +89,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               ),
             );
           } else if (state is AuthRegistrationSuccessState) {
+            _submitting = false;
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
                 content: Text('Đăng ký tài khoản thành công! Vui lòng đăng nhập.'),
@@ -76,12 +101,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
           }
         },
         builder: (context, state) {
-          final isLoading = state is AuthLoadingState;
+          final isLoading = state is AuthLoadingState || _submitting;
 
           return SingleChildScrollView(
             padding: const EdgeInsets.all(24.0),
             child: Form(
               key: _formKey,
+              autovalidateMode: AutovalidateMode.onUserInteraction,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -101,59 +127,49 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   const SizedBox(height: 24),
                   TextFormField(
                     controller: _fullNameController,
+                    keyboardType: TextInputType.name,
+                    textCapitalization: TextCapitalization.words,
+                    autocorrect: true,
+                    onChanged: (_) => _clearServerError('fullName'),
                     decoration: const InputDecoration(
                       labelText: 'Họ và tên *',
                       prefixIcon: Icon(Icons.person_outline),
                       border: OutlineInputBorder(),
                     ),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'Vui lòng nhập họ và tên';
-                      }
-                      return null;
-                    },
+                    validator: (value) => RegistrationValidation.fullName(value) ??
+                        _serverFieldErrors['fullName'],
                   ),
                   const SizedBox(height: 16),
                   TextFormField(
                     controller: _phoneController,
                     keyboardType: TextInputType.phone,
+                    onChanged: (_) => _clearServerError('phone'),
                     decoration: const InputDecoration(
                       labelText: 'Số điện thoại *',
                       prefixIcon: Icon(Icons.phone_android),
                       border: OutlineInputBorder(),
                     ),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'Vui lòng nhập số điện thoại';
-                      }
-                      if (value.trim().length < 9 || value.trim().length > 11) {
-                        return 'Số điện thoại không hợp lệ (9 - 11 chữ số)';
-                      }
-                      return null;
-                    },
+                    validator: (value) => RegistrationValidation.phone(value) ??
+                        _serverFieldErrors['phone'],
                   ),
                   const SizedBox(height: 16),
                   TextFormField(
                     controller: _emailController,
                     keyboardType: TextInputType.emailAddress,
+                    onChanged: (_) => _clearServerError('email'),
                     decoration: const InputDecoration(
                       labelText: 'Email (Tùy chọn)',
                       prefixIcon: Icon(Icons.email_outlined),
                       border: OutlineInputBorder(),
                     ),
-                    validator: (value) {
-                      if (value != null && value.trim().isNotEmpty) {
-                        if (!value.contains('@') || !value.contains('.')) {
-                          return 'Định dạng email không hợp lệ';
-                        }
-                      }
-                      return null;
-                    },
+                    validator: (value) => RegistrationValidation.email(value) ??
+                        _serverFieldErrors['email'],
                   ),
                   const SizedBox(height: 16),
                   TextFormField(
                     controller: _passwordController,
                     obscureText: _obscurePassword,
+                    onChanged: (_) => _clearServerError('password'),
                     decoration: InputDecoration(
                       labelText: 'Mật khẩu *',
                       prefixIcon: const Icon(Icons.lock_outline),
@@ -163,15 +179,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       ),
                       border: const OutlineInputBorder(),
                     ),
-                    validator: (value) {
-                      if (value == null || value.isEmpty) {
-                        return 'Vui lòng nhập mật khẩu';
-                      }
-                      if (value.length < 6) {
-                        return 'Mật khẩu phải có tối thiểu 6 ký tự';
-                      }
-                      return null;
-                    },
+                    validator: (value) => RegistrationValidation.password(value) ??
+                        _serverFieldErrors['password'],
                   ),
                   const SizedBox(height: 16),
                   TextFormField(
@@ -186,12 +195,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       ),
                       border: const OutlineInputBorder(),
                     ),
-                    validator: (value) {
-                      if (value != _passwordController.text) {
-                        return 'Mật khẩu xác nhận không khớp';
-                      }
-                      return null;
-                    },
+                    validator: (value) => RegistrationValidation.confirmation(
+                        value, _passwordController.text),
                   ),
                   const SizedBox(height: 28),
                   ElevatedButton(

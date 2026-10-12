@@ -115,6 +115,7 @@ class ApiClient {
 
   Exception _handleDioError(DioException error) {
     if (error.type == DioExceptionType.connectionTimeout ||
+        error.type == DioExceptionType.connectionError ||
         error.type == DioExceptionType.sendTimeout ||
         error.type == DioExceptionType.receiveTimeout ||
         error.error is SocketException) {
@@ -127,10 +128,19 @@ class ApiClient {
       final dynamic responseData = response.data;
       String message = 'Đã có lỗi xảy ra từ máy chủ.';
       String? errorCode;
+      final details = <String, String>{};
 
-      if (responseData is Map<String, dynamic>) {
+      if (responseData is Map) {
         message = responseData['message']?.toString() ?? message;
         errorCode = responseData['code']?.toString() ?? responseData['errorCode']?.toString();
+        final rawDetails = responseData['details'];
+        if (rawDetails is Map) {
+          for (final entry in rawDetails.entries) {
+            if (entry.key is String && entry.value is String) {
+              details[entry.key as String] = entry.value as String;
+            }
+          }
+        }
       }
 
       if (statusCode == 401 && (errorCode == null || errorCode.isEmpty)) {
@@ -141,6 +151,7 @@ class ApiClient {
         message: message,
         statusCode: statusCode,
         errorCode: errorCode,
+        details: details,
       );
     }
 

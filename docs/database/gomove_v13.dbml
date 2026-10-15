@@ -1,0 +1,296 @@
+// GoMove / PostgreSQL 16 + PostGIS 3.5 / Final schema after Flyway V13
+// Source of truth: backend/src/main/resources/db/migration/V1__... through V13__...
+// IMPORTANT: This is a visualization model, NOT an executable migration.
+// PostgreSQL CHECK constraints, triggers, spatial GiST indexes and partial indexes
+// are described in notes/comments; use the Flyway SQL for exact DDL.
+// Never paste live user records, passwords or tokens into a public diagram.
+
+Project GoMove_V13 {
+  database_type: 'PostgreSQL'
+  Note: 'GoMove ride-hailing database after Flyway V13. 12 application tables including the technical PostGIS verification table. BIGINT IDs are internal; UUID public_id values are used in APIs. Foreign keys reflect the migrations.'
+}
+
+TableGroup identity [color: #2563EB, note: '01 - Identity and Authentication'] {
+  users
+  refresh_tokens
+}
+
+TableGroup driver_gps [color: #0D9488, note: '02 - Drivers, Vehicles and GPS'] {
+  drivers
+  vehicles
+  driver_locations
+}
+
+TableGroup booking_dispatch [color: #EA8B23, note: '03 - Pricing, Booking, Idempotency, Offers'] {
+  quotes
+  bookings
+  booking_idempotency
+  booking_driver_offers
+}
+
+TableGroup cash_commission [color: #7C3AED, note: '04 - Cash Settlement and Commission'] {
+  cash_payments
+  driver_commission_ledger
+}
+
+TableGroup technical [color: #64748B, note: '05 - Technical PostGIS Verification'] {
+  foundation_spatial_check
+}
+
+Table users [headercolor: #2563EB, note: 'User identity, authentication and role; password_hash contains BCrypt data and must never be published. Role: CUSTOMER/DRIVER/ADMIN; status: ACTIVE/LOCKED/DISABLED.'] {
+  id bigint [pk, increment, note: 'Internal generated identity']
+  public_id uuid [not null, unique, note: 'External API identifier']
+  phone varchar(20) [not null, unique]
+  email varchar(100) [unique]
+  password_hash varchar(255) [not null]
+  full_name varchar(100) [not null]
+  role varchar(20) [not null, note: 'CHECK: CUSTOMER, DRIVER, ADMIN']
+  status varchar(20) [not null, default: 'ACTIVE', note: 'CHECK: ACTIVE, LOCKED, DISABLED']
+  failed_login_attempts int [not null, default: 0]
+  locked_until timestamptz
+  version bigint [not null, default: 0]
+  created_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+  updated_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+}
+
+Table refresh_tokens [headercolor: #2563EB, note: 'Refresh-token rotation/revocation. Token HASH only; ON DELETE CASCADE when a user is deleted.'] {
+  id bigint [pk, increment]
+  public_id uuid [not null, unique]
+  user_id bigint [not null]
+  token_hash varchar(64) [not null, unique]
+  expires_at timestamptz [not null]
+  revoked_at timestamptz
+  replaced_by_public_id uuid [note: 'Informational UUID, not declared as a foreign key']
+  version bigint [not null, default: 0]
+  created_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+  updated_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+  last_used_at timestamptz
+
+  indexes {
+    user_id [name: 'idx_refresh_tokens_user_id']
+  }
+}
+
+Table drivers [headercolor: #0D9488, note: 'One optional driver profile per user. Approval: PENDING/APPROVED/REJECTED/SUSPENDED. Operating: OFFLINE/ONLINE/BUSY. CHECK requires APPROVED for ONLINE/BUSY.'] {
+  id bigint [pk, increment]
+  user_id bigint [not null, unique]
+  public_id uuid [not null, unique]
+  license_number varchar(50) [not null, unique]
+  approval_status varchar(20) [not null, default: 'PENDING']
+  operating_status varchar(20) [not null, default: 'OFFLINE']
+  rating_average numeric(3,2) [not null, default: 5.00, note: 'CHECK: 0.00 to 5.00']
+  total_trips int [not null, default: 0, note: 'CHECK: nonnegative']
+  version bigint [not null, default: 0]
+  created_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+  updated_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+
+  indexes {
+    user_id [name: 'idx_drivers_user_id']
+    public_id [name: 'idx_drivers_public_id']
+    license_number [name: 'idx_drivers_license_number']
+  }
+}
+
+Table vehicles [headercolor: #0D9488, note: 'Vehicle type: MOTORBIKE/CAR_4_SEAT/CAR_7_SEAT. PostgreSQL partial UNIQUE index ux_vehicles_one_active_per_driver enforces max one active vehicle per driver.'] {
+  id bigint [pk, increment]
+  driver_id bigint [not null]
+  public_id uuid [not null, unique]
+  license_plate varchar(20) [not null, unique]
+  vehicle_type varchar(20) [not null]
+  brand varchar(50)
+  model varchar(50)
+  color varchar(30)
+  is_active boolean [not null, default: false]
+  version bigint [not null, default: 0]
+  created_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+  updated_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+
+  indexes {
+    driver_id [name: 'idx_vehicles_driver_id']
+    license_plate [name: 'idx_vehicles_license_plate']
+    (id, driver_id) [unique, name: 'uq_vehicle_id_driver', note: 'Enables composite owner FK']
+  }
+}
+
+Table driver_locations [headercolor: #0D9488, note: 'Current GPS position per driver; PostGIS GEOGRAPHY(Point,4326). Real DB has GiST index idx_driver_locations_current_location_gist.'] {
+  id bigint [pk, increment]
+  driver_id bigint [not null, unique]
+  current_location "geography(Point,4326)" [not null, note: 'Spatial WGS84 point: longitude then latitude']
+  accuracy "double precision" [note: 'CHECK: null or >=0']
+  bearing "double precision" [note: 'CHECK: null or [0,360)']
+  updated_at timestamptz [not null]
+  version bigint [not null, default: 0]
+}
+
+Table quotes [headercolor: #EA8B23, note: 'Immutable fare snapshot and routing output. TTL is exactly 60 seconds in application logic. CHECK enforces fare reconciliation; status ISSUED/CONSUMED/EXPIRED.'] {
+  id bigint [pk, increment]
+  public_id uuid [not null, unique]
+  customer_id bigint [not null]
+  pickup_location "geography(Point,4326)" [not null]
+  dropoff_location "geography(Point,4326)" [not null]
+  distance_meters numeric(15,3) [not null]
+  duration_seconds numeric(15,3) [not null]
+  routing_provider varchar(40) [not null]
+  vehicle_type varchar(20) [not null]
+  currency_code varchar(3) [not null, note: 'VND only']
+  base_fare numeric(15,2) [not null]
+  distance_fare numeric(15,2) [not null]
+  time_fare numeric(15,2) [not null]
+  surcharge numeric(15,2) [not null]
+  surge_multiplier numeric(8,4) [not null]
+  surge_amount numeric(15,2) [not null]
+  discount_amount numeric(15,2) [not null]
+  rounding_adjustment numeric(15,2) [not null]
+  final_fare numeric(15,2) [not null]
+  pricing_engine_version varchar(30) [not null]
+  pricing_snapshot jsonb [not null]
+  status varchar(20) [not null, default: 'ISSUED']
+  issued_at timestamptz [not null]
+  expires_at timestamptz [not null]
+  consumed_at timestamptz
+  version bigint [not null, default: 0]
+  created_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+  updated_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+
+  indexes {
+    (customer_id, issued_at) [name: 'idx_quotes_customer_issued_at', note: 'issued_at descending in PostgreSQL']
+  }
+}
+
+Table bookings [headercolor: #EA8B23, note: 'V12 final trip states: REQUESTED/SEARCHING_DRIVER/DRIVER_ACCEPTED/DRIVER_ARRIVED/PASSENGER_ONBOARD/IN_PROGRESS/COMPLETED. PostgreSQL CHECK constraints enforce ordered timestamps and assignment. Partial unique index uq_bookings_active_driver covers unreleased driver assignments.'] {
+  id bigint [pk, increment]
+  public_id uuid [not null, unique]
+  customer_id bigint [not null]
+  quote_id bigint [not null, unique, note: 'At most one Booking per Quote']
+  status varchar(24) [not null]
+  pickup_location "geography(Point,4326)" [not null]
+  dropoff_location "geography(Point,4326)" [not null]
+  distance_meters numeric(15,3) [not null]
+  duration_seconds numeric(15,3) [not null]
+  routing_provider varchar(40) [not null]
+  vehicle_type varchar(20) [not null]
+  currency_code varchar(3) [not null]
+  final_fare numeric(15,2) [not null]
+  pricing_engine_version varchar(30) [not null]
+  pricing_snapshot jsonb [not null]
+  version bigint [not null, default: 0]
+  created_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+  updated_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+  assigned_driver_id bigint
+  assigned_vehicle_id bigint
+  driver_accepted_at timestamptz
+  next_dispatch_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+  driver_arrived_at timestamptz
+  passenger_onboard_at timestamptz
+  trip_started_at timestamptz
+  trip_completed_at timestamptz
+  driver_released_at timestamptz
+
+  indexes {
+    (id, assigned_driver_id) [unique, name: 'uq_bookings_id_assigned_driver', note: 'Used by payment/commission composite ownership FKs']
+  }
+}
+
+Table booking_idempotency [headercolor: #EA8B23, note: 'Customer-scoped idempotency key and request fingerprint. Response JSONB is persisted for safe Booking replay. CHECK controls outcome tuple.'] {
+  id bigint [pk, increment]
+  customer_id bigint [not null]
+  idempotency_key varchar(128) [not null]
+  request_hash varchar(64) [not null]
+  booking_id bigint
+  http_status smallint
+  response_body jsonb
+  created_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+
+  indexes {
+    (customer_id, idempotency_key) [unique, name: 'uq_booking_idempotency_customer_key']
+  }
+}
+
+Table booking_driver_offers [headercolor: #EA8B23, note: 'Sequential, exclusive dispatch offers. CHECK requires expires_at=offered_at+15 seconds. Partial UNIQUE indexes enforce one pending offer per Booking and Driver and one accepted offer per Booking.'] {
+  id bigint [pk, increment]
+  public_id uuid [not null, unique]
+  booking_id bigint [not null]
+  driver_id bigint [not null]
+  vehicle_id bigint [not null]
+  status varchar(16) [not null, note: 'PENDING/ACCEPTED/REJECTED/EXPIRED']
+  offered_at timestamptz [not null]
+  expires_at timestamptz [not null]
+  responded_at timestamptz
+  version bigint [not null, default: 0]
+  created_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+  updated_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+
+  indexes {
+    (booking_id, driver_id) [unique, name: 'uq_offer_booking_driver']
+  }
+}
+
+Table cash_payments [headercolor: #7C3AED, note: 'One CASH payment per Booking; PENDING/PAID, no invented wallet balance. Trigger enforces matching immutable Booking fare, state/timestamp, and blocks deletion. Collector must match assigned Driver.'] {
+  id bigint [pk, increment]
+  public_id uuid [not null, unique]
+  booking_id bigint [not null, unique]
+  method varchar(12) [not null, default: 'CASH']
+  status varchar(12) [not null, default: 'PENDING']
+  amount numeric(15,2) [not null]
+  currency_code varchar(3) [not null]
+  collected_by_driver_id bigint
+  paid_at timestamptz
+  version bigint [not null, default: 0]
+  created_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+  updated_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+}
+
+Table driver_commission_ledger [headercolor: #7C3AED, note: 'Append-only platform COMMISSION_ACCRUED receivable, not settled cash. Trigger rejects UPDATE/DELETE and verifies completed Booking and original fare.'] {
+  id bigint [pk, increment]
+  public_id uuid [not null, unique]
+  booking_id bigint [not null]
+  driver_id bigint [not null]
+  event_type varchar(32) [not null, note: 'COMMISSION_ACCRUED only']
+  currency_code varchar(3) [not null]
+  gross_cash_fare numeric(15,2) [not null]
+  commission_rate numeric(12,10) [not null, note: 'CHECK: between 0 and 1']
+  commission_amount numeric(15,2) [not null, note: 'ROUND(gross_cash_fare*commission_rate,0), <= gross_cash_fare']
+  commission_policy_version varchar(40) [not null]
+  occurred_at timestamptz [not null]
+  created_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+
+  indexes {
+    (booking_id, event_type) [unique, name: 'uq_commission_ledger_booking_event']
+    driver_id [name: 'idx_commission_ledger_driver']
+  }
+}
+
+Table foundation_spatial_check [headercolor: #64748B, note: 'Technical PostGIS verification table from V2, not a production ride-hailing workflow entity. GiST index idx_spatial_check_location is defined in Flyway.'] {
+  id bigint [pk, increment]
+  public_id uuid [not null, unique]
+  name varchar(100) [not null]
+  location "geography(Point,4326)" [not null]
+  version bigint [not null, default: 0]
+  created_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+  updated_at timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+}
+
+// Referential integrity from Flyway V1-V13. For one-to-one relationships,
+// the SECOND endpoint is the FK column (dbdiagram.io DBML convention).
+Ref: refresh_tokens.user_id > users.id [delete: cascade]
+Ref: users.id - drivers.user_id
+Ref: vehicles.driver_id > drivers.id [delete: cascade]
+Ref: drivers.id - driver_locations.driver_id [delete: cascade]
+Ref: quotes.customer_id > users.id
+Ref: bookings.customer_id > users.id
+Ref: quotes.id - bookings.quote_id
+Ref: booking_idempotency.customer_id > users.id
+Ref: booking_idempotency.booking_id >? bookings.id
+Ref: booking_driver_offers.booking_id > bookings.id
+Ref: booking_driver_offers.driver_id > drivers.id
+Ref: booking_driver_offers.vehicle_id > vehicles.id
+Ref: bookings.assigned_driver_id >? drivers.id
+Ref: bookings.assigned_vehicle_id >? vehicles.id
+Ref: bookings.(assigned_vehicle_id, assigned_driver_id) >? vehicles.(id, driver_id)
+Ref: booking_driver_offers.(vehicle_id, driver_id) > vehicles.(id, driver_id)
+Ref: bookings.id - cash_payments.booking_id
+Ref: cash_payments.collected_by_driver_id >? drivers.id
+Ref: cash_payments.(booking_id, collected_by_driver_id) >? bookings.(id, assigned_driver_id)
+Ref: driver_commission_ledger.booking_id > bookings.id
+Ref: driver_commission_ledger.driver_id > drivers.id
+Ref: driver_commission_ledger.(booking_id, driver_id) > bookings.(id, assigned_driver_id)

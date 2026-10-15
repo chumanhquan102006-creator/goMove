@@ -1,0 +1,149 @@
+// GoMove — simplified conceptual ERD for lecturer presentation.
+// All listed tables/columns are REAL, but this file intentionally omits
+// many non-key columns, composite ownership FKs, special indexes and triggers.
+// For the EXACT final schema, use gomove_v13.dbml and Flyway V1–V13.
+
+Project GoMove_V13_Presentation {
+  database_type: 'PostgreSQL'
+  Note: '11 business tables. Simplified presentation view; not complete DDL. Internal ID is BIGINT; public_id is UUID. PostGIS and cash settlement are handled in real PostgreSQL migrations.'
+}
+
+TableGroup identity [color: #2563EB, note: '01 - Accounts'] {
+  users
+  refresh_tokens
+}
+TableGroup driver_gps [color: #0D9488, note: '02 - Drivers and location'] {
+  drivers
+  vehicles
+  driver_locations
+}
+TableGroup booking_dispatch [color: #EA8B23, note: '03 - Booking and dispatch'] {
+  quotes
+  bookings
+  booking_idempotency
+  booking_driver_offers
+}
+TableGroup cash_commission [color: #7C3AED, note: '04 - Payment and commission'] {
+  cash_payments
+  driver_commission_ledger
+}
+
+Table users [headercolor: #2563EB] {
+  id bigint [pk, increment]
+  public_id uuid [not null, unique]
+  phone varchar(20) [not null, unique]
+  full_name varchar(100) [not null]
+  role varchar(20) [not null, note: 'CUSTOMER / DRIVER / ADMIN']
+  status varchar(20) [not null]
+}
+
+Table refresh_tokens [headercolor: #2563EB] {
+  id bigint [pk, increment]
+  user_id bigint [not null]
+  token_hash varchar(64) [not null, unique]
+  expires_at timestamptz [not null]
+}
+
+Table drivers [headercolor: #0D9488] {
+  id bigint [pk, increment]
+  public_id uuid [not null, unique]
+  user_id bigint [not null, unique]
+  approval_status varchar(20) [not null]
+  operating_status varchar(20) [not null]
+}
+
+Table vehicles [headercolor: #0D9488] {
+  id bigint [pk, increment]
+  driver_id bigint [not null]
+  public_id uuid [not null, unique]
+  vehicle_type varchar(20) [not null]
+  is_active boolean [not null]
+}
+
+Table driver_locations [headercolor: #0D9488] {
+  id bigint [pk, increment]
+  driver_id bigint [not null, unique]
+  current_location "geography(Point,4326)" [not null]
+  updated_at timestamptz [not null]
+}
+
+Table quotes [headercolor: #EA8B23] {
+  id bigint [pk, increment]
+  public_id uuid [not null, unique]
+  customer_id bigint [not null]
+  vehicle_type varchar(20) [not null]
+  final_fare numeric(15,2) [not null]
+  status varchar(20) [not null]
+  expires_at timestamptz [not null]
+}
+
+Table bookings [headercolor: #EA8B23] {
+  id bigint [pk, increment]
+  public_id uuid [not null, unique]
+  customer_id bigint [not null]
+  quote_id bigint [not null, unique]
+  assigned_driver_id bigint
+  assigned_vehicle_id bigint
+  status varchar(24) [not null]
+  final_fare numeric(15,2) [not null]
+  driver_released_at timestamptz
+}
+
+Table booking_idempotency [headercolor: #EA8B23] {
+  id bigint [pk, increment]
+  customer_id bigint [not null]
+  booking_id bigint
+  idempotency_key varchar(128) [not null]
+  request_hash varchar(64) [not null]
+  indexes {
+    (customer_id, idempotency_key) [unique]
+  }
+}
+
+Table booking_driver_offers [headercolor: #EA8B23] {
+  id bigint [pk, increment]
+  public_id uuid [not null, unique]
+  booking_id bigint [not null]
+  driver_id bigint [not null]
+  vehicle_id bigint [not null]
+  status varchar(16) [not null]
+  expires_at timestamptz [not null, note: 'Exactly 15 seconds after offered_at']
+}
+
+Table cash_payments [headercolor: #7C3AED] {
+  id bigint [pk, increment]
+  public_id uuid [not null, unique]
+  booking_id bigint [not null, unique]
+  collected_by_driver_id bigint
+  status varchar(12) [not null, note: 'PENDING / PAID']
+  amount numeric(15,2) [not null]
+}
+
+Table driver_commission_ledger [headercolor: #7C3AED] {
+  id bigint [pk, increment]
+  public_id uuid [not null, unique]
+  booking_id bigint [not null]
+  driver_id bigint [not null]
+  event_type varchar(32) [not null, note: 'COMMISSION_ACCRUED only']
+  commission_amount numeric(15,2) [not null]
+}
+
+// Main business relationships; composite safeguards omitted for visual clarity.
+Ref: refresh_tokens.user_id > users.id [delete: cascade]
+Ref: users.id - drivers.user_id
+Ref: vehicles.driver_id > drivers.id [delete: cascade]
+Ref: drivers.id - driver_locations.driver_id [delete: cascade]
+Ref: quotes.customer_id > users.id
+Ref: bookings.customer_id > users.id
+Ref: quotes.id - bookings.quote_id
+Ref: booking_idempotency.customer_id > users.id
+Ref: booking_idempotency.booking_id >? bookings.id
+Ref: booking_driver_offers.booking_id > bookings.id
+Ref: booking_driver_offers.driver_id > drivers.id
+Ref: booking_driver_offers.vehicle_id > vehicles.id
+Ref: bookings.assigned_driver_id >? drivers.id
+Ref: bookings.assigned_vehicle_id >? vehicles.id
+Ref: bookings.id - cash_payments.booking_id
+Ref: cash_payments.collected_by_driver_id >? drivers.id
+Ref: driver_commission_ledger.booking_id > bookings.id
+Ref: driver_commission_ledger.driver_id > drivers.id

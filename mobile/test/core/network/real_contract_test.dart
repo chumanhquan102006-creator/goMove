@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gomove_mobile/core/config/app_config.dart';
 import 'package:gomove_mobile/core/constants/api_endpoints.dart';
@@ -15,10 +16,13 @@ import 'package:gomove_mobile/features/auth/data/datasources/auth_remote_datasou
 import 'package:gomove_mobile/features/auth/data/models/login_request_model.dart';
 import 'package:gomove_mobile/features/auth/data/models/user_model.dart';
 import 'package:gomove_mobile/features/auth/domain/entities/user.dart';
+import 'package:gomove_mobile/features/auth/presentation/bloc/auth_bloc.dart';
 import 'package:gomove_mobile/features/auth/presentation/screens/role_home.dart';
 import 'package:gomove_mobile/features/customer/data/repositories/customer_repository_impl.dart';
 import 'package:gomove_mobile/features/customer/domain/models/quote.dart';
 import 'package:gomove_mobile/features/customer/presentation/screens/customer_home_screen.dart';
+import 'package:gomove_mobile/features/driver/presentation/screens/driver_home_screen.dart';
+import 'package:gomove_mobile/core/di/injection.dart';
 
 class MemoryAuthStorage implements SecureStorageService {
   String? access;
@@ -484,20 +488,26 @@ void main() {
     expect(parse('ADMIN').role, UserRole.admin);
     expect(parse('OTHER').role, UserRole.unknown);
     expect(homeForRole(parse('CUSTOMER')), isA<CustomerHomeScreen>());
-    expect(homeForRole(parse('DRIVER')), isNot(isA<CustomerHomeScreen>()));
+    expect(homeForRole(parse('DRIVER')), isA<DriverHomeScreen>());
     expect(homeForRole(parse('ADMIN')), isNot(isA<CustomerHomeScreen>()));
   });
 
   testWidgets('Driver and unsupported roles render separate destinations',
       (tester) async {
+    AppConfig.reset();
+    final config = AppConfig.initialize(forceMock: true);
+    await sl.reset();
+    await setupServiceLocator(config: config);
     const base = User(
         publicId: 'uuid',
         phoneNumber: '0901234567',
         fullName: 'Driver',
         role: UserRole.driver);
-    await tester.pumpWidget(MaterialApp(home: homeForRole(base)));
+    await tester.pumpWidget(BlocProvider(
+        create: (_) => sl<AuthBloc>(),
+        child: MaterialApp(home: homeForRole(base))));
     expect(find.text('GoMove Tài xế'), findsOneWidget);
-    expect(find.textContaining('M2'), findsOneWidget);
+    expect(find.textContaining('Chế độ mock'), findsOneWidget);
     await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
     const admin = User(
         publicId: 'uuid',

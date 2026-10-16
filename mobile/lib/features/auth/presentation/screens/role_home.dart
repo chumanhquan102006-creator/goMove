@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../../features/customer/presentation/screens/customer_home_screen.dart';
+import '../../../../features/driver/presentation/screens/driver_home_screen.dart';
 import '../../domain/entities/user.dart';
 import '../bloc/auth_bloc.dart';
 import '../bloc/auth_event.dart';
@@ -26,10 +27,7 @@ class RoleHome extends StatelessWidget {
 
 Widget homeForRole(User user) => switch (user.role) {
       UserRole.customer => CustomerHomeScreen(user: user),
-      UserRole.driver => _PlaceholderHome(
-          user: user,
-          title: 'GoMove Tài xế',
-          message: 'Chức năng nhận chuyến sẽ được triển khai ở M2.'),
+      UserRole.driver => DriverHomeScreen(user: user),
       _ => _PlaceholderHome(
           user: user,
           title: 'Không hỗ trợ vai trò',

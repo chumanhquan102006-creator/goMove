@@ -8,7 +8,8 @@ import 'token_refresher.dart';
 ///    sau đó retry lại request ban đầu với Access Token mới (Mục D.2 & F).
 class AuthInterceptor extends Interceptor {
   static const _retried = 'authRetried';
-  static const _sessionGeneration = 'gomoveAuthSessionGeneration';
+  static const sessionGenerationExtraKey = 'gomoveAuthSessionGeneration';
+  static const _sessionGeneration = sessionGenerationExtraKey;
   final SecureStorageService _storageService;
   final TokenRefresher _tokenRefresher;
   final Dio Function() _getDio;

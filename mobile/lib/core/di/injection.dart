@@ -17,6 +17,13 @@ import '../../features/customer/domain/repositories/customer_repository.dart';
 import '../../features/customer/domain/usecases/customer_usecases.dart';
 import '../../features/customer/presentation/bloc/booking_cubit.dart';
 import '../../features/customer/presentation/bloc/quote_cubit.dart';
+import '../../features/driver/data/accepted_booking_store.dart';
+import '../../features/driver/data/location/driver_location_source.dart';
+import '../../features/driver/data/repositories/driver_repository_impl.dart';
+import '../../features/driver/domain/repositories/driver_repository.dart';
+import '../../features/driver/domain/usecases/driver_usecases.dart';
+import '../../features/driver/presentation/bloc/driver_cubit.dart';
+import '../../features/driver/presentation/bloc/onboarding_cubit.dart';
 import '../config/app_config.dart';
 import '../network/api_client.dart';
 import '../network/auth_interceptor.dart';
@@ -147,4 +154,21 @@ Future<void> setupServiceLocator({required AppConfig config}) async {
   sl.registerFactoryParam<BookingCubit, String, void>(
       (customerPublicId, _) =>
           BookingCubit(sl<CreateBookingUseCase>(), customerPublicId));
+
+  sl.registerLazySingleton<DriverRepository>(
+      () => DriverRepositoryImpl(sl<ApiClient>()));
+  sl.registerLazySingleton<DriverUseCases>(
+      () => DriverUseCases(sl<DriverRepository>()));
+  sl.registerLazySingleton<DriverLocationSource>(
+      () => GeolocatorDriverLocationSource());
+  sl.registerLazySingleton<AcceptedBookingStore>(
+      () => SecureAcceptedBookingStore());
+  sl.registerFactory<OnboardingCubit>(() => OnboardingCubit(
+      sl<DriverUseCases>(), sl<SecureStorageService>()));
+  sl.registerFactoryParam<DriverCubit, String, void>((userPublicId, _) =>
+      DriverCubit(useCases: sl<DriverUseCases>(),
+          location: sl<DriverLocationSource>(),
+          session: sl<SecureStorageService>(),
+          acceptedStore: sl<AcceptedBookingStore>(),
+          userPublicId: userPublicId, isMock: config.isMock));
 }

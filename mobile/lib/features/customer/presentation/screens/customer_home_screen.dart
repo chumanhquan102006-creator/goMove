@@ -5,6 +5,7 @@ import '../../../../core/di/injection.dart';
 import '../../../auth/domain/entities/user.dart';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../auth/presentation/bloc/auth_event.dart';
+import '../../../driver/presentation/screens/driver_onboarding_screen.dart';
 import '../../domain/models/quote.dart';
 import '../bloc/booking_cubit.dart';
 import '../bloc/quote_cubit.dart';
@@ -118,6 +119,12 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent> {
           body: ListView(padding: const EdgeInsets.all(20), children: [
             Text('Xin chào, ${widget.user.fullName}',
                 style: Theme.of(context).textTheme.titleLarge),
+            TextButton.icon(
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(
+                  builder: (_) => const DriverOnboardingScreen())),
+              icon: const Icon(Icons.directions_bike),
+              label: const Text('Đăng ký làm tài xế'),
+            ),
             const SizedBox(height: 12),
             if (AppConfig.instance.isMock)
               const Card(

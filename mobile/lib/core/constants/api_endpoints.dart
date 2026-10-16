@@ -15,4 +15,17 @@ class ApiEndpoints {
   static String quote(String publicId) => '/quotes/$publicId';
   static const String bookings = '/bookings';
   static String booking(String publicId) => '/bookings/$publicId';
+  static String bookingTracking(String publicId) => '/bookings/$publicId/tracking';
+
+  static const String driverOnboarding = '/drivers/onboarding';
+  static const String driverOperatingStatus = '/drivers/me/operating-status';
+  static const String driverVehicles = '/drivers/me/vehicles';
+  static String activateDriverVehicle(String publicId) =>
+      '/drivers/me/vehicles/$publicId/activate';
+  static const String driverLocation = '/drivers/me/location';
+  static const String activeDriverOffers = '/drivers/me/offers/active';
+  static String acceptDriverOffer(String publicId) =>
+      '/drivers/me/offers/$publicId/accept';
+  static String rejectDriverOffer(String publicId) =>
+      '/drivers/me/offers/$publicId/reject';
 }

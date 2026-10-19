@@ -15,7 +15,14 @@ class ApiEndpoints {
   static String quote(String publicId) => '/quotes/$publicId';
   static const String bookings = '/bookings';
   static String booking(String publicId) => '/bookings/$publicId';
-  static String bookingTracking(String publicId) => '/bookings/$publicId/tracking';
+  static String bookingTracking(String publicId) =>
+      '/bookings/$publicId/tracking';
+  static String bookingPayment(String publicId) =>
+      '/bookings/$publicId/payment';
+  static String driverTripAction(String bookingPublicId, String action) =>
+      '/drivers/me/trips/$bookingPublicId/$action';
+  static String confirmTripCash(String bookingPublicId) =>
+      '/drivers/me/trips/$bookingPublicId/cash/confirm';
 
   static const String driverOnboarding = '/drivers/onboarding';
   static const String driverOperatingStatus = '/drivers/me/operating-status';

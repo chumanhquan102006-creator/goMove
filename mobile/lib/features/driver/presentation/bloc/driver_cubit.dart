@@ -6,6 +6,8 @@ import '../../data/accepted_booking_store.dart';
 import '../../data/location/driver_location_source.dart';
 import '../../domain/models/driver_models.dart';
 import '../../domain/usecases/driver_usecases.dart';
+import '../../../trip/domain/repositories/trip_repository.dart';
+import '../../../trip/domain/models/trip_models.dart';
 
 class DriverState {
   static const _unchanged = Object();
@@ -25,6 +27,7 @@ class DriverState {
   final String? error;
   final String? notice;
   final bool unresolvedDecision;
+  final bool completedAwaitingSettlement;
 
   const DriverState(
       {this.operatingStatus,
@@ -42,7 +45,8 @@ class DriverState {
       this.lastLocationUpload,
       this.error,
       this.notice,
-      this.unresolvedDecision = false});
+      this.unresolvedDecision = false,
+      this.completedAwaitingSettlement = false});
 
   DriverVehicle? get activeVehicle {
     for (final vehicle in vehicles) {
@@ -67,7 +71,8 @@ class DriverState {
           Object? lastLocationUpload = _unchanged,
           Object? error = _unchanged,
           Object? notice = _unchanged,
-          bool? unresolvedDecision}) =>
+          bool? unresolvedDecision,
+          bool? completedAwaitingSettlement}) =>
       DriverState(
           operatingStatus: identical(operatingStatus, _unchanged)
               ? this.operatingStatus
@@ -98,7 +103,9 @@ class DriverState {
           error: identical(error, _unchanged) ? this.error : error as String?,
           notice:
               identical(notice, _unchanged) ? this.notice : notice as String?,
-          unresolvedDecision: unresolvedDecision ?? this.unresolvedDecision);
+          unresolvedDecision: unresolvedDecision ?? this.unresolvedDecision,
+          completedAwaitingSettlement:
+              completedAwaitingSettlement ?? this.completedAwaitingSettlement);
 }
 
 class DriverCubit extends Cubit<DriverState> {
@@ -110,6 +117,7 @@ class DriverCubit extends Cubit<DriverState> {
   final DriverLocationSource _location;
   final SecureStorageService _session;
   final AcceptedBookingStore _acceptedStore;
+  final TripRepository? _tripRepository;
   final String userPublicId;
   final bool isMock;
   final DateTime Function() _now;
@@ -124,12 +132,14 @@ class DriverCubit extends Cubit<DriverState> {
   int _activityRevision = 0;
   int? _generation;
   int _revision = 0;
+  bool _tripChannelActive = false;
 
   DriverCubit(
       {required DriverUseCases useCases,
       required DriverLocationSource location,
       required SecureStorageService session,
       required AcceptedBookingStore acceptedStore,
+      TripRepository? tripRepository,
       required this.userPublicId,
       required this.isMock,
       DateTime Function()? now,
@@ -139,6 +149,7 @@ class DriverCubit extends Cubit<DriverState> {
         _location = location,
         _session = session,
         _acceptedStore = acceptedStore,
+        _tripRepository = tripRepository,
         _now = now ?? DateTime.now,
         super(const DriverState());
 
@@ -161,9 +172,17 @@ class DriverCubit extends Cubit<DriverState> {
     _generation = (await _session.getSession()).generation;
     emit(state.copy(loading: true, error: null));
     try {
-      final vehicles = await _useCases.vehicles(_sessionId);
+      try {
+        final vehicles = await _useCases.vehicles(_sessionId);
+        if (!await _current(revision)) return;
+        emit(state.copy(vehicles: vehicles, loading: false));
+      } catch (error) {
+        if (!await _current(revision)) return;
+        // Vehicle listing is not a prerequisite for recovering an accepted
+        // Booking; tracking/payment are independently authorized endpoints.
+        emit(state.copy(loading: false, error: _message(error)));
+      }
       if (!await _current(revision)) return;
-      emit(state.copy(vehicles: vehicles, loading: false));
       final saved = await _acceptedStore.read(userPublicId);
       if (saved == null || !await _current(revision)) return;
       final tracking =
@@ -175,19 +194,45 @@ class DriverCubit extends Cubit<DriverState> {
             'DRIVER_ACCEPTED',
             'DRIVER_ARRIVED',
             'PASSENGER_ONBOARD',
-            'IN_PROGRESS'
+            'IN_PROGRESS',
+            'COMPLETED'
           }.contains(tracking.status)) {
+        String? paymentNotice;
+        if (tracking.status == 'COMPLETED' && _tripRepository != null) {
+          // Completion does not settle cash or release the Driver. Recheck the
+          // authorized payment before restoring the handoff.
+          try {
+            final payment = await _tripRepository.payment(
+                saved.offer.bookingPublicId, _sessionId);
+            if (!await _current(revision)) return;
+            if (payment.method != 'CASH' ||
+                !const {'PENDING', 'PAID'}.contains(payment.status)) {
+              throw const FormatException('Trạng thái thanh toán không hợp lệ');
+            }
+            paymentNotice = payment.status == 'PAID'
+                ? 'Máy chủ báo PAID; mở chuyến để lấy lại biên nhận giải phóng.'
+                : 'Chuyến đã hoàn thành; tiền mặt vẫn đang chờ xác nhận.';
+          } catch (error) {
+            if (!await _current(revision)) return;
+            paymentNotice =
+                'Đã xác minh chuyến nhưng chưa đọc được thanh toán. '
+                'Mở chuyến và cập nhật lại trước khi thao tác.';
+          }
+        }
         emit(state.copy(
             driverPublicId: saved.driverPublicId,
             operatingStatus: 'BUSY',
             acceptedOffer: saved.offer,
-            notice: 'Đã xác minh chuyến đang được giao từ máy chủ.'));
-        if (state.foreground) {
+            completedAwaitingSettlement: tracking.status == 'COMPLETED',
+            notice: tracking.status == 'COMPLETED'
+                ? paymentNotice ??
+                    'Chuyến đã hoàn thành; cần xác minh thanh toán.'
+                : 'Đã xác minh chuyến đang được giao từ máy chủ.'));
+        if (state.foreground && tracking.status != 'COMPLETED') {
           _startBusyLocation();
           await _uploadLocation(revision);
         }
-      } else if (tracking.status == 'COMPLETED' ||
-          tracking.status == 'CANCELLED') {
+      } else if (tracking.status == 'CANCELLED') {
         await _acceptedStore.clear(userPublicId);
       } else {
         emit(state.copy(
@@ -325,8 +370,81 @@ class DriverCubit extends Cubit<DriverState> {
 
   void _startBusyLocation() {
     _stopForeground();
+    if (_tripChannelActive || state.completedAwaitingSettlement) return;
     _locationTimer =
         Timer.periodic(heartbeatInterval, (_) => _uploadLocation(_revision));
+  }
+
+  /// The trip screen publishes ride GPS when connected. Keep the M2 profile
+  /// heartbeat only as a disconnected/closed-screen fallback.
+  void setTripChannelActive(bool active) {
+    if (_tripChannelActive == active || isClosed) return;
+    _tripChannelActive = active;
+    if (state.operatingStatus != 'BUSY' ||
+        !state.foreground ||
+        state.completedAwaitingSettlement) {
+      return;
+    }
+    if (active) {
+      _stopForeground();
+    } else {
+      _startBusyLocation();
+    }
+  }
+
+  void markTripCompleted(String bookingPublicId) {
+    if (state.acceptedOffer?.bookingPublicId != bookingPublicId || isClosed) {
+      return;
+    }
+    _stopForeground();
+    emit(state.copy(completedAwaitingSettlement: true));
+  }
+
+  /// Called only after a durable PAID receipt with server release timestamp.
+  Future<void> finishSettledBooking(CashReceipt receipt) async {
+    if (receipt.paymentStatus != 'PAID' || receipt.paymentMethod != 'CASH') {
+      return;
+    }
+    final bookingPublicId = receipt.bookingPublicId;
+    final revision = _revision;
+    if (state.acceptedOffer?.bookingPublicId != bookingPublicId ||
+        _generation == null ||
+        !await _current(revision)) {
+      return;
+    }
+    var localStoreWarning = false;
+    try {
+      final saved = await _acceptedStore.read(userPublicId);
+      if (!await _current(revision)) return;
+      // Never clear a newer or different account-scoped handoff.
+      if (saved != null && saved.offer.bookingPublicId != bookingPublicId) {
+        return;
+      }
+      if (saved == null) {
+        localStoreWarning = true;
+      } else {
+        await _acceptedStore.clear(userPublicId);
+      }
+    } catch (_) {
+      // The Backend receipt still proves release. Keep this session aligned
+      // with the server, but report that restart recovery may need attention.
+      localStoreWarning = true;
+    }
+    if (!await _current(revision)) return;
+    _tripChannelActive = false;
+    _stopForeground();
+    emit(state.copy(
+        acceptedOffer: null,
+        operatingStatus: 'ONLINE',
+        completedAwaitingSettlement: false,
+        notice: localStoreWarning
+            ? 'Máy chủ đã giải phóng tài xế, nhưng chưa cập nhật được '
+                'bàn giao lưu trên thiết bị. Kiểm tra lại khi mở ứng dụng.'
+            : 'Máy chủ đã xác nhận PAID và giải phóng tài xế.'));
+    if (state.foreground) {
+      _startForeground();
+      await _uploadLocation(revision);
+    }
   }
 
   void _stopForeground() {
@@ -341,6 +459,7 @@ class DriverCubit extends Cubit<DriverState> {
     final activityRevision = _activityRevision;
     if (_uploading ||
         !state.foreground ||
+        state.completedAwaitingSettlement ||
         !const {'ONLINE', 'BUSY'}.contains(state.operatingStatus) ||
         !await _current(revision)) {
       return;
@@ -484,7 +603,8 @@ class DriverCubit extends Cubit<DriverState> {
     }
   }
 
-  Future<void> _confirmAccepted(DriverOffer offer, int revision) async {
+  Future<void> _confirmAccepted(DriverOffer offer, int revision,
+      {bool completed = false}) async {
     final driverId = state.driverPublicId;
     if (driverId == null) {
       emit(state.copy(
@@ -499,10 +619,11 @@ class DriverCubit extends Cubit<DriverState> {
         offer: null,
         acceptedOffer: offer,
         operatingStatus: 'BUSY',
+        completedAwaitingSettlement: completed,
         offerActionBusy: false,
         unresolvedDecision: false,
         notice: 'Máy chủ đã xác nhận nhận chuyến.'));
-    if (state.foreground) _startBusyLocation();
+    if (state.foreground && !completed) _startBusyLocation();
     try {
       await _acceptedStore.write(
           userPublicId, AcceptedBookingRecord(driverId, offer));
@@ -532,9 +653,11 @@ class DriverCubit extends Cubit<DriverState> {
             'DRIVER_ACCEPTED',
             'DRIVER_ARRIVED',
             'PASSENGER_ONBOARD',
-            'IN_PROGRESS'
+            'IN_PROGRESS',
+            'COMPLETED'
           }.contains(tracking.status)) {
-        await _confirmAccepted(offer, revision);
+        await _confirmAccepted(offer, revision,
+            completed: tracking.status == 'COMPLETED');
         return;
       }
       // A missing active offer alone cannot prove whether a decision committed.
@@ -578,8 +701,10 @@ class DriverCubit extends Cubit<DriverState> {
       await goOnline();
       if (state.unresolvedDecision) await reconcile();
     } else if (state.operatingStatus == 'BUSY') {
-      _startBusyLocation();
-      await _uploadLocation(revision);
+      if (!_tripChannelActive) {
+        _startBusyLocation();
+        await _uploadLocation(revision);
+      }
     }
   }
 

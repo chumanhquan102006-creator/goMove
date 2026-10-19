@@ -148,8 +148,9 @@ class _DriverContentState extends State<_DriverContent>
               previous.acceptedOffer == null && current.acceptedOffer != null,
           listener: (context, state) {
             Navigator.of(context).push(MaterialPageRoute<void>(
-              builder: (_) =>
-                  DriverAcceptedBookingScreen(offer: state.acceptedOffer!),
+              builder: (_) => DriverAcceptedBookingScreen(
+                  offer: state.acceptedOffer!,
+                  driverCubit: context.read<DriverCubit>()),
             ));
           },
           child: Scaffold(
@@ -313,10 +314,12 @@ class _DriverContentState extends State<_DriverContent>
                 TextButton(
                     onPressed: () => Navigator.of(context).push(
                         MaterialPageRoute<void>(
-                            builder: (_) =>
-                                DriverAcceptedBookingScreen(offer: offer))),
+                            builder: (_) => DriverAcceptedBookingScreen(
+                                offer: offer,
+                                driverCubit: context.read<DriverCubit>()))),
                     child: const Text('Xem chuyến đã nhận')),
-                const Text('Các bước chuyến đi sẽ được triển khai ở M3.'),
+                const Text('Mở chuyến để xem trạng thái, gửi GPS và xác nhận '
+                    'thu tiền mặt sau khi hoàn thành.'),
               ],
             )),
       );

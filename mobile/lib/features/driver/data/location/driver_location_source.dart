@@ -39,6 +39,7 @@ class GeolocatorDeviceLocationProvider implements DeviceLocationProvider {
     return DriverCoordinates(position.latitude, position.longitude,
         accuracy: position.accuracy,
         bearing: position.heading,
+        sampledAt: position.timestamp,
         approximate: accuracy == LocationAccuracyStatus.reduced);
   }
 

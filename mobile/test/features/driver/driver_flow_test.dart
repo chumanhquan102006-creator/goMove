@@ -18,9 +18,13 @@ import 'package:gomove_mobile/features/driver/presentation/bloc/driver_cubit.dar
 import 'package:gomove_mobile/features/driver/presentation/bloc/onboarding_cubit.dart';
 import 'package:gomove_mobile/features/driver/presentation/screens/driver_home_screen.dart';
 import 'package:gomove_mobile/features/driver/presentation/screens/driver_accepted_booking_screen.dart';
+import 'package:gomove_mobile/features/trip/domain/models/trip_models.dart';
+import 'package:gomove_mobile/features/trip/domain/repositories/trip_repository.dart';
 import 'package:mocktail/mocktail.dart';
 
 class MockSession extends Mock implements SecureStorageService {}
+
+class MockTripRepository extends Mock implements TripRepository {}
 
 class MemoryAcceptedStore implements AcceptedBookingStore {
   final values = <String, AcceptedBookingRecord>{};
@@ -486,7 +490,13 @@ void main() {
         heartbeatInterval: const Duration(milliseconds: 15));
     await cubit.initialize();
     await cubit.goOnline();
-    await Future<void>.delayed(const Duration(milliseconds: 75));
+    // Under full-suite parallel load, a fixed 75 ms sleep may elapse before
+    // both timers get their second turn. Wait for the observable condition.
+    for (var i = 0;
+        i < 20 && (repository.gpsCalls <= 1 || repository.offerCalls <= 1);
+        i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
     expect(repository.gpsCalls, greaterThan(1));
     expect(repository.offerCalls, greaterThan(1));
     cubit.pause();
@@ -610,6 +620,27 @@ void main() {
     expect(repository.acceptCalls, 1);
   });
 
+  test('Lost accept response reconciles completed trip without GPS', () async {
+    repository.offers = [offer(now.add(const Duration(seconds: 15)))];
+    await cubit.initialize();
+    await cubit.goOnline();
+    final uploadsBeforeDecision = repository.gpsCalls;
+    repository.acceptError = const NetworkException();
+    repository.trackingValue =
+        const BookingTracking('booking-1', 'COMPLETED', 'driver-1');
+
+    await cubit.decide(true);
+
+    expect(cubit.state.operatingStatus, 'BUSY');
+    expect(cubit.state.acceptedOffer?.bookingPublicId, 'booking-1');
+    expect(cubit.state.completedAwaitingSettlement, isTrue);
+    expect(store.values['user-A'], isNotNull);
+    expect(repository.gpsCalls, uploadsBeforeDecision);
+    cubit.pause();
+    await cubit.resume();
+    expect(repository.gpsCalls, uploadsBeforeDecision);
+  });
+
   test('503 with unmatched tracking stays unresolved and never retries',
       () async {
     repository.offers = [offer(now.add(const Duration(seconds: 15)))];
@@ -665,6 +696,86 @@ void main() {
     expect(cubit.state.operatingStatus, isNull);
   });
 
+  test('COMPLETED with CASH PENDING keeps account-scoped handoff and BUSY',
+      () async {
+    final trip = MockTripRepository();
+    store.values['user-A'] = AcceptedBookingRecord(
+        'driver-1', offer(now.add(const Duration(seconds: 15))));
+    repository.trackingValue =
+        const BookingTracking('booking-1', 'COMPLETED', 'driver-1');
+    when(() => trip.payment('booking-1', 1)).thenAnswer((_) async =>
+        const CashPayment(
+            paymentPublicId: 'payment-1',
+            bookingPublicId: 'booking-1',
+            method: 'CASH',
+            status: 'PENDING',
+            amount: '16500.00',
+            currency: 'VND'));
+    await cubit.close();
+    cubit = DriverCubit(
+        useCases: DriverUseCases(repository),
+        location: location,
+        session: session,
+        acceptedStore: store,
+        tripRepository: trip,
+        userPublicId: 'user-A',
+        isMock: false,
+        pollInterval: const Duration(hours: 1),
+        heartbeatInterval: const Duration(hours: 1));
+    await cubit.initialize();
+    expect(cubit.state.acceptedOffer?.bookingPublicId, 'booking-1');
+    expect(cubit.state.operatingStatus, 'BUSY');
+    expect(cubit.state.completedAwaitingSettlement, isTrue);
+    expect(store.values['user-A'], isNotNull);
+    expect(repository.gpsCalls, 0);
+  });
+
+  test('only verified receipt finishes saved handoff and restores ONLINE',
+      () async {
+    final trip = MockTripRepository();
+    store.values['user-A'] = AcceptedBookingRecord(
+        'driver-1', offer(now.add(const Duration(seconds: 15))));
+    repository.trackingValue =
+        const BookingTracking('booking-1', 'COMPLETED', 'driver-1');
+    when(() => trip.payment('booking-1', 1)).thenAnswer((_) async =>
+        const CashPayment(
+            paymentPublicId: 'payment-1',
+            bookingPublicId: 'booking-1',
+            method: 'CASH',
+            status: 'PAID',
+            amount: '16500.00',
+            currency: 'VND'));
+    await cubit.close();
+    cubit = DriverCubit(
+        useCases: DriverUseCases(repository),
+        location: location,
+        session: session,
+        acceptedStore: store,
+        tripRepository: trip,
+        userPublicId: 'user-A',
+        isMock: false,
+        pollInterval: const Duration(hours: 1),
+        heartbeatInterval: const Duration(hours: 1));
+    await cubit.initialize();
+    expect(cubit.state.operatingStatus, 'BUSY');
+    expect(store.values['user-A'], isNotNull);
+    await cubit.finishSettledBooking(CashReceipt(
+        paymentPublicId: 'payment-1',
+        bookingPublicId: 'booking-1',
+        paymentStatus: 'PAID',
+        paymentMethod: 'CASH',
+        cashCollectedAmount: '16500.00',
+        currency: 'VND',
+        commissionRate: '0.20',
+        commissionAmount: '3300.00',
+        commissionPolicyVersion: 'v1',
+        paidAt: DateTime.utc(2026, 10, 16, 10, 6),
+        driverReleasedAt: DateTime.utc(2026, 10, 16, 10, 6)));
+    expect(store.values['user-A'], isNull);
+    expect(cubit.state.acceptedOffer, isNull);
+    expect(cubit.state.operatingStatus, 'ONLINE');
+  });
+
   testWidgets(
       'Expired offer renders zero seconds and disabled decision buttons',
       (tester) async {
@@ -700,15 +811,43 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('Accepted Booking handoff shows confirmed M2 details',
-      (tester) async {
+  testWidgets('Accepted Booking handoff shows M3 trip details', (tester) async {
+    final trip = MockTripRepository();
+    when(() => trip.tracking('booking-1', any())).thenAnswer((_) async =>
+        const TrackingSnapshot(
+            bookingPublicId: 'booking-1',
+            status: 'COMPLETED',
+            driverPublicId: 'driver-1'));
+    when(() => trip.payment('booking-1', any())).thenAnswer((_) async =>
+        const CashPayment(
+            paymentPublicId: 'payment-1',
+            bookingPublicId: 'booking-1',
+            method: 'CASH',
+            status: 'PENDING',
+            amount: '16500.00',
+            currency: 'VND'));
+    await sl.reset();
+    AppConfig.reset();
+    await setupServiceLocator(config: AppConfig.initialize(forceMock: false));
+    await sl.unregister<TripRepository>();
+    sl.registerSingleton<TripRepository>(trip);
+    final fakeSession = MockSession();
+    when(() => fakeSession.getSession()).thenAnswer(
+        (_) async => const AuthSessionSnapshot(1, 'access', 'refresh'));
+    when(() => fakeSession.isCurrentSession(any()))
+        .thenAnswer((_) async => true);
+    await sl.unregister<SecureStorageService>();
+    sl.registerSingleton<SecureStorageService>(fakeSession);
     await tester.pumpWidget(MaterialApp(
         home: DriverAcceptedBookingScreen(
             offer: offer(DateTime.utc(2026, 10, 12, 12, 0, 15)))));
+    await tester.pump();
     expect(find.textContaining('Booking UUID: booking-1'), findsOneWidget);
-    expect(find.textContaining('BUSY'), findsOneWidget);
+    expect(find.textContaining('Chuyến đi đã hoàn thành'), findsWidgets);
     expect(find.textContaining('16.500 VND'), findsOneWidget);
     expect(find.textContaining('Điểm đón: 21.0287, 105.8524'), findsOneWidget);
-    expect(find.textContaining('M3'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Xác nhận đã thu tiền mặt'), 300);
+    expect(find.text('Xác nhận đã thu tiền mặt'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 }

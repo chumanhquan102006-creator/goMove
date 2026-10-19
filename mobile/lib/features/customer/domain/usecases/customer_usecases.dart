@@ -1,4 +1,5 @@
 import 'package:uuid/uuid.dart';
+import '../../data/active_booking_store.dart';
 import '../../data/booking_intent_store.dart';
 import '../models/booking.dart';
 import '../models/booking_intent.dart';
@@ -20,7 +21,8 @@ class GetQuoteUseCase {
 class GetBookingUseCase {
   final CustomerRepository repository;
   const GetBookingUseCase(this.repository);
-  Future<Booking> call(String id) => repository.getBooking(id);
+  Future<Booking> call(String id, {int? sessionGeneration}) =>
+      repository.getBooking(id, sessionGeneration: sessionGeneration);
 }
 
 class PendingIntentConflict implements Exception {
@@ -30,10 +32,12 @@ class PendingIntentConflict implements Exception {
 class CreateBookingUseCase {
   final CustomerRepository repository;
   final BookingIntentStore store;
+  final ActiveBookingStore? confirmedStore;
   final String Function() newKey;
   final Map<String, (String, Future<Booking>)> _submissions = {};
 
-  CreateBookingUseCase(this.repository, this.store, {String Function()? newKey})
+  CreateBookingUseCase(this.repository, this.store,
+      {this.confirmedStore, String Function()? newKey})
       : newKey = newKey ?? const Uuid().v4;
 
   Future<BookingIntent?> pendingFor(String customerPublicId) async {
@@ -41,7 +45,9 @@ class CreateBookingUseCase {
   }
 
   Future<Booking> call(
-      {required String customerPublicId, required String quotePublicId}) {
+      {required String customerPublicId,
+      required String quotePublicId,
+      int? sessionGeneration}) {
     final active = _submissions[customerPublicId];
     if (active != null) {
       if (active.$1 != quotePublicId) {
@@ -49,14 +55,17 @@ class CreateBookingUseCase {
       }
       return active.$2;
     }
-    final submission = _submit(customerPublicId, quotePublicId).whenComplete(() {
+    final submission =
+        _submit(customerPublicId, quotePublicId, sessionGeneration)
+            .whenComplete(() {
       _submissions.remove(customerPublicId);
     });
     _submissions[customerPublicId] = (quotePublicId, submission);
     return submission;
   }
 
-  Future<Booking> _submit(String customerPublicId, String quotePublicId) async {
+  Future<Booking> _submit(String customerPublicId, String quotePublicId,
+      int? sessionGeneration) async {
     var intent = await store.read(customerPublicId);
     if (intent != null && intent.quotePublicId != quotePublicId) {
       throw const PendingIntentConflict();
@@ -68,7 +77,18 @@ class CreateBookingUseCase {
     // Durable before the HTTP request. A timeout leaves the intent untouched.
     await store.write(intent);
     final booking = await repository.createBooking(
-        intent.quotePublicId, intent.idempotencyKey);
+        intent.quotePublicId, intent.idempotencyKey,
+        sessionGeneration: sessionGeneration);
+    // Retain the idempotent intent until the confirmed Booking UUID has a
+    // durable account-scoped navigation reference. A storage failure can be
+    // retried with the same key, never by silently creating another Booking.
+    if (confirmedStore != null) {
+      await confirmedStore!.write(
+          customerPublicId,
+          ActiveBookingRecord(
+              customerPublicId: customerPublicId,
+              bookingPublicId: booking.publicId));
+    }
     await store.clear(customerPublicId);
     return booking;
   }

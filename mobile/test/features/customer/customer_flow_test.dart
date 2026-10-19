@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gomove_mobile/core/error/exceptions.dart';
+import 'package:gomove_mobile/core/storage/secure_storage_service.dart';
+import 'package:gomove_mobile/features/customer/data/active_booking_store.dart';
 import 'package:gomove_mobile/features/customer/data/booking_intent_store.dart';
 import 'package:gomove_mobile/features/customer/data/models/customer_models.dart';
 import 'package:gomove_mobile/features/customer/domain/models/booking.dart';
@@ -11,6 +13,7 @@ import 'package:gomove_mobile/features/customer/domain/usecases/customer_usecase
 import 'package:gomove_mobile/features/customer/presentation/bloc/booking_status_cubit.dart';
 import 'package:gomove_mobile/features/customer/presentation/bloc/booking_cubit.dart';
 import 'package:gomove_mobile/features/customer/presentation/formatters.dart';
+import 'package:mocktail/mocktail.dart';
 
 const quoteId = '550e8400-e29b-41d4-a716-446655440001';
 const otherQuoteId = '550e8400-e29b-41d4-a716-446655440005';
@@ -44,6 +47,27 @@ class MemoryIntentStore implements BookingIntentStore {
   }
 }
 
+class MemoryActiveStore implements ActiveBookingStore {
+  final values = <String, ActiveBookingRecord>{};
+  bool failWrite = false;
+  @override
+  Future<ActiveBookingRecord?> read(String customerPublicId) async =>
+      values[customerPublicId];
+  @override
+  Future<void> write(
+      String customerPublicId, ActiveBookingRecord record) async {
+    if (failWrite) throw StateError('secure store unavailable');
+    values[customerPublicId] = record;
+  }
+
+  @override
+  Future<void> clear(String customerPublicId) async {
+    values.remove(customerPublicId);
+  }
+}
+
+class FakeSession extends Mock implements SecureStorageService {}
+
 class FakeCustomerRepository implements CustomerRepository {
   int createCalls = 0;
   int statusCalls = 0;
@@ -52,10 +76,12 @@ class FakeCustomerRepository implements CustomerRepository {
   Completer<Booking>? createCompleter;
   final completionsByKey = <String, Completer<Booking>>{};
   Booking statusValue = booking();
+  int? lastCreateGeneration;
 
   @override
-  Future<Booking> createBooking(
-      String quotePublicId, String idempotencyKey) async {
+  Future<Booking> createBooking(String quotePublicId, String idempotencyKey,
+      {int? sessionGeneration}) async {
+    lastCreateGeneration = sessionGeneration;
     createCalls++;
     keys.add(idempotencyKey);
     if (createError != null) throw createError!;
@@ -67,7 +93,7 @@ class FakeCustomerRepository implements CustomerRepository {
   }
 
   @override
-  Future<Booking> getBooking(String publicId) async {
+  Future<Booking> getBooking(String publicId, {int? sessionGeneration}) async {
     statusCalls++;
     return statusValue;
   }
@@ -84,8 +110,8 @@ class UncertainIdempotentRepository extends FakeCustomerRepository {
   bool firstResponseLost = true;
 
   @override
-  Future<Booking> createBooking(
-      String quotePublicId, String idempotencyKey) async {
+  Future<Booking> createBooking(String quotePublicId, String idempotencyKey,
+      {int? sessionGeneration}) async {
     createCalls++;
     keys.add(idempotencyKey);
     final result = bookingsByKey.putIfAbsent(idempotencyKey, booking);
@@ -98,6 +124,76 @@ class UncertainIdempotentRepository extends FakeCustomerRepository {
 }
 
 void main() {
+  test('Confirmed Booking UUID persists separately from pending intent',
+      () async {
+    final repository = FakeCustomerRepository();
+    final intents = MemoryIntentStore();
+    final active = MemoryActiveStore();
+    final useCase = CreateBookingUseCase(repository, intents,
+        confirmedStore: active, newKey: () => 'booking-key');
+
+    final result = await useCase(
+        customerPublicId: customerId,
+        quotePublicId: quoteId,
+        sessionGeneration: 7);
+
+    expect(result.publicId, bookingId);
+    expect(active.values[customerId]?.bookingPublicId, bookingId);
+    expect(intents.values[customerId], isNull);
+    expect(repository.lastCreateGeneration, 7);
+  });
+
+  test('Confirmed-reference write failure keeps original idempotency key',
+      () async {
+    final repository = FakeCustomerRepository();
+    final intents = MemoryIntentStore();
+    final active = MemoryActiveStore()..failWrite = true;
+    final useCase = CreateBookingUseCase(repository, intents,
+        confirmedStore: active, newKey: () => 'original-key');
+
+    await expectLater(
+        useCase(customerPublicId: customerId, quotePublicId: quoteId),
+        throwsStateError);
+    expect(intents.values[customerId]?.idempotencyKey, 'original-key');
+    active.failWrite = false;
+    final result =
+        await useCase(customerPublicId: customerId, quotePublicId: quoteId);
+    expect(result.publicId, bookingId);
+    expect(repository.keys, ['original-key', 'original-key']);
+    expect(active.values[customerId]?.bookingPublicId, bookingId);
+    expect(intents.values[customerId], isNull);
+  });
+
+  test('Late A Booking response cannot enter B session UI or B reference',
+      () async {
+    final repository = FakeCustomerRepository()
+      ..createCompleter = Completer<Booking>();
+    final intents = MemoryIntentStore();
+    final active = MemoryActiveStore();
+    final session = FakeSession();
+    var generation = 1;
+    var owner = customerId;
+    when(() => session.getSession()).thenAnswer(
+        (_) async => AuthSessionSnapshot(generation, 'access', 'refresh'));
+    when(() => session.getUserPublicId()).thenAnswer((_) async => owner);
+    when(() => session.isCurrentSession(any())).thenAnswer(
+        (call) async => call.positionalArguments.first == generation);
+    final useCase = CreateBookingUseCase(repository, intents,
+        confirmedStore: active, newKey: () => 'original-key');
+    final cubit = BookingCubit(useCase, customerId, session: session);
+
+    final pending = cubit.submit(quoteId);
+    await Future<void>.delayed(Duration.zero);
+    generation = 2;
+    owner = otherCustomerId;
+    repository.createCompleter!.complete(booking());
+    await pending;
+
+    expect(cubit.state.booking, isNull);
+    expect(active.values[otherCustomerId], isNull);
+    await cubit.close();
+  });
+
   test('Quote serializes coordinates and vehicle; invalid coordinates rejected',
       () {
     const request = QuoteRequest(
@@ -223,7 +319,8 @@ void main() {
         newKey: () => ['key-a', 'key-b'][next++]);
 
     final a = useCase(customerPublicId: customerId, quotePublicId: quoteId);
-    final b = useCase(customerPublicId: otherCustomerId, quotePublicId: quoteId);
+    final b =
+        useCase(customerPublicId: otherCustomerId, quotePublicId: quoteId);
     expect(identical(a, b), isFalse);
     await Future<void>.delayed(Duration.zero);
     expect(repository.createCalls, 2);
@@ -269,8 +366,8 @@ void main() {
 
     final afterRestart = CreateBookingUseCase(repository, store,
         newKey: () => throw StateError('A key must be reused'));
-    expect((await afterRestart.pendingFor(customerId))?.idempotencyKey,
-        'key-a');
+    expect(
+        (await afterRestart.pendingFor(customerId))?.idempotencyKey, 'key-a');
     await afterRestart(customerPublicId: customerId, quotePublicId: quoteId);
     expect(repository.keys, ['key-a', 'key-b', 'key-a']);
     expect(store.values[customerId], isNull);
@@ -280,8 +377,8 @@ void main() {
       () async {
     final repository = UncertainIdempotentRepository();
     final store = MemoryIntentStore();
-    final first = CreateBookingUseCase(repository, store,
-        newKey: () => 'original-key');
+    final first =
+        CreateBookingUseCase(repository, store, newKey: () => 'original-key');
     await expectLater(
         first(customerPublicId: customerId, quotePublicId: quoteId),
         throwsA(isA<NetworkException>()));

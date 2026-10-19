@@ -61,8 +61,11 @@ class DriverCoordinates {
   final double? bearing;
   final bool approximate;
 
+  /// Timestamp supplied by the device fix, never sent to the Backend.
+  final DateTime? sampledAt;
+
   const DriverCoordinates(this.latitude, this.longitude,
-      {this.accuracy, this.bearing, this.approximate = false});
+      {this.accuracy, this.bearing, this.approximate = false, this.sampledAt});
 
   Map<String, dynamic> toJson() {
     if (!latitude.isFinite ||

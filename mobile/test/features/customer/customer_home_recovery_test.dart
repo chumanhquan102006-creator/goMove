@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -80,12 +82,14 @@ class _AuthRepository implements AuthRepository {
 class _CustomerRepository implements CustomerRepository {
   Booking value = booking('DRIVER_ARRIVED');
   Object? error;
+  Completer<Booking>? pending;
   final requested = <String>[];
 
   @override
   Future<Booking> getBooking(String publicId, {int? sessionGeneration}) async {
     requested.add(publicId);
     if (error != null) throw error!;
+    if (pending != null) return pending!.future;
     return value;
   }
 
@@ -203,6 +207,57 @@ void main() {
         child: const MaterialApp(home: CustomerHomeScreen(user: userA))));
     await tester.pumpAndSettle();
   }
+
+  testWidgets('Recovery control is visible with no saved Booking',
+      (tester) async {
+    await showHome(tester);
+    final recovery = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, 'Khôi phục Booking bằng UUID'));
+    expect(recovery.onPressed, isNotNull);
+    expect(repository.requested, isEmpty);
+  });
+
+  testWidgets('Recovery control stays visible while verification is loading',
+      (tester) async {
+    activeStore.records[customerA] = const ActiveBookingRecord(
+        customerPublicId: customerA, bookingPublicId: bookingId);
+    repository.pending = Completer<Booking>();
+    await tester.pumpWidget(BlocProvider<AuthBloc>.value(
+        value: auth,
+        child: const MaterialApp(home: CustomerHomeScreen(user: userA))));
+    await tester.pump();
+    final recovery = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, 'Khôi phục Booking bằng UUID'));
+    expect(recovery.onPressed, isNull);
+    repository.pending!.complete(booking('DRIVER_ARRIVED'));
+    await tester.pumpAndSettle();
+    expect(find.text('Tiếp tục chuyến đang diễn ra'), findsOneWidget);
+  });
+
+  testWidgets('Recovery control stays visible when the session has ended',
+      (tester) async {
+    when(() => session.getSession())
+        .thenAnswer((_) async => const AuthSessionSnapshot(7, null, 'refresh'));
+    await showHome(tester);
+    final recovery = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, 'Khôi phục Booking bằng UUID'));
+    expect(recovery.onPressed, isNull);
+    expect(find.textContaining('Phiên đăng nhập đã thay đổi'), findsWidgets);
+  });
+
+  testWidgets('Backend recovery failure keeps manual control discoverable',
+      (tester) async {
+    activeStore.records[customerA] = const ActiveBookingRecord(
+        customerPublicId: customerA, bookingPublicId: bookingId);
+    repository.error =
+        const ServerException(message: 'route unavailable', statusCode: 503);
+    await showHome(tester);
+    final recovery = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, 'Khôi phục Booking bằng UUID'));
+    expect(recovery.onPressed, isNotNull);
+    expect(find.text('Tiếp tục chuyến đang diễn ra'), findsNothing);
+    expect(find.textContaining('Máy chủ đang bận'), findsOneWidget);
+  });
 
   testWidgets('Saved DRIVER_ARRIVED Booking has a verified resume entry',
       (tester) async {

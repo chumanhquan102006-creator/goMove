@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import '../../../../core/constants/api_endpoints.dart';
 import '../../../../core/network/api_client.dart';
+import '../../../../core/network/auth_interceptor.dart';
 import '../../domain/models/booking.dart';
 import '../../domain/models/quote.dart';
 import '../../domain/repositories/customer_repository.dart';
@@ -26,20 +27,29 @@ class CustomerRepositoryImpl implements CustomerRepository {
   }
 
   @override
-  Future<Booking> createBooking(
-      String quotePublicId, String idempotencyKey) async {
+  Future<Booking> createBooking(String quotePublicId, String idempotencyKey,
+      {int? sessionGeneration}) async {
     final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.bookings,
       data: {'quotePublicId': quotePublicId},
-      options: Options(headers: {'Idempotency-Key': idempotencyKey}),
+      options: Options(
+          headers: {'Idempotency-Key': idempotencyKey},
+          extra: sessionGeneration == null
+              ? null
+              : {AuthInterceptor.sessionGenerationExtraKey: sessionGeneration}),
     );
     return CustomerModels.booking(CustomerModels.payload(response.data));
   }
 
   @override
-  Future<Booking> getBooking(String publicId) async {
-    final response =
-        await _client.get<Map<String, dynamic>>(ApiEndpoints.booking(publicId));
+  Future<Booking> getBooking(String publicId, {int? sessionGeneration}) async {
+    final response = await _client.get<Map<String, dynamic>>(
+        ApiEndpoints.booking(publicId),
+        options: sessionGeneration == null
+            ? null
+            : Options(extra: {
+                AuthInterceptor.sessionGenerationExtraKey: sessionGeneration
+              }));
     return CustomerModels.booking(CustomerModels.payload(response.data));
   }
 }

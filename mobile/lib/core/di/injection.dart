@@ -11,11 +11,13 @@ import '../../features/auth/domain/usecases/login_usecase.dart';
 import '../../features/auth/domain/usecases/logout_usecase.dart';
 import '../../features/auth/domain/usecases/register_usecase.dart';
 import '../../features/auth/presentation/bloc/auth_bloc.dart';
+import '../../features/customer/data/active_booking_store.dart';
 import '../../features/customer/data/booking_intent_store.dart';
 import '../../features/customer/data/repositories/customer_repository_impl.dart';
 import '../../features/customer/domain/repositories/customer_repository.dart';
 import '../../features/customer/domain/usecases/customer_usecases.dart';
 import '../../features/customer/presentation/bloc/booking_cubit.dart';
+import '../../features/customer/presentation/bloc/customer_active_booking_cubit.dart';
 import '../../features/customer/presentation/bloc/quote_cubit.dart';
 import '../../features/driver/data/accepted_booking_store.dart';
 import '../../features/driver/data/location/driver_location_source.dart';
@@ -24,6 +26,9 @@ import '../../features/driver/domain/repositories/driver_repository.dart';
 import '../../features/driver/domain/usecases/driver_usecases.dart';
 import '../../features/driver/presentation/bloc/driver_cubit.dart';
 import '../../features/driver/presentation/bloc/onboarding_cubit.dart';
+import '../../features/trip/data/repositories/trip_repository_impl.dart';
+import '../../features/trip/data/trip_realtime_client.dart';
+import '../../features/trip/domain/repositories/trip_repository.dart';
 import '../config/app_config.dart';
 import '../network/api_client.dart';
 import '../network/auth_interceptor.dart';
@@ -144,16 +149,23 @@ Future<void> setupServiceLocator({required AppConfig config}) async {
     ),
   );
 
-  sl.registerLazySingleton<CustomerRepository>(() => CustomerRepositoryImpl(sl<ApiClient>()));
-  sl.registerLazySingleton<BookingIntentStore>(() => SecureBookingIntentStore());
-  sl.registerLazySingleton<RequestQuoteUseCase>(() => RequestQuoteUseCase(sl<CustomerRepository>()));
-  sl.registerLazySingleton<GetBookingUseCase>(() => GetBookingUseCase(sl<CustomerRepository>()));
+  sl.registerLazySingleton<CustomerRepository>(
+      () => CustomerRepositoryImpl(sl<ApiClient>()));
+  sl.registerLazySingleton<BookingIntentStore>(
+      () => SecureBookingIntentStore());
+  sl.registerLazySingleton<ActiveBookingStore>(
+      () => SecureActiveBookingStore());
+  sl.registerLazySingleton<RequestQuoteUseCase>(
+      () => RequestQuoteUseCase(sl<CustomerRepository>()));
+  sl.registerLazySingleton<GetBookingUseCase>(
+      () => GetBookingUseCase(sl<CustomerRepository>()));
   sl.registerLazySingleton<CreateBookingUseCase>(() => CreateBookingUseCase(
-    sl<CustomerRepository>(), sl<BookingIntentStore>()));
+      sl<CustomerRepository>(), sl<BookingIntentStore>(),
+      confirmedStore: sl<ActiveBookingStore>()));
   sl.registerFactory<QuoteCubit>(() => QuoteCubit(sl<RequestQuoteUseCase>()));
-  sl.registerFactoryParam<BookingCubit, String, void>(
-      (customerPublicId, _) =>
-          BookingCubit(sl<CreateBookingUseCase>(), customerPublicId));
+  sl.registerFactoryParam<BookingCubit, String, void>((customerPublicId, _) =>
+      BookingCubit(sl<CreateBookingUseCase>(), customerPublicId,
+          session: sl<SecureStorageService>()));
 
   sl.registerLazySingleton<DriverRepository>(
       () => DriverRepositoryImpl(sl<ApiClient>()));
@@ -163,12 +175,26 @@ Future<void> setupServiceLocator({required AppConfig config}) async {
       () => GeolocatorDriverLocationSource());
   sl.registerLazySingleton<AcceptedBookingStore>(
       () => SecureAcceptedBookingStore());
-  sl.registerFactory<OnboardingCubit>(() => OnboardingCubit(
-      sl<DriverUseCases>(), sl<SecureStorageService>()));
+  sl.registerLazySingleton<TripRepository>(
+      () => TripRepositoryImpl(sl<ApiClient>()));
+  sl.registerFactoryParam<CustomerActiveBookingCubit, String, void>(
+      (customerPublicId, _) => CustomerActiveBookingCubit(
+          sl<GetBookingUseCase>(),
+          sl<TripRepository>(),
+          sl<ActiveBookingStore>(),
+          sl<SecureStorageService>(),
+          customerPublicId));
+  sl.registerLazySingleton<TripRealtimeClient>(() => TripRealtimeClientImpl(
+      config: sl<AppConfig>(), session: sl<SecureStorageService>()));
+  sl.registerFactory<OnboardingCubit>(
+      () => OnboardingCubit(sl<DriverUseCases>(), sl<SecureStorageService>()));
   sl.registerFactoryParam<DriverCubit, String, void>((userPublicId, _) =>
-      DriverCubit(useCases: sl<DriverUseCases>(),
+      DriverCubit(
+          useCases: sl<DriverUseCases>(),
           location: sl<DriverLocationSource>(),
           session: sl<SecureStorageService>(),
           acceptedStore: sl<AcceptedBookingStore>(),
-          userPublicId: userPublicId, isMock: config.isMock));
+          tripRepository: sl<TripRepository>(),
+          userPublicId: userPublicId,
+          isMock: config.isMock));
 }

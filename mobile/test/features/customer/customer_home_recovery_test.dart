@@ -84,6 +84,10 @@ class _CustomerRepository implements CustomerRepository {
   Object? error;
   Completer<Booking>? pending;
   final requested = <String>[];
+  final quoteRequests = <QuoteRequest>[];
+  int createCalls = 0;
+  Object? quoteError;
+  Completer<Quote>? pendingQuote;
 
   @override
   Future<Booking> getBooking(String publicId, {int? sessionGeneration}) async {
@@ -95,13 +99,20 @@ class _CustomerRepository implements CustomerRepository {
 
   @override
   Future<Booking> createBooking(String quotePublicId, String idempotencyKey,
-          {int? sessionGeneration}) =>
-      throw UnimplementedError();
+      {int? sessionGeneration}) {
+    createCalls++;
+    throw UnimplementedError();
+  }
+
   @override
   Future<Quote> getQuote(String publicId) => throw UnimplementedError();
   @override
-  Future<Quote> requestQuote(QuoteRequest request) =>
-      throw UnimplementedError();
+  Future<Quote> requestQuote(QuoteRequest request) async {
+    quoteRequests.add(request);
+    if (quoteError != null) throw quoteError!;
+    if (pendingQuote != null) return pendingQuote!.future;
+    throw UnimplementedError();
+  }
 }
 
 class _ActiveStore implements ActiveBookingStore {
@@ -161,12 +172,32 @@ void main() {
   late _TripRepository tripRepository;
   late _Session session;
   late AuthBloc auth;
+  late Coordinates mapTap;
+  late bool mapUnavailable;
+  Coordinates? lastMapPickup;
+  Coordinates? lastMapDropoff;
+
+  Widget fakeMapBuilder(BuildContext context, Coordinates? pickup,
+      Coordinates? dropoff, ValueChanged<Coordinates> onTap) {
+    lastMapPickup = pickup;
+    lastMapDropoff = dropoff;
+    if (mapUnavailable) {
+      return const Text('Bản đồ giả không tải được');
+    }
+    return TextButton(
+        onPressed: () => onTap(mapTap),
+        child: const Text('Chọn trên bản đồ giả'));
+  }
 
   setUp(() async {
     await sl.reset();
     AppConfig.reset();
     AppConfig.initialize(forceMock: false);
     repository = _CustomerRepository();
+    mapTap = const Coordinates(21.031, 105.841);
+    mapUnavailable = false;
+    lastMapPickup = null;
+    lastMapDropoff = null;
     activeStore = _ActiveStore();
     tripRepository = _TripRepository();
     session = _Session();
@@ -204,9 +235,201 @@ void main() {
   Future<void> showHome(WidgetTester tester) async {
     await tester.pumpWidget(BlocProvider<AuthBloc>.value(
         value: auth,
-        child: const MaterialApp(home: CustomerHomeScreen(user: userA))));
+        child: MaterialApp(
+            home:
+                CustomerHomeScreen(user: userA, mapBuilder: fakeMapBuilder))));
     await tester.pumpAndSettle();
   }
+
+  Future<void> selectOnFakeMap(
+      WidgetTester tester, String mode, Coordinates point) async {
+    mapTap = point;
+    await tester.scrollUntilVisible(find.text(mode), 250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.tap(find.text(mode));
+    await tester.pump();
+    await tester.scrollUntilVisible(find.text('Chọn trên bản đồ giả'), 250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.tap(find.text('Chọn trên bản đồ giả'));
+    await tester.pump();
+  }
+
+  Future<void> enterCoordinate(
+      WidgetTester tester, String label, String value) async {
+    final field = find.widgetWithText(TextFormField, label);
+    await tester.scrollUntilVisible(field, 250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.enterText(field, value);
+    await tester.pump();
+  }
+
+  Future<void> requestQuote(WidgetTester tester) async {
+    final action = find.text('Lấy báo giá từ máy chủ');
+    await tester.scrollUntilVisible(action, 250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.tap(action);
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('Map pickup selection changes pickup but not destination',
+      (tester) async {
+    repository.quoteError =
+        const ServerException(message: 'routing unavailable', statusCode: 503);
+    await showHome(tester);
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đón', const Coordinates(21.031, 105.841));
+    await requestQuote(tester);
+
+    expect(repository.quoteRequests, hasLength(1));
+    expect(repository.quoteRequests.single.toJson(), {
+      'pickupLatitude': 21.031,
+      'pickupLongitude': 105.841,
+      'dropoffLatitude': 21.0245,
+      'dropoffLongitude': 105.8576,
+      'vehicleType': 'MOTORBIKE',
+    });
+    expect(repository.createCalls, 0);
+  });
+
+  testWidgets('Map destination selection changes destination but not pickup',
+      (tester) async {
+    repository.quoteError =
+        const ServerException(message: 'routing unavailable', statusCode: 503);
+    await showHome(tester);
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đến', const Coordinates(21.05, 105.88));
+    await requestQuote(tester);
+
+    expect(repository.quoteRequests.single.toJson(), {
+      'pickupLatitude': 21.0287,
+      'pickupLongitude': 105.8524,
+      'dropoffLatitude': 21.05,
+      'dropoffLongitude': 105.88,
+      'vehicleType': 'MOTORBIKE',
+    });
+    expect(repository.createCalls, 0);
+  });
+
+  testWidgets('Map points preserve latitude-longitude order and vehicle type',
+      (tester) async {
+    repository.quoteError =
+        const ServerException(message: 'routing unavailable', statusCode: 503);
+    await showHome(tester);
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đón', const Coordinates(21.1234, 105.5678));
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đến', const Coordinates(21.9876, 105.4321));
+    final vehicle = find.byType(DropdownButtonFormField<VehicleType>);
+    await tester.scrollUntilVisible(vehicle, 250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.tap(vehicle);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Ô tô 4 chỗ').last);
+    await tester.pumpAndSettle();
+    await requestQuote(tester);
+
+    expect(repository.quoteRequests.single.toJson(), {
+      'pickupLatitude': 21.1234,
+      'pickupLongitude': 105.5678,
+      'dropoffLatitude': 21.9876,
+      'dropoffLongitude': 105.4321,
+      'vehicleType': 'CAR_4_SEAT',
+    });
+  });
+
+  testWidgets('Unavailable map leaves manual coordinate fallback usable',
+      (tester) async {
+    mapUnavailable = true;
+    repository.quoteError =
+        const ServerException(message: 'routing unavailable', statusCode: 503);
+    await showHome(tester);
+    expect(find.text('Bản đồ giả không tải được'), findsOneWidget);
+    await enterCoordinate(tester, 'Điểm đón · vĩ độ', '21.03');
+    await enterCoordinate(tester, 'Điểm đón · kinh độ', '105.84');
+    await enterCoordinate(tester, 'Điểm đến · vĩ độ', '21.04');
+    await enterCoordinate(tester, 'Điểm đến · kinh độ', '105.86');
+    await requestQuote(tester);
+
+    expect(repository.quoteRequests.single.toJson(), {
+      'pickupLatitude': 21.03,
+      'pickupLongitude': 105.84,
+      'dropoffLatitude': 21.04,
+      'dropoffLongitude': 105.86,
+      'vehicleType': 'MOTORBIKE',
+    });
+    expect(repository.createCalls, 0);
+  });
+
+  testWidgets('Invalid manual coordinates never request a Quote or Booking',
+      (tester) async {
+    mapUnavailable = true;
+    await showHome(tester);
+    await enterCoordinate(tester, 'Điểm đón · vĩ độ', '91');
+    await requestQuote(tester);
+    expect(repository.quoteRequests, isEmpty);
+    expect(repository.createCalls, 0);
+  });
+
+  testWidgets('Identical pickup and destination never request a Quote',
+      (tester) async {
+    await showHome(tester);
+    await enterCoordinate(tester, 'Điểm đón · vĩ độ', '21.0245');
+    await enterCoordinate(tester, 'Điểm đón · kinh độ', '105.8576');
+    await requestQuote(tester);
+    expect(find.text('Tọa độ không hợp lệ hoặc hai điểm trùng nhau.'),
+        findsOneWidget);
+    expect(repository.quoteRequests, isEmpty);
+    expect(repository.createCalls, 0);
+  });
+
+  testWidgets('Rapid repeated Quote taps submit only one request',
+      (tester) async {
+    repository.pendingQuote = Completer<Quote>();
+    await showHome(tester);
+    await tester.scrollUntilVisible(find.text('Lấy báo giá từ máy chủ'), 250,
+        scrollable: find.byType(Scrollable).first);
+    final action = tester.widget<FilledButton>(
+        find.ancestor(
+            of: find.text('Lấy báo giá từ máy chủ'),
+            matching: find.byType(FilledButton)));
+    action.onPressed!();
+    action.onPressed!();
+    await tester.pump();
+    expect(repository.quoteRequests, hasLength(1));
+    expect(repository.createCalls, 0);
+    repository.pendingQuote!.completeError(
+        const ServerException(message: 'routing unavailable', statusCode: 503));
+    await tester.pumpAndSettle();
+    expect(repository.quoteRequests, hasLength(1));
+  });
+
+  testWidgets('Map selection does not carry across Customer accounts',
+      (tester) async {
+    await showHome(tester);
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đón', const Coordinates(21.031, 105.841));
+    expect(lastMapPickup?.latitude, 21.031);
+    expect(lastMapPickup?.longitude, 105.841);
+
+    final bReady = auth.stream.firstWhere((state) =>
+        state is AuthenticatedState && state.user.publicId == customerB);
+    auth.add(const AuthLoginSubmitted(identifier: 'B', password: 'password'));
+    await tester.runAsync(() => bReady.timeout(const Duration(seconds: 2)));
+    await tester.pump();
+    await tester.pumpWidget(BlocProvider<AuthBloc>.value(
+        value: auth,
+        child: MaterialApp(
+            home:
+                CustomerHomeScreen(user: userB, mapBuilder: fakeMapBuilder))));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Chọn trên bản đồ giả'), 250,
+        scrollable: find.byType(Scrollable).first);
+
+    expect(lastMapPickup?.latitude, 21.0287);
+    expect(lastMapPickup?.longitude, 105.8524);
+    expect(lastMapDropoff?.latitude, 21.0245);
+    expect(lastMapDropoff?.longitude, 105.8576);
+  });
 
   testWidgets('Recovery control is visible with no saved Booking',
       (tester) async {
@@ -224,7 +447,9 @@ void main() {
     repository.pending = Completer<Booking>();
     await tester.pumpWidget(BlocProvider<AuthBloc>.value(
         value: auth,
-        child: const MaterialApp(home: CustomerHomeScreen(user: userA))));
+        child: MaterialApp(
+            home:
+                CustomerHomeScreen(user: userA, mapBuilder: fakeMapBuilder))));
     await tester.pump();
     final recovery = tester.widget<TextButton>(
         find.widgetWithText(TextButton, 'Khôi phục Booking bằng UUID'));

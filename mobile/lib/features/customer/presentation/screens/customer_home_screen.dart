@@ -13,14 +13,17 @@ import '../bloc/booking_cubit.dart';
 import '../bloc/customer_active_booking_cubit.dart';
 import '../bloc/quote_cubit.dart';
 import 'booking_status_screen.dart';
+import 'customer_map_canvas.dart';
 import 'quote_review_screen.dart';
 
 class CustomerHomeScreen extends StatelessWidget {
   final User user;
-  const CustomerHomeScreen({super.key, required this.user});
+  final CustomerMapBuilder? mapBuilder;
+  const CustomerHomeScreen({super.key, required this.user, this.mapBuilder});
 
   @override
   Widget build(BuildContext context) => MultiBlocProvider(
+        key: ValueKey(user.publicId),
         providers: [
           BlocProvider(create: (_) => sl<QuoteCubit>()),
           BlocProvider(
@@ -31,16 +34,19 @@ class CustomerHomeScreen extends StatelessWidget {
                   sl<CustomerActiveBookingCubit>(param1: user.publicId)
                     ..restore()),
         ],
-        child: _CustomerHomeContent(user: user),
+        child: _CustomerHomeContent(user: user, mapBuilder: mapBuilder),
       );
 }
 
 class _CustomerHomeContent extends StatefulWidget {
   final User user;
-  const _CustomerHomeContent({required this.user});
+  final CustomerMapBuilder? mapBuilder;
+  const _CustomerHomeContent({required this.user, this.mapBuilder});
   @override
   State<_CustomerHomeContent> createState() => _CustomerHomeContentState();
 }
+
+enum _MapTarget { pickup, dropoff }
 
 class _CustomerHomeContentState extends State<_CustomerHomeContent>
     with WidgetsBindingObserver {
@@ -49,7 +55,9 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
   final _pickupLon = TextEditingController(text: '105.8524');
   final _dropoffLat = TextEditingController(text: '21.0245');
   final _dropoffLon = TextEditingController(text: '105.8576');
+  _MapTarget _mapTarget = _MapTarget.pickup;
   VehicleType _vehicle = VehicleType.motorbike;
+  String? _coordinateError;
 
   bool get _isCurrentAccount {
     final auth = context.read<AuthBloc>().state;
@@ -61,6 +69,18 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    for (final controller in [
+      _pickupLat,
+      _pickupLon,
+      _dropoffLat,
+      _dropoffLon,
+    ]) {
+      controller.addListener(_onCoordinateEdited);
+    }
+  }
+
+  void _onCoordinateEdited() {
+    if (mounted) setState(() => _coordinateError = null);
   }
 
   @override
@@ -79,6 +99,7 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
       _dropoffLat,
       _dropoffLon
     ]) {
+      controller.removeListener(_onCoordinateEdited);
       controller.dispose();
     }
     super.dispose();
@@ -158,15 +179,67 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
         },
       );
 
+  Coordinates? _point(
+      TextEditingController latitude, TextEditingController longitude) {
+    final lat = double.tryParse(latitude.text.trim());
+    final lon = double.tryParse(longitude.text.trim());
+    if (lat == null || lon == null) return null;
+    final point = Coordinates(lat, lon);
+    return point.isValid ? point : null;
+  }
+
+  void _selectMapPoint(Coordinates point) {
+    if (!_isCurrentAccount || !point.isValid) return;
+    final latitude = point.latitude.toStringAsFixed(6);
+    final longitude = point.longitude.toStringAsFixed(6);
+    if (_mapTarget == _MapTarget.pickup) {
+      _pickupLat.text = latitude;
+      _pickupLon.text = longitude;
+    } else {
+      _dropoffLat.text = latitude;
+      _dropoffLon.text = longitude;
+    }
+  }
+
+  Widget _pointSummary(String label, Coordinates? point, Color color) => Card(
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: Row(children: [
+            Icon(Icons.location_on, color: color),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label,
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                  Text(point == null
+                      ? 'Chưa có tọa độ hợp lệ'
+                      : '${point.latitude.toStringAsFixed(6)}, ${point.longitude.toStringAsFixed(6)}'),
+                ],
+              ),
+            ),
+          ]),
+        ),
+      );
+
   void _request() {
+    if (!_isCurrentAccount || context.read<QuoteCubit>().state.loading) return;
     if (!(_form.currentState?.validate() ?? false)) return;
-    context.read<QuoteCubit>().request(QuoteRequest(
-          pickup: Coordinates(
-              double.parse(_pickupLat.text), double.parse(_pickupLon.text)),
-          dropoff: Coordinates(
-              double.parse(_dropoffLat.text), double.parse(_dropoffLon.text)),
-          vehicleType: _vehicle,
-        ));
+    final request = QuoteRequest(
+      pickup: Coordinates(double.parse(_pickupLat.text.trim()),
+          double.parse(_pickupLon.text.trim())),
+      dropoff: Coordinates(double.parse(_dropoffLat.text.trim()),
+          double.parse(_dropoffLon.text.trim())),
+      vehicleType: _vehicle,
+    );
+    try {
+      request.validate();
+    } on FormatException catch (error) {
+      setState(() => _coordinateError = error.message);
+      return;
+    }
+    context.read<QuoteCubit>().request(request);
   }
 
   @override
@@ -176,6 +249,8 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
         auth.user.publicId != widget.user.publicId) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+    final pickup = _point(_pickupLat, _pickupLon);
+    final dropoff = _point(_dropoffLat, _dropoffLon);
     return MultiBlocListener(
       listeners: [
         BlocListener<QuoteCubit, QuoteState>(listener: (context, state) async {
@@ -366,20 +441,64 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                         ])));
           }),
           const SizedBox(height: 8),
+          Text('Chọn điểm trên bản đồ',
+              style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 4),
           const Text(
-              'Tọa độ mẫu Hà Nội — có thể sửa trực tiếp; chưa có tìm địa chỉ.'),
-          const SizedBox(height: 16),
+              'Tọa độ mẫu Hà Nội. Chọn chế độ rồi chạm bản đồ; chưa có tìm địa chỉ.'),
+          const Text(
+              'Bản đồ chỉ đánh dấu hai điểm, chưa hiển thị tuyến đường; quãng đường và giá do máy chủ báo sau.'),
+          const SizedBox(height: 10),
+          Wrap(spacing: 8, children: [
+            ChoiceChip(
+              label: const Text('Chọn điểm đón'),
+              avatar: const Icon(Icons.trip_origin, color: Color(0xFF087F8C)),
+              selected: _mapTarget == _MapTarget.pickup,
+              onSelected: (_) => setState(() => _mapTarget = _MapTarget.pickup),
+            ),
+            ChoiceChip(
+              label: const Text('Chọn điểm đến'),
+              avatar: const Icon(Icons.location_on, color: Color(0xFFE87521)),
+              selected: _mapTarget == _MapTarget.dropoff,
+              onSelected: (_) =>
+                  setState(() => _mapTarget = _MapTarget.dropoff),
+            ),
+          ]),
+          const SizedBox(height: 8),
+          widget.mapBuilder?.call(context, pickup, dropoff, _selectMapPoint) ??
+              CustomerMapCanvas(
+                pickup: pickup,
+                dropoff: dropoff,
+                onTap: _selectMapPoint,
+              ),
+          _pointSummary('Điểm đón', pickup, const Color(0xFF087F8C)),
+          _pointSummary('Điểm đến', dropoff, const Color(0xFFE87521)),
+          const SizedBox(height: 8),
+          const Text('Nhập tọa độ thủ công (dự phòng khi bản đồ không tải)'),
+          const SizedBox(height: 10),
           Form(
               key: _form,
               child: Column(children: [
-                _coordinate('Điểm đón · vĩ độ', _pickupLat, -90, 90),
+                Row(children: [
+                  Expanded(
+                      child:
+                          _coordinate('Điểm đón · vĩ độ', _pickupLat, -90, 90)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                      child: _coordinate(
+                          'Điểm đón · kinh độ', _pickupLon, -180, 180)),
+                ]),
                 const SizedBox(height: 10),
-                _coordinate('Điểm đón · kinh độ', _pickupLon, -180, 180),
-                const SizedBox(height: 18),
-                _coordinate('Điểm đến · vĩ độ', _dropoffLat, -90, 90),
-                const SizedBox(height: 10),
-                _coordinate('Điểm đến · kinh độ', _dropoffLon, -180, 180),
-                const SizedBox(height: 18),
+                Row(children: [
+                  Expanded(
+                      child: _coordinate(
+                          'Điểm đến · vĩ độ', _dropoffLat, -90, 90)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                      child: _coordinate(
+                          'Điểm đến · kinh độ', _dropoffLon, -180, 180)),
+                ]),
+                const SizedBox(height: 14),
                 DropdownButtonFormField<VehicleType>(
                     initialValue: _vehicle,
                     decoration: const InputDecoration(
@@ -391,6 +510,12 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                     onChanged: (value) =>
                         setState(() => _vehicle = value ?? _vehicle)),
               ])),
+          if (_coordinateError != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(_coordinateError!,
+                  style: const TextStyle(color: Colors.red)),
+            ),
           const SizedBox(height: 20),
           BlocBuilder<QuoteCubit, QuoteState>(
               builder: (context, state) => Column(children: [

@@ -32,6 +32,30 @@ class CustomerLiveLocation {
   const CustomerLiveLocation(this.latitude, this.longitude, this.accuracy,
       this.bearing, this.updatedAt);
 
+  static CustomerLiveLocation? valid(double latitude, double longitude,
+      double? accuracy, double? bearing, DateTime updatedAt) {
+    if (!latitude.isFinite ||
+        !longitude.isFinite ||
+        latitude < -90 ||
+        latitude > 90 ||
+        longitude < -180 ||
+        longitude > 180 ||
+        !updatedAt
+            .isAfter(DateTime.fromMillisecondsSinceEpoch(0, isUtc: true))) {
+      return null;
+    }
+    return CustomerLiveLocation(
+        latitude,
+        longitude,
+        accuracy != null && accuracy.isFinite && accuracy >= 0
+            ? accuracy
+            : null,
+        bearing != null && bearing.isFinite && bearing >= 0 && bearing < 360
+            ? bearing
+            : null,
+        updatedAt);
+  }
+
   static CustomerLiveLocation? fromTracking(TrackingSnapshot tracking) {
     if (!tracking.allowsLiveLocation ||
         tracking.latitude == null ||
@@ -39,8 +63,8 @@ class CustomerLiveLocation {
         tracking.locationUpdatedAt == null) {
       return null;
     }
-    return CustomerLiveLocation(tracking.latitude!, tracking.longitude!,
-        tracking.accuracy, tracking.bearing, tracking.locationUpdatedAt!);
+    return valid(tracking.latitude!, tracking.longitude!, tracking.accuracy,
+        tracking.bearing, tracking.locationUpdatedAt!);
   }
 }
 
@@ -279,12 +303,14 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
           'IN_PROGRESS'
         }.contains(state.status)) {
       final prior = state.liveLocation?.updatedAt;
-      if (prior != null && event.recordedAt.isBefore(prior)) {
+      if (prior != null && !event.recordedAt.isAfter(prior)) {
         return;
       }
-      emit(state.copyWith(
-          liveLocation: CustomerLiveLocation(event.latitude, event.longitude,
-              event.accuracy, event.bearing, event.recordedAt)));
+      final location = CustomerLiveLocation.valid(event.latitude,
+          event.longitude, event.accuracy, event.bearing, event.recordedAt);
+      if (location != null) {
+        emit(state.copyWith(liveLocation: location));
+      }
     }
   }
 
@@ -360,20 +386,28 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
         throw const FormatException('Tracking không khớp Booking');
       }
       _trackingSyncRevision++;
-      final newerEvent = state.eventStatus != null &&
-          _stage(state.eventStatus!) > _stage(tracking.status);
-      final effectiveStatus = newerEvent ? state.eventStatus! : tracking.status;
+      // A stale REST response must not resurrect a completed trip or its GPS.
+      final previousStatus = state.status;
+      final newerPreviousStatus =
+          _stage(previousStatus) > _stage(tracking.status);
+      final effectiveStatus =
+          newerPreviousStatus ? previousStatus : tracking.status;
+      final previousTracking = state.tracking;
+      final displayTracking = previousTracking != null &&
+              _stage(previousTracking.status) > _stage(tracking.status)
+          ? previousTracking
+          : tracking;
       final freshLocation = CustomerLiveLocation.fromTracking(tracking);
       final currentLocation = state.liveLocation;
       final preferredLocation = freshLocation == null
           ? currentLocation
           : currentLocation != null &&
-                  currentLocation.updatedAt.isAfter(freshLocation.updatedAt)
+                  !freshLocation.updatedAt.isAfter(currentLocation.updatedAt)
               ? currentLocation
               : freshLocation;
       emit(state.copyWith(
-          tracking: tracking,
-          eventStatus: newerEvent ? state.eventStatus : null,
+          tracking: displayTracking,
+          eventStatus: newerPreviousStatus ? previousStatus : null,
           liveLocation:
               effectiveStatus == 'COMPLETED' ? null : preferredLocation,
           loading: false));

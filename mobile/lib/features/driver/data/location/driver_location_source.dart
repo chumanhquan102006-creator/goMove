@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import '../../domain/models/driver_models.dart';
 
@@ -36,6 +37,13 @@ class GeolocatorDeviceLocationProvider implements DeviceLocationProvider {
     final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
             accuracy: LocationAccuracy.high, timeLimit: Duration(seconds: 7)));
+    if (kDebugMode) {
+      debugPrint('GoMoveGPS source=geolocator result=sampled '
+          'lat=${position.latitude} lon=${position.longitude} '
+          'sampledAt=${position.timestamp.toUtc().toIso8601String()} '
+          'ageMs=${DateTime.now().toUtc().difference(position.timestamp.toUtc()).inMilliseconds} '
+          'accuracy=${position.accuracy}');
+    }
     return DriverCoordinates(position.latitude, position.longitude,
         accuracy: position.accuracy,
         bearing: position.heading,

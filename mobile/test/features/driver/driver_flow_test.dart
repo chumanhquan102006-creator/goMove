@@ -45,6 +45,7 @@ class MemoryAcceptedStore implements AcceptedBookingStore {
 class FakeLocation implements DriverLocationSource {
   DriverCoordinates point =
       const DriverCoordinates(21.0287, 105.8524, accuracy: 8, bearing: 0);
+  DateTime Function() now = DateTime.now;
   DriverLocationProblem? problem;
   Future<DriverCoordinates> Function()? currentResponse;
   int calls = 0;
@@ -53,7 +54,11 @@ class FakeLocation implements DriverLocationSource {
     calls++;
     if (problem != null) throw DriverLocationException(problem!);
     if (currentResponse != null) return await currentResponse!();
-    return point;
+    return DriverCoordinates(point.latitude, point.longitude,
+        accuracy: point.accuracy,
+        bearing: point.bearing,
+        approximate: point.approximate,
+        sampledAt: point.sampledAt ?? now());
   }
 
   @override
@@ -253,6 +258,7 @@ void main() {
     session = MockSession();
     store = MemoryAcceptedStore();
     now = DateTime.utc(2026, 10, 12, 12);
+    location.now = () => now;
     generation = 1;
     when(() => session.getSession()).thenAnswer(
         (_) async => AuthSessionSnapshot(generation, 'access', 'refresh'));
@@ -421,6 +427,61 @@ void main() {
     expect(repository.offerCalls, 2);
   });
 
+  test('REST heartbeat rejects missing, stale and future device fixes',
+      () async {
+    await cubit.initialize();
+    final invalidSamples = <DateTime?>[
+      null,
+      now.subtract(const Duration(seconds: 31)),
+      now.add(const Duration(seconds: 1)),
+    ];
+    for (final sampledAt in invalidSamples) {
+      location.currentResponse = () async => DriverCoordinates(
+          21.0287, 105.8524,
+          accuracy: 8, sampledAt: sampledAt);
+      await cubit.goOnline();
+      expect(repository.gpsCalls, 0);
+      expect(cubit.state.lastLocationUpload, isNull);
+    }
+
+    location.currentResponse = () async =>
+        DriverCoordinates(21.0287, 105.8524, accuracy: 8, sampledAt: now);
+    await cubit.goOnline();
+    expect(repository.gpsCalls, 1);
+    expect(cubit.state.lastLocationUpload, now);
+  });
+
+  test('REST heartbeat rejects repeated or older samples, not stationary GPS',
+      () async {
+    await cubit.initialize();
+    final firstSample = now;
+    location.currentResponse = () async => DriverCoordinates(21.0287, 105.8524,
+        accuracy: 8, sampledAt: firstSample);
+    await cubit.goOnline();
+    expect(repository.gpsCalls, 1);
+    expect(cubit.state.lastLocationUpload, firstSample);
+
+    await cubit.goOnline(); // The same device fix must not be republished.
+    expect(repository.gpsCalls, 1);
+    expect(cubit.state.lastLocationUpload, firstSample);
+
+    location.currentResponse = () async => DriverCoordinates(21.0287, 105.8524,
+        accuracy: 8,
+        sampledAt: firstSample.subtract(const Duration(seconds: 1)));
+    await cubit.goOnline();
+    expect(repository.gpsCalls, 1);
+    expect(cubit.state.lastLocationUpload, firstSample);
+
+    now = now.add(const Duration(seconds: 1));
+    location.currentResponse = () async =>
+        DriverCoordinates(21.0287, 105.8524, accuracy: 8, sampledAt: now);
+    await cubit.goOnline();
+    expect(repository.gpsCalls, 2);
+    expect(cubit.state.lastLocationUpload, now);
+    expect(repository.lastPoint?.latitude, 21.0287);
+    expect(repository.lastPoint?.longitude, 105.8524);
+  });
+
   test('Denied, permanently denied and disabled GPS stop eligibility',
       () async {
     await cubit.initialize();
@@ -488,6 +549,10 @@ void main() {
         now: () => now,
         pollInterval: const Duration(milliseconds: 15),
         heartbeatInterval: const Duration(milliseconds: 15));
+    location.currentResponse = () async {
+      now = now.add(const Duration(milliseconds: 1));
+      return DriverCoordinates(21.0287, 105.8524, sampledAt: now);
+    };
     await cubit.initialize();
     await cubit.goOnline();
     // Under full-suite parallel load, a fixed 75 ms sleep may elapse before
@@ -518,6 +583,68 @@ void main() {
     await online;
     expect(repository.gpsCalls, 0);
     expect(repository.offerCalls, 0);
+  });
+
+  test('Connected ride channel cancels a BUSY fallback GPS acquisition',
+      () async {
+    store.values['user-A'] = AcceptedBookingRecord(
+        'driver-1', offer(now.add(const Duration(seconds: 15))));
+    repository.trackingValue =
+        const BookingTracking('booking-1', 'PASSENGER_ONBOARD', 'driver-1');
+    final pending = Completer<DriverCoordinates>();
+    location.currentResponse = () => pending.future;
+
+    final initializing = cubit.initialize();
+    await Future<void>.delayed(Duration.zero);
+    expect(cubit.state.operatingStatus, 'BUSY');
+    expect(location.calls, 1);
+
+    cubit.setTripChannelActive(true);
+    pending.complete(DriverCoordinates(21.0287, 105.8524, sampledAt: now));
+    await initializing;
+    expect(repository.gpsCalls, 0);
+    expect(cubit.state.lastLocationUpload, isNull);
+  });
+
+  test('BUSY REST fallback pauses for ride channel and resumes on disconnect',
+      () async {
+    await cubit.close();
+    cubit = DriverCubit(
+        useCases: DriverUseCases(repository),
+        location: location,
+        session: session,
+        acceptedStore: store,
+        userPublicId: 'user-A',
+        isMock: false,
+        now: () => now,
+        pollInterval: const Duration(hours: 1),
+        heartbeatInterval: const Duration(milliseconds: 15));
+    store.values['user-A'] = AcceptedBookingRecord(
+        'driver-1', offer(now.add(const Duration(seconds: 15))));
+    repository.trackingValue =
+        const BookingTracking('booking-1', 'PASSENGER_ONBOARD', 'driver-1');
+    location.currentResponse = () async {
+      now = now.add(const Duration(milliseconds: 1));
+      return DriverCoordinates(21.0287, 105.8524, sampledAt: now);
+    };
+
+    await cubit.initialize();
+    expect(repository.gpsCalls, 1);
+    cubit.setTripChannelActive(true);
+    final atHandoff = repository.gpsCalls;
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    expect(repository.gpsCalls, atHandoff);
+
+    cubit.setTripChannelActive(false);
+    for (var i = 0; i < 20 && repository.gpsCalls == atHandoff; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    expect(repository.gpsCalls, greaterThan(atHandoff));
+
+    cubit.markTripCompleted('booking-1');
+    final atCompletion = repository.gpsCalls;
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    expect(repository.gpsCalls, atCompletion);
   });
 
   test('Strict expiry disables decision without calling Backend', () async {

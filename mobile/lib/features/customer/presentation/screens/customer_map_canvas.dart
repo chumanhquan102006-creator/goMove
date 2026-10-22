@@ -1,12 +1,13 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show Factory, kIsWeb;
+import 'package:flutter/foundation.dart' show Factory;
 import 'package:flutter/gestures.dart'
     show EagerGestureRecognizer, OneSequenceGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 
 import '../../domain/models/quote.dart';
+import '../widgets/customer_map_source.dart';
 
 /// A small seam for widget tests; production always uses [CustomerMapCanvas].
 typedef CustomerMapBuilder = Widget Function(
@@ -33,27 +34,10 @@ class CustomerMapCanvas extends StatefulWidget {
 }
 
 class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
-  static const _configuredStyle = String.fromEnvironment(
-    'MAP_STYLE_URL',
-    defaultValue: MapLibreStyles.openfreemapLiberty,
-  );
-  static const _configuredAttribution =
-      String.fromEnvironment('MAP_ATTRIBUTION');
   static const _hanoi = LatLng(21.0287, 105.8524);
   static final _mapGestures = <Factory<OneSequenceGestureRecognizer>>{
     const Factory<EagerGestureRecognizer>(EagerGestureRecognizer.new),
   };
-
-  static String get _visibleAttribution {
-    if (_configuredAttribution.trim().isNotEmpty) {
-      return _configuredAttribution;
-    }
-    if (_configuredStyle.trim().isEmpty ||
-        _configuredStyle == MapLibreStyles.openfreemapLiberty) {
-      return 'Nền bản đồ: OpenFreeMap · © OpenMapTiles · dữ liệu © OpenStreetMap contributors';
-    }
-    return 'Nguồn bản đồ tùy chỉnh: xem nút ghi công trên bản đồ; đặt MAP_ATTRIBUTION khi build.';
-  }
 
   MapLibreMapController? _controller;
   Timer? _styleTimeout;
@@ -74,11 +58,7 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
     try {
       // Identify native tile requests before creating the map. Never send
       // JWTs, account IDs or Booking IDs to an external tile provider.
-      if (!kIsWeb) {
-        await setHttpHeaders({
-          'User-Agent': 'GoMoveAcademicDemo/1.0 (MapLibre Flutter)',
-        });
-      }
+      await CustomerMapSource.configureRequests();
       if (!mounted) return false;
       _styleTimeout = Timer(const Duration(seconds: 12), () {
         if (mounted && !_styleLoaded) {
@@ -231,9 +211,7 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
               return MapLibreMap(
                 initialCameraPosition:
                     const CameraPosition(target: _hanoi, zoom: 14),
-                styleString: _configuredStyle.trim().isEmpty
-                    ? MapLibreStyles.openfreemapLiberty
-                    : _configuredStyle,
+                styleString: CustomerMapSource.styleUrl,
                 myLocationEnabled: false,
                 logoEnabled: true,
                 // The map is inside a ListView; let it handle pan and zoom.
@@ -259,7 +237,7 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
       Row(children: [
         Expanded(
           child: Text(
-            _visibleAttribution,
+            CustomerMapSource.visibleAttribution,
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ),

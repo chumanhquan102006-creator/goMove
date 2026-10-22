@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../../core/error/exceptions.dart';
 import '../../../../core/storage/secure_storage_service.dart';
@@ -133,6 +134,7 @@ class DriverCubit extends Cubit<DriverState> {
   int? _generation;
   int _revision = 0;
   bool _tripChannelActive = false;
+  DateTime? _lastUploadedSampleAt;
 
   DriverCubit(
       {required DriverUseCases useCases,
@@ -380,6 +382,11 @@ class DriverCubit extends Cubit<DriverState> {
   void setTripChannelActive(bool active) {
     if (_tripChannelActive == active || isClosed) return;
     _tripChannelActive = active;
+    if (kDebugMode) {
+      debugPrint('GoMoveGPS source=channel-handoff '
+          'tripConnected=$active operating=${state.operatingStatus} '
+          'foreground=${state.foreground}');
+    }
     if (state.operatingStatus != 'BUSY' ||
         !state.foreground ||
         state.completedAwaitingSettlement) {
@@ -472,9 +479,43 @@ class DriverCubit extends Cubit<DriverState> {
           activityRevision != _activityRevision) {
         return;
       }
+      final sampledAt = point.sampledAt?.toUtc();
+      final age =
+          sampledAt == null ? null : _now().toUtc().difference(sampledAt);
+      final rejection = sampledAt == null
+          ? 'missing_sample_time'
+          : age!.isNegative
+              ? 'future_sample'
+              : age > locationFreshness
+                  ? 'expired_sample'
+                  : _lastUploadedSampleAt != null &&
+                          !sampledAt.isAfter(_lastUploadedSampleAt!)
+                      ? 'duplicate_or_older_sample'
+                      : null;
+      if (rejection != null) {
+        if (kDebugMode) {
+          debugPrint('GoMoveGPS source=profile-REST result=skipped '
+              'reason=$rejection lat=${point.latitude} lon=${point.longitude} '
+              'sampledAt=${sampledAt?.toIso8601String()} '
+              'ageMs=${age?.inMilliseconds} '
+              'operating=${state.operatingStatus} tripChannel=$_tripChannelActive');
+        }
+        emit(state.copy(
+            locationMessage: 'GPS chưa có mẫu vị trí mới; đang chờ cập nhật.'));
+        if (state.operatingStatus == 'ONLINE') await pollOnce();
+        return;
+      }
       await _useCases.uploadLocation(point, _sessionId);
       if (!await _current(revision) || activityRevision != _activityRevision) {
         return;
+      }
+      _lastUploadedSampleAt = sampledAt;
+      if (kDebugMode) {
+        debugPrint('GoMoveGPS source=profile-REST result=sent '
+            'lat=${point.latitude} lon=${point.longitude} '
+            'sampledAt=${sampledAt!.toIso8601String()} '
+            'ageMs=${age!.inMilliseconds} '
+            'operating=${state.operatingStatus} tripChannel=$_tripChannelActive');
       }
       emit(state.copy(
           lastLocationUpload: _now(),
@@ -485,6 +526,10 @@ class DriverCubit extends Cubit<DriverState> {
           error: null));
       if (state.operatingStatus == 'ONLINE') await pollOnce();
     } on DriverLocationException catch (error) {
+      if (kDebugMode) {
+        debugPrint('GoMoveGPS source=profile-REST result=skipped '
+            'reason=location_${error.problem.name}');
+      }
       if (await _current(revision)) {
         emit(state.copy(
             locationProblem: error.problem,
@@ -493,6 +538,10 @@ class DriverCubit extends Cubit<DriverState> {
             offer: null));
       }
     } catch (error) {
+      if (kDebugMode) {
+        debugPrint('GoMoveGPS source=profile-REST result=failed '
+            'errorType=${error.runtimeType}');
+      }
       if (await _current(revision)) {
         emit(state.copy(
             locationMessage: _message(error),

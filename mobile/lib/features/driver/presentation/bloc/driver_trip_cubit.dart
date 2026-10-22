@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../../core/error/exceptions.dart';
 import '../../../../core/storage/secure_storage_service.dart';
@@ -397,6 +398,10 @@ class DriverTripCubit extends Cubit<DriverTripState> {
       return;
     }
     emit(state.copy(realtime: connection));
+    if (kDebugMode) {
+      debugPrint('GoMoveGPS source=trip-STOMP connection=$connection '
+          'trackingStatus=${state.tracking?.status}');
+    }
     if (connection == TripRealtimeConnectionState.connected &&
         state.tracking?.allowsLiveLocation == true) {
       _startGps();
@@ -457,20 +462,44 @@ class DriverTripCubit extends Cubit<DriverTripState> {
           !state.foreground ||
           state.tracking?.allowsLiveLocation != true ||
           point.sampledAt == null) {
+        if (kDebugMode) {
+          debugPrint('GoMoveGPS source=trip-STOMP result=skipped '
+              'reason=${point.sampledAt == null ? 'missing_sample_time' : 'session_or_connection_changed'} '
+              'connection=${subscription.state} '
+              'sampledAt=${point.sampledAt?.toUtc().toIso8601String()}');
+        }
         return;
       }
       final sent =
           await subscription.sendLocation(point, sampledAt: point.sampledAt!);
+      if (kDebugMode) {
+        debugPrint(
+            'GoMoveGPS source=trip-STOMP result=${sent ? 'transport_sent' : 'skipped'} '
+            'lat=${point.latitude} lon=${point.longitude} '
+            'sampledAt=${point.sampledAt!.toUtc().toIso8601String()} '
+            'ageMs=${DateTime.now().toUtc().difference(point.sampledAt!.toUtc()).inMilliseconds} '
+            'connection=${subscription.state}');
+      }
       if (!sent && await _current(revision)) {
         emit(state.copy(
             notice: 'GPS chưa được gửi; chờ vị trí mới hoặc kết nối lại.'));
       }
-    } on DriverLocationException {
+    } on DriverLocationException catch (error) {
+      if (kDebugMode) {
+        debugPrint('GoMoveGPS source=trip-STOMP result=skipped '
+            'reason=location_${error.problem.name} '
+            'connection=${subscription.state}');
+      }
       if (await _current(revision)) {
         emit(state.copy(
             error: 'Cần bật GPS và cấp quyền vị trí để theo dõi chuyến.'));
       }
-    } catch (_) {
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint('GoMoveGPS source=trip-STOMP result=failed '
+            'errorType=${error.runtimeType} '
+            'connection=${subscription.state}');
+      }
       if (await _current(revision)) {
         emit(state.copy(
             error: 'Không gửi được GPS chuyến đi; đang dùng tracking REST.'));

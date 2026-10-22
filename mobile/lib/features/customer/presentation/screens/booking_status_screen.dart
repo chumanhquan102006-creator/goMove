@@ -11,6 +11,10 @@ import '../../domain/models/quote.dart';
 import '../../domain/usecases/customer_usecases.dart';
 import '../bloc/booking_status_cubit.dart';
 import '../formatters.dart';
+import '../widgets/customer_trip_tracking_map.dart';
+
+typedef CustomerTripMapBuilder = Widget Function(BuildContext context,
+    CustomerLiveLocation location, TripRealtimeConnectionState connectionState);
 
 const _timeline = <(String, String)>[
   ('SEARCHING_DRIVER', 'Đang tìm tài xế'),
@@ -66,7 +70,10 @@ int _progress(String status) {
 
 class BookingStatusScreen extends StatefulWidget {
   final Booking booking;
-  const BookingStatusScreen({super.key, required this.booking});
+  final CustomerTripMapBuilder? trackingMapBuilder;
+
+  const BookingStatusScreen(
+      {super.key, required this.booking, this.trackingMapBuilder});
 
   @override
   State<BookingStatusScreen> createState() => _BookingStatusScreenState();
@@ -123,6 +130,8 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
             final booking = state.booking;
             final payment = state.payment;
             final location = state.liveLocation;
+            final hasRenderableLocation = state.hasLiveLocation &&
+                CustomerTripTrackingMap.isRenderable(location);
             final progress = _progress(state.status);
             return ListView(padding: const EdgeInsets.all(20), children: [
               AnimatedSwitcher(
@@ -137,15 +146,19 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                 minHeight: 6,
                 semanticsLabel: 'Tiến độ chuyến đi',
               ),
-              if (state.loading) ...[
-                const SizedBox(height: 8),
-                const LinearProgressIndicator(
-                    semanticsLabel: 'Đang cập nhật từ máy chủ'),
-              ],
-              if (state.error != null) ...[
-                const SizedBox(height: 12),
-                Text(state.error!, style: const TextStyle(color: Colors.red)),
-              ],
+              // Keep later sliver children at stable indices while polling so
+              // the native map is not torn down and rebuilt every refresh.
+              Column(children: [
+                if (state.loading) ...[
+                  const SizedBox(height: 8),
+                  const LinearProgressIndicator(
+                      semanticsLabel: 'Đang cập nhật từ máy chủ'),
+                ],
+                if (state.error != null) ...[
+                  const SizedBox(height: 12),
+                  Text(state.error!, style: const TextStyle(color: Colors.red)),
+                ],
+              ]),
               const SizedBox(height: 12),
               Card(
                 child: Column(children: [
@@ -195,6 +208,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
               }),
               const SizedBox(height: 10),
               Card(
+                key: const ValueKey('customer-live-tracking-card'),
                 child: Padding(
                   padding: const EdgeInsets.all(12),
                   child: Column(
@@ -206,9 +220,16 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                             ? 'Chuyến đã hoàn thành; vị trí hiện tại của tài xế được ẩn.'
                             : customerRealtimeLabel(state.realtimeState)),
                         if (state.status != 'COMPLETED' &&
-                            !state.hasLiveLocation)
+                            !hasRenderableLocation)
                           const Text('Chưa có vị trí GPS được phép hiển thị.'),
-                        if (state.hasLiveLocation && location != null) ...[
+                        if (hasRenderableLocation && location != null) ...[
+                          const SizedBox(height: 10),
+                          widget.trackingMapBuilder?.call(
+                                  context, location, state.realtimeState) ??
+                              CustomerTripTrackingMap(
+                                  location: location,
+                                  connectionState: state.realtimeState),
+                          const SizedBox(height: 10),
                           Text('Vĩ độ: ${location.latitude}'),
                           Text('Kinh độ: ${location.longitude}'),
                           if (location.accuracy != null)

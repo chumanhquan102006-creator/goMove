@@ -41,7 +41,10 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  void _fillMockAccount({required String phone, required String password, required String roleTitle}) {
+  void _fillMockAccount(
+      {required String phone,
+      required String password,
+      required String roleTitle}) {
     setState(() {
       _identifierController.text = phone;
       _passwordController.text = password;
@@ -58,14 +61,12 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final isMockMode = AppConfig.instance.isMock;
+    final colors = Theme.of(context).colorScheme;
 
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
         title: const Text('GoMove'),
         centerTitle: true,
-        backgroundColor: Colors.white,
-        elevation: 0,
       ),
       body: BlocConsumer<AuthBloc, AuthState>(
         listener: (context, state) {
@@ -73,7 +74,7 @@ class _LoginScreenState extends State<LoginScreen> {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(state.message),
-                backgroundColor: const Color(0xFFEF4444),
+                backgroundColor: colors.error,
                 behavior: SnackBarBehavior.floating,
               ),
             );
@@ -89,35 +90,36 @@ class _LoginScreenState extends State<LoginScreen> {
           final isLoading = state is AuthLoadingState;
 
           return SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 12.0),
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding:
+                const EdgeInsets.symmetric(horizontal: 24.0, vertical: 12.0),
             child: Form(
               key: _formKey,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   const SizedBox(height: 10),
-                  const Center(
+                  Center(
                     child: Icon(
                       Icons.electric_moped_rounded,
                       size: 72,
-                      color: Color(0xFF0066FF),
+                      color: colors.primary,
                     ),
                   ),
                   const SizedBox(height: 12),
-                  const Text(
+                  Text(
                     'Đăng nhập GoMove',
                     textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 26,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF1E293B),
-                    ),
+                    style: Theme.of(context).textTheme.headlineSmall,
                   ),
                   const SizedBox(height: 6),
-                  const Text(
+                  Text(
                     'Ứng dụng di chuyển thông minh cho sinh viên',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: Color(0xFF64748B), fontSize: 13),
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodyMedium
+                        ?.copyWith(color: colors.onSurfaceVariant),
                   ),
                   const SizedBox(height: 32),
                   TextFormField(
@@ -126,7 +128,6 @@ class _LoginScreenState extends State<LoginScreen> {
                     decoration: const InputDecoration(
                       labelText: 'Số điện thoại hoặc Email',
                       prefixIcon: Icon(Icons.person_outline),
-                      border: OutlineInputBorder(),
                     ),
                     validator: (value) {
                       if (value == null || value.trim().isEmpty) {
@@ -143,10 +144,12 @@ class _LoginScreenState extends State<LoginScreen> {
                       labelText: 'Mật khẩu',
                       prefixIcon: const Icon(Icons.lock_outline),
                       suffixIcon: IconButton(
-                        icon: Icon(_obscurePassword ? Icons.visibility_off : Icons.visibility),
-                        onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                        icon: Icon(_obscurePassword
+                            ? Icons.visibility_off
+                            : Icons.visibility),
+                        onPressed: () => setState(
+                            () => _obscurePassword = !_obscurePassword),
                       ),
-                      border: const OutlineInputBorder(),
                     ),
                     validator: (value) {
                       if (value == null || value.isEmpty) {
@@ -163,11 +166,8 @@ class _LoginScreenState extends State<LoginScreen> {
                     onPressed: isLoading ? null : _onLoginPressed,
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 16),
-                      backgroundColor: const Color(0xFF0066FF),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
+                      backgroundColor: colors.primary,
+                      foregroundColor: colors.onPrimary,
                     ),
                     child: isLoading
                         ? const SizedBox(
@@ -180,18 +180,22 @@ class _LoginScreenState extends State<LoginScreen> {
                           )
                         : const Text(
                             'ĐĂNG NHẬP',
-                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                            style: TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.bold),
                           ),
                   ),
                   const SizedBox(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
                       const Text('Chưa có tài khoản?'),
                       TextButton(
                         onPressed: () async {
-                          final registeredPhone = await Navigator.of(context).push<String>(
-                            MaterialPageRoute(builder: (_) => const RegisterScreen()),
+                          final registeredPhone =
+                              await Navigator.of(context).push<String>(
+                            MaterialPageRoute(
+                                builder: (_) => const RegisterScreen()),
                           );
                           if (registeredPhone != null) {
                             setState(() {
@@ -200,10 +204,10 @@ class _LoginScreenState extends State<LoginScreen> {
                             });
                           }
                         },
-                        child: const Text(
+                        child: Text(
                           'Đăng ký ngay',
                           style: TextStyle(
-                            color: Color(0xFF0066FF),
+                            color: colors.primary,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
@@ -226,14 +230,17 @@ class _LoginScreenState extends State<LoginScreen> {
                         children: [
                           Row(
                             children: [
-                              Icon(Icons.bolt, color: Colors.amber.shade800, size: 18),
+                              Icon(Icons.bolt,
+                                  color: Colors.amber.shade800, size: 18),
                               const SizedBox(width: 6),
-                              Text(
-                                'MOCK MODE ĐANG BẬT (AppConfig.isMock = true)',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 11,
-                                  color: Colors.amber.shade900,
+                              Expanded(
+                                child: Text(
+                                  'MOCK MODE ĐANG BẬT (AppConfig.isMock = true)',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 11,
+                                    color: Colors.amber.shade900,
+                                  ),
                                 ),
                               ),
                             ],

@@ -175,18 +175,29 @@ class _DriverContentState extends State<_DriverContent>
                   seconds > 0 &&
                   !state.offerActionBusy &&
                   !state.actionBusy &&
-                  !state.unresolvedDecision;
+                  !state.unresolvedDecision &&
+                  state.foreground &&
+                  state.operatingStatus == 'ONLINE';
+              final scheme = Theme.of(context).colorScheme;
               return ListView(padding: const EdgeInsets.all(16), children: [
                 Text('Xin chào, ${widget.user.fullName}',
-                    style: Theme.of(context).textTheme.titleLarge),
-                const SizedBox(height: 8),
+                    style: Theme.of(context).textTheme.headlineSmall),
+                const SizedBox(height: 4),
+                Text('Quản lý trạng thái và chuyến đi của bạn',
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodyMedium
+                        ?.copyWith(color: scheme.onSurfaceVariant)),
+                const SizedBox(height: 16),
                 if (state.loading) const LinearProgressIndicator(),
                 if (state.error != null)
                   Card(
-                      color: Colors.red.shade50,
+                      color: scheme.errorContainer,
                       child: Padding(
                           padding: const EdgeInsets.all(12),
-                          child: Text(state.error!))),
+                          child: Text(state.error!,
+                              style:
+                                  TextStyle(color: scheme.onErrorContainer)))),
                 if (state.notice != null)
                   Card(
                       child: Padding(
@@ -194,18 +205,55 @@ class _DriverContentState extends State<_DriverContent>
                           child: Text(state.notice!))),
                 Card(
                     child: Padding(
-                        padding: const EdgeInsets.all(12),
+                        padding: const EdgeInsets.all(16),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                                'Trạng thái: ${state.operatingStatus ?? 'Chưa xác định'}'),
-                            Text(
-                                'Phê duyệt: ${state.approvalStatus ?? 'Chưa xác định'}'),
-                            Text(
-                                'Xe đang dùng: ${state.activeVehicle?.licensePlate ?? 'Chưa có'} '
-                                '(${state.activeVehicle?.vehicleType ?? '—'})'),
-                            Text('GPS: ${state.locationMessage}'),
+                                state.operatingStatus == 'BUSY'
+                                    ? 'Đang phục vụ chuyến'
+                                    : 'Trạng thái hoạt động',
+                                style: Theme.of(context).textTheme.titleMedium),
+                            const SizedBox(height: 10),
+                            Wrap(spacing: 8, runSpacing: 4, children: [
+                              _statusChip(
+                                  icon: state.operatingStatus == 'ONLINE'
+                                      ? Icons.radio_button_checked
+                                      : Icons.radio_button_off,
+                                  label:
+                                      'Trạng thái: ${_operatingLabel(state.operatingStatus)}',
+                                  active: state.operatingStatus == 'ONLINE'),
+                              _statusChip(
+                                  icon: state.approvalStatus == 'APPROVED'
+                                      ? Icons.verified_outlined
+                                      : Icons.info_outline,
+                                  label:
+                                      'Phê duyệt: ${_approvalLabel(state.approvalStatus)}',
+                                  active: state.approvalStatus == 'APPROVED'),
+                            ]),
+                            const SizedBox(height: 12),
+                            Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Icon(Icons.two_wheeler_outlined,
+                                      color: scheme.primary),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                      child: Text(
+                                          'Xe đang dùng: ${state.activeVehicle?.licensePlate ?? 'Chưa có'} '
+                                          '(${_vehicleLabel(state.activeVehicle?.vehicleType)})')),
+                                ]),
+                            const SizedBox(height: 8),
+                            Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Icon(Icons.location_on_outlined,
+                                      color: scheme.onSurfaceVariant),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                      child: Text(
+                                          'GPS: ${state.locationMessage}')),
+                                ]),
                             if (!state.foreground)
                               const Text(
                                   'Ứng dụng nền: GPS sẽ không còn mới để nhận cuốc.'),
@@ -213,42 +261,65 @@ class _DriverContentState extends State<_DriverContent>
                               TextButton(
                                   onPressed: cubit.openLocationSettings,
                                   child: const Text('Mở Cài đặt vị trí')),
-                            const SizedBox(height: 8),
+                            if (state.approvalStatus != null &&
+                                state.approvalStatus != 'APPROVED' &&
+                                state.operatingStatus != 'ONLINE')
+                              const Padding(
+                                  padding: EdgeInsets.only(top: 8),
+                                  child: Text(
+                                      'Cần được phê duyệt trước khi nhận cuốc.')),
+                            const SizedBox(height: 12),
                             if (state.operatingStatus != 'BUSY')
-                              FilledButton(
-                                onPressed: AppConfig.instance.isMock ||
-                                        state.actionBusy ||
-                                        state.offerActionBusy ||
-                                        state.loading ||
-                                        state.acceptedOffer != null
-                                    ? null
-                                    : state.operatingStatus == 'ONLINE'
-                                        ? cubit.goOffline
-                                        : cubit.goOnline,
-                                child: Text(state.operatingStatus == 'ONLINE'
-                                    ? 'Ngừng nhận cuốc · OFFLINE'
-                                    : 'Bắt đầu nhận cuốc · ONLINE'),
-                              ),
+                              SizedBox(
+                                  width: double.infinity,
+                                  child: state.operatingStatus == 'ONLINE'
+                                      ? OutlinedButton.icon(
+                                          onPressed: _canChangeStatus(state)
+                                              ? cubit.goOffline
+                                              : null,
+                                          icon: const Icon(
+                                              Icons.pause_circle_outline),
+                                          label: const Text(
+                                              'Ngừng nhận cuốc · OFFLINE'))
+                                      : FilledButton.icon(
+                                          onPressed: _canChangeStatus(state)
+                                              ? cubit.goOnline
+                                              : null,
+                                          icon: const Icon(
+                                              Icons.power_settings_new),
+                                          label: const Text(
+                                              'Bắt đầu nhận cuốc · ONLINE'))),
                           ],
                         ))),
-                const SizedBox(height: 8),
+                const SizedBox(height: 16),
                 Text('Xe của tôi',
                     style: Theme.of(context).textTheme.titleMedium),
+                if (state.vehicles.isEmpty)
+                  const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Text(
+                          'Chưa có xe. Thêm và kích hoạt xe trước khi trực tuyến.')),
                 for (final vehicle in state.vehicles)
-                  ListTile(
-                      title: Text(
-                          '${vehicle.licensePlate} · ${vehicle.vehicleType}'),
-                      subtitle: Text(
-                          vehicle.active ? 'Đang kích hoạt' : 'Chưa kích hoạt'),
-                      trailing: vehicle.active
-                          ? const Icon(Icons.check_circle)
-                          : TextButton(
-                              onPressed: AppConfig.instance.isMock ||
-                                      state.actionBusy
-                                  ? null
-                                  : () =>
-                                      cubit.activateVehicle(vehicle.publicId),
-                              child: const Text('Kích hoạt'))),
+                  Card(
+                      child: ListTile(
+                          leading: Icon(Icons.directions_car_outlined,
+                              color: vehicle.active
+                                  ? scheme.primary
+                                  : scheme.onSurfaceVariant),
+                          title: Text(
+                              '${vehicle.licensePlate} · ${_vehicleLabel(vehicle.vehicleType)}'),
+                          subtitle: Text(vehicle.active
+                              ? 'Đang kích hoạt'
+                              : 'Chưa kích hoạt'),
+                          trailing: vehicle.active
+                              ? const Icon(Icons.check_circle)
+                              : TextButton(
+                                  onPressed: AppConfig.instance.isMock ||
+                                          state.actionBusy
+                                      ? null
+                                      : () => cubit
+                                          .activateVehicle(vehicle.publicId),
+                                  child: const Text('Kích hoạt')))),
                 OutlinedButton.icon(
                     onPressed: AppConfig.instance.isMock || state.actionBusy
                         ? null
@@ -259,15 +330,18 @@ class _DriverContentState extends State<_DriverContent>
                   _bookingCard(state.acceptedOffer!),
                 if (offer != null && state.acceptedOffer == null)
                   Card(
-                    color: Colors.blue.shade50,
+                    color: scheme.primaryContainer,
                     child: Padding(
-                      padding: const EdgeInsets.all(14),
+                      padding: const EdgeInsets.all(16),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                              'Đề nghị nhận chuyến · còn ${seconds > 0 ? seconds : 0} giây',
+                          Text('Đề nghị nhận chuyến',
                               style: Theme.of(context).textTheme.titleMedium),
+                          Text(
+                              'Thời gian còn ${seconds > 0 ? seconds : 0} giây để phản hồi',
+                              style: Theme.of(context).textTheme.bodyMedium),
+                          const SizedBox(height: 12),
                           _offerDetails(offer),
                           if (state.unresolvedDecision)
                             TextButton(
@@ -288,8 +362,9 @@ class _DriverContentState extends State<_DriverContent>
                                         : null,
                                     child: const Text('Nhận chuyến'))),
                           ]),
+                          const SizedBox(height: 4),
                           const Text(
-                              'Thời hạn do máy chủ quyết định; có thể nhận lỗi 409.'),
+                              'Thời hạn do máy chủ quyết định. Nếu đề nghị hết hạn, hãy chờ cuốc tiếp theo.'),
                         ],
                       ),
                     ),
@@ -300,26 +375,58 @@ class _DriverContentState extends State<_DriverContent>
         ),
       );
 
+  bool _canChangeStatus(DriverState state) =>
+      !AppConfig.instance.isMock &&
+      !state.actionBusy &&
+      !state.offerActionBusy &&
+      !state.loading &&
+      !state.unresolvedDecision &&
+      state.acceptedOffer == null &&
+      state.foreground &&
+      (state.operatingStatus == 'ONLINE' ||
+          ((state.approvalStatus == null ||
+                  state.approvalStatus == 'APPROVED') &&
+              state.activeVehicle != null));
+
+  Widget _statusChip(
+      {required IconData icon, required String label, required bool active}) {
+    final scheme = Theme.of(context).colorScheme;
+    return Chip(
+        avatar: Icon(icon,
+            size: 18,
+            color:
+                active ? scheme.onPrimaryContainer : scheme.onSurfaceVariant),
+        label: Text(label),
+        backgroundColor:
+            active ? scheme.primaryContainer : scheme.surfaceContainerHighest,
+        side: BorderSide.none);
+  }
+
   Widget _bookingCard(DriverOffer offer) => Card(
-        color: Colors.green.shade50,
+        color: Theme.of(context).colorScheme.secondaryContainer,
         child: Padding(
-            padding: const EdgeInsets.all(14),
+            padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Đã nhận chuyến · BUSY',
-                    style: TextStyle(fontWeight: FontWeight.bold)),
-                Text('Booking UUID: ${offer.bookingPublicId}'),
+                Text('Đã nhận chuyến · BUSY',
+                    style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 4),
+                Text('Booking UUID: ${offer.bookingPublicId}',
+                    style: Theme.of(context).textTheme.bodySmall),
+                const SizedBox(height: 12),
                 _offerDetails(offer),
-                TextButton(
-                    onPressed: () => Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                            builder: (_) => DriverAcceptedBookingScreen(
-                                offer: offer,
-                                driverCubit: context.read<DriverCubit>()))),
-                    child: const Text('Xem chuyến đã nhận')),
-                const Text('Mở chuyến để xem trạng thái, gửi GPS và xác nhận '
-                    'thu tiền mặt sau khi hoàn thành.'),
+                const SizedBox(height: 12),
+                SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                        onPressed: () => Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                                builder: (_) => DriverAcceptedBookingScreen(
+                                    offer: offer,
+                                    driverCubit: context.read<DriverCubit>()))),
+                        icon: const Icon(Icons.route_outlined),
+                        label: const Text('Xem chuyến đã nhận'))),
               ],
             )),
       );
@@ -327,10 +434,47 @@ class _DriverContentState extends State<_DriverContent>
   Widget _offerDetails(DriverOffer offer) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Điểm đón: ${offer.pickupLatitude}, ${offer.pickupLongitude}'),
-          Text('Điểm đến: ${offer.dropoffLatitude}, ${offer.dropoffLongitude}'),
-          Text('Loại xe: ${offer.vehicleType}'),
-          Text('Giá: ${vnd(offer.finalFare)}'),
+          _routeLine(Icons.trip_origin,
+              'Điểm đón: ${offer.pickupLatitude}, ${offer.pickupLongitude}'),
+          const SizedBox(height: 8),
+          _routeLine(Icons.location_on_outlined,
+              'Điểm đến: ${offer.dropoffLatitude}, ${offer.dropoffLongitude}'),
+          const SizedBox(height: 8),
+          Text('Loại xe: ${_vehicleLabel(offer.vehicleType)}'),
+          const SizedBox(height: 4),
+          Text('Giá đã chấp nhận: ${vnd(offer.finalFare)}',
+              style: Theme.of(context).textTheme.titleMedium),
+        ],
+      );
+
+  Widget _routeLine(IconData icon, String label) => Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 20, color: Theme.of(context).colorScheme.primary),
+          const SizedBox(width: 8),
+          Expanded(child: Text(label)),
         ],
       );
 }
+
+String _operatingLabel(String? status) => switch (status) {
+      'ONLINE' => 'ONLINE',
+      'OFFLINE' => 'OFFLINE',
+      'BUSY' => 'BUSY',
+      _ => 'Chưa xác định',
+    };
+
+String _approvalLabel(String? status) => switch (status) {
+      'APPROVED' => 'Đã duyệt',
+      'PENDING' => 'Chờ duyệt',
+      'REJECTED' => 'Từ chối',
+      'SUSPENDED' => 'Tạm khóa',
+      _ => 'Chưa xác định',
+    };
+
+String _vehicleLabel(String? type) => switch (type) {
+      'MOTORBIKE' => 'Xe máy',
+      'CAR_4_SEAT' => 'Ô tô 4 chỗ',
+      'CAR_7_SEAT' => 'Ô tô 7 chỗ',
+      _ => type ?? 'Chưa xác định',
+    };

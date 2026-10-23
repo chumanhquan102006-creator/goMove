@@ -18,6 +18,7 @@ import 'package:gomove_mobile/features/driver/presentation/bloc/driver_cubit.dar
 import 'package:gomove_mobile/features/driver/presentation/bloc/onboarding_cubit.dart';
 import 'package:gomove_mobile/features/driver/presentation/screens/driver_home_screen.dart';
 import 'package:gomove_mobile/features/driver/presentation/screens/driver_accepted_booking_screen.dart';
+import 'package:gomove_mobile/features/trip/data/trip_realtime_client.dart';
 import 'package:gomove_mobile/features/trip/domain/models/trip_models.dart';
 import 'package:gomove_mobile/features/trip/domain/repositories/trip_repository.dart';
 import 'package:mocktail/mocktail.dart';
@@ -25,6 +26,34 @@ import 'package:mocktail/mocktail.dart';
 class MockSession extends Mock implements SecureStorageService {}
 
 class MockTripRepository extends Mock implements TripRepository {}
+
+class PassiveRealtime implements TripRealtimeClient {
+  @override
+  TripRealtimeSubscription listen({
+    required String bookingPublicId,
+    required int sessionGeneration,
+    required bool driver,
+    required Future<void> Function() reconcileBeforeEvents,
+  }) =>
+      PassiveSubscription();
+}
+
+class PassiveSubscription implements TripRealtimeSubscription {
+  @override
+  Stream<TripRealtimeEvent> get events => const Stream.empty();
+  @override
+  Stream<TripRealtimeConnectionState> get connectionStates =>
+      const Stream.empty();
+  @override
+  TripRealtimeConnectionState get state =>
+      TripRealtimeConnectionState.disconnected;
+  @override
+  Future<bool> sendLocation(DriverCoordinates point,
+          {required DateTime sampledAt}) async =>
+      false;
+  @override
+  Future<void> dispose() async {}
+}
 
 class MemoryAcceptedStore implements AcceptedBookingStore {
   final values = <String, AcceptedBookingRecord>{};
@@ -975,6 +1004,163 @@ void main() {
     expect(find.textContaining('Điểm đón: 21.0287, 105.8524'), findsOneWidget);
     await tester.scrollUntilVisible(find.text('Xác nhận đã thu tiền mặt'), 300);
     expect(find.text('Xác nhận đã thu tiền mặt'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Driver Home stays usable on a narrow screen with an offer',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(320, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    AppConfig.reset();
+    await sl.reset();
+    await setupServiceLocator(config: AppConfig.initialize(forceMock: false));
+    await sl.unregister<DriverCubit>();
+    sl.registerFactoryParam<DriverCubit, String, void>((_, __) =>
+        PreviewDriverCubit(
+            DriverState(
+                operatingStatus: 'ONLINE',
+                approvalStatus: 'APPROVED',
+                vehicles: repository.vehicleList,
+                offer: offer(
+                    DateTime.now().toUtc().add(const Duration(seconds: 15)))),
+            DriverUseCases(repository),
+            location,
+            session,
+            store));
+    const user = User(
+        publicId: 'user-A',
+        phoneNumber: '0900000000',
+        fullName: 'Driver A',
+        role: UserRole.driver);
+    await tester.pumpWidget(BlocProvider<AuthBloc>(
+      create: (_) => sl<AuthBloc>(),
+      child: const MaterialApp(home: DriverHomeScreen(user: user)),
+    ));
+    expect(find.textContaining('Phê duyệt: Đã duyệt'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Nhận chuyến'), 180);
+    expect(find.textContaining('Giá đã chấp nhận: 16.500 VND'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    final accept = tester
+        .widget<FilledButton>(find.widgetWithText(FilledButton, 'Nhận chuyến'));
+    expect(accept.onPressed, isNotNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Known unapproved Driver cannot start receiving offers',
+      (tester) async {
+    AppConfig.reset();
+    await sl.reset();
+    await setupServiceLocator(config: AppConfig.initialize(forceMock: false));
+    await sl.unregister<DriverCubit>();
+    sl.registerFactoryParam<DriverCubit, String, void>((_, __) =>
+        PreviewDriverCubit(
+            DriverState(
+                operatingStatus: 'OFFLINE',
+                approvalStatus: 'PENDING',
+                vehicles: repository.vehicleList),
+            DriverUseCases(repository),
+            location,
+            session,
+            store));
+    const user = User(
+        publicId: 'user-A',
+        phoneNumber: '0900000000',
+        fullName: 'Driver A',
+        role: UserRole.driver);
+    await tester.pumpWidget(BlocProvider<AuthBloc>(
+      create: (_) => sl<AuthBloc>(),
+      child: const MaterialApp(home: DriverHomeScreen(user: user)),
+    ));
+    expect(find.textContaining('Cần được phê duyệt'), findsOneWidget);
+    final online = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Bắt đầu nhận cuốc · ONLINE'));
+    expect(online.onPressed, isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('PAID cash displays receipt recovery, not cash confirmation',
+      (tester) async {
+    final trip = MockTripRepository();
+    when(() => trip.tracking('booking-1', any())).thenAnswer((_) async =>
+        const TrackingSnapshot(
+            bookingPublicId: 'booking-1',
+            status: 'COMPLETED',
+            driverPublicId: 'driver-1'));
+    when(() => trip.payment('booking-1', any())).thenAnswer((_) async =>
+        const CashPayment(
+            paymentPublicId: 'payment-1',
+            bookingPublicId: 'booking-1',
+            method: 'CASH',
+            status: 'PAID',
+            amount: '16500.00',
+            currency: 'VND'));
+    await sl.reset();
+    AppConfig.reset();
+    await setupServiceLocator(config: AppConfig.initialize(forceMock: false));
+    await sl.unregister<TripRepository>();
+    sl.registerSingleton<TripRepository>(trip);
+    final fakeSession = MockSession();
+    when(() => fakeSession.getSession()).thenAnswer(
+        (_) async => const AuthSessionSnapshot(1, 'access', 'refresh'));
+    when(() => fakeSession.isCurrentSession(any()))
+        .thenAnswer((_) async => true);
+    await sl.unregister<SecureStorageService>();
+    sl.registerSingleton<SecureStorageService>(fakeSession);
+    await tester.binding.setSurfaceSize(const Size(320, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(MaterialApp(
+        home: DriverAcceptedBookingScreen(
+            offer: offer(DateTime.utc(2026, 10, 12, 12, 0, 15)))));
+    await tester.pump();
+    await tester.scrollUntilVisible(
+        find.text('Lấy lại biên nhận đã xác nhận'), 250);
+    expect(find.text('Xác nhận đã thu tiền mặt'), findsNothing);
+    expect(find.textContaining('Tiền mặt: Đã thu'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Active trip offers only its next server-confirmed action',
+      (tester) async {
+    final trip = MockTripRepository();
+    when(() => trip.tracking('booking-1', any())).thenAnswer((_) async =>
+        const TrackingSnapshot(
+            bookingPublicId: 'booking-1',
+            status: 'IN_PROGRESS',
+            driverPublicId: 'driver-1'));
+    when(() => trip.payment('booking-1', any())).thenAnswer((_) async =>
+        const CashPayment(
+            paymentPublicId: 'payment-1',
+            bookingPublicId: 'booking-1',
+            method: 'CASH',
+            status: 'PENDING',
+            amount: '16500.00',
+            currency: 'VND'));
+    await sl.reset();
+    AppConfig.reset();
+    await setupServiceLocator(config: AppConfig.initialize(forceMock: false));
+    await sl.unregister<TripRepository>();
+    sl.registerSingleton<TripRepository>(trip);
+    await sl.unregister<TripRealtimeClient>();
+    sl.registerSingleton<TripRealtimeClient>(PassiveRealtime());
+    final fakeSession = MockSession();
+    when(() => fakeSession.getSession()).thenAnswer(
+        (_) async => const AuthSessionSnapshot(1, 'access', 'refresh'));
+    when(() => fakeSession.isCurrentSession(any()))
+        .thenAnswer((_) async => true);
+    await sl.unregister<SecureStorageService>();
+    sl.registerSingleton<SecureStorageService>(fakeSession);
+    await tester.pumpWidget(MaterialApp(
+        home: DriverAcceptedBookingScreen(
+            offer: offer(DateTime.utc(2026, 10, 12, 12, 0, 15)))));
+    await tester.pump();
+    await tester.scrollUntilVisible(
+        find.widgetWithText(FilledButton, 'Hoàn thành chuyến'), 250);
+    final next = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Hoàn thành chuyến'));
+    expect(next.onPressed, isNotNull);
+    expect(find.widgetWithText(FilledButton, 'Đã đón khách'), findsNothing);
+    expect(find.text('Xác nhận đã thu tiền mặt'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 }

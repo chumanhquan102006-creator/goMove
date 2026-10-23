@@ -47,6 +47,8 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
   bool _styleLoaded = false;
   bool _mapUnavailable = false;
   bool _setupFailed = false;
+  bool _markerUpdateFailed = false;
+  bool _cameraUpdateFailed = false;
 
   @override
   void initState() {
@@ -100,6 +102,8 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
     setState(() {
       _styleLoaded = true;
       _mapUnavailable = false;
+      _markerUpdateFailed = false;
+      _cameraUpdateFailed = false;
     });
     _markerDebounce?.cancel();
     _queueMarkerSync();
@@ -116,10 +120,11 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
       if (pickup != null) {
         await controller.addCircle(CircleOptions(
           geometry: LatLng(pickup.latitude, pickup.longitude),
-          circleRadius: 11,
-          circleColor: '#087F8C',
-          circleStrokeColor: '#FFFFFF',
-          circleStrokeWidth: 3,
+          // An outlined ring distinguishes pickup from the filled destination.
+          circleRadius: 12,
+          circleColor: '#FFFFFF',
+          circleStrokeColor: '#0066FF',
+          circleStrokeWidth: 4,
         ));
       }
       if (!mounted) return;
@@ -133,8 +138,12 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
           circleStrokeWidth: 3,
         ));
       }
+      if (mounted && _markerUpdateFailed) {
+        setState(() => _markerUpdateFailed = false);
+      }
     }).catchError((Object _) {
-      if (mounted) setState(() => _mapUnavailable = true);
+      // A failed annotation update does not mean the basemap is unavailable.
+      if (mounted) setState(() => _markerUpdateFailed = true);
     });
   }
 
@@ -183,18 +192,29 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
           duration: const Duration(milliseconds: 350),
         );
       }
+      if (mounted && _cameraUpdateFailed) {
+        setState(() => _cameraUpdateFailed = false);
+      }
     } catch (_) {
-      if (mounted) setState(() => _mapUnavailable = true);
+      // Keep a working basemap usable when only the camera command fails.
+      if (mounted) setState(() => _cameraUpdateFailed = true);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final height =
-        (MediaQuery.sizeOf(context).height * .42).clamp(300.0, 390.0);
+    final media = MediaQuery.of(context);
+    // Scaffold removes viewInsets from its body MediaQuery; read the view's
+    // original inset so the map still contracts when the keyboard appears.
+    final keyboardInset =
+        View.of(context).viewInsets.bottom / View.of(context).devicePixelRatio;
+    final keyboardOpen = keyboardInset > 0;
+    final height = keyboardOpen
+        ? ((media.size.height - keyboardInset) * .36).clamp(170.0, 220.0)
+        : (media.size.height * .40).clamp(240.0, 360.0);
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       ClipRRect(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
         child: SizedBox(
           height: height,
           child: FutureBuilder<bool>(
@@ -205,22 +225,48 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
               }
               if (snapshot.data != true) {
                 return const Center(
-                    child:
-                        Text('Không thể khởi tạo bản đồ trên thiết bị này.'));
+                    child: Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text('Không thể khởi tạo bản đồ trên thiết bị này.',
+                      textAlign: TextAlign.center),
+                ));
               }
-              return MapLibreMap(
-                initialCameraPosition:
-                    const CameraPosition(target: _hanoi, zoom: 14),
-                styleString: CustomerMapSource.styleUrl,
-                myLocationEnabled: false,
-                logoEnabled: true,
-                // The map is inside a ListView; let it handle pan and zoom.
-                gestureRecognizers: _mapGestures,
-                onMapCreated: (controller) => _controller = controller,
-                onStyleLoadedCallback: _onStyleLoaded,
-                onMapClick: (_, position) => widget.onTap(
-                  Coordinates(position.latitude, position.longitude),
-                ),
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  MapLibreMap(
+                    initialCameraPosition:
+                        const CameraPosition(target: _hanoi, zoom: 14),
+                    styleString: CustomerMapSource.styleUrl,
+                    myLocationEnabled: false,
+                    logoEnabled: true,
+                    // The map is inside a ListView; let it handle pan and zoom.
+                    gestureRecognizers: _mapGestures,
+                    onMapCreated: (controller) => _controller = controller,
+                    onStyleLoadedCallback: _onStyleLoaded,
+                    onMapClick: (_, position) {
+                      if (!_styleLoaded || _mapUnavailable) return;
+                      widget.onTap(
+                        Coordinates(position.latitude, position.longitude),
+                      );
+                    },
+                  ),
+                  if (_mapUnavailable)
+                    const AbsorbPointer(
+                      child: ColoredBox(
+                        color: Color(0xDDF8F9FA),
+                        child: Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(16),
+                            child: Text(
+                              'Nền bản đồ tạm thời không tải được.',
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
               );
             },
           ),
@@ -234,19 +280,23 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
           'Không tải được bản đồ. Bạn vẫn có thể nhập tọa độ thủ công bên dưới.',
           style: TextStyle(color: Colors.deepOrange),
         ),
-      Row(children: [
-        Expanded(
-          child: Text(
-            CustomerMapSource.visibleAttribution,
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
+      if (_markerUpdateFailed || _cameraUpdateFailed)
+        Text(
+          _markerUpdateFailed
+              ? 'Không thể cập nhật điểm trên bản đồ. Hãy thử lại hoặc nhập tọa độ thủ công.'
+              : 'Không thể điều chỉnh góc nhìn bản đồ. Bạn vẫn có thể chạm bản đồ hoặc nhập tọa độ thủ công.',
+          style: const TextStyle(color: Colors.deepOrange),
         ),
-        TextButton.icon(
-          onPressed: _styleLoaded ? _fitPoints : null,
+      Align(
+        alignment: Alignment.centerRight,
+        child: TextButton.icon(
+          onPressed: _styleLoaded && !_mapUnavailable ? _fitPoints : null,
           icon: const Icon(Icons.zoom_out_map),
           label: const Text('Xem 2 điểm'),
         ),
-      ]),
+      ),
+      Text(CustomerMapSource.visibleAttribution,
+          style: Theme.of(context).textTheme.bodySmall),
       Text(
         'Vuốt ngoài bản đồ để cuộn trang. Nếu nền bản đồ trống hoặc tải chậm, dùng tọa độ thủ công; không cần bản đồ để lấy báo giá.',
         style: Theme.of(context).textTheme.bodySmall,

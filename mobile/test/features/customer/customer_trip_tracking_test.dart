@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gomove_mobile/core/di/injection.dart';
 import 'package:gomove_mobile/core/error/exceptions.dart';
 import 'package:gomove_mobile/core/storage/secure_storage_service.dart';
+import 'package:gomove_mobile/core/theme/app_theme.dart';
 import 'package:gomove_mobile/features/customer/domain/models/booking.dart';
 import 'package:gomove_mobile/features/customer/domain/models/quote.dart';
 import 'package:gomove_mobile/features/customer/domain/repositories/customer_repository.dart';
@@ -738,7 +739,11 @@ void main() {
         scrollable: find.byType(Scrollable).first);
     expect(find.text('Tài xế đã đến điểm đón'), findsOneWidget);
     expect(find.text('Đã đón khách'), findsOneWidget);
-    final startedAt = DateTime.utc(2026, 10, 16, 10, 10).toLocal().toString();
+    final started = DateTime.utc(2026, 10, 16, 10, 10).toLocal();
+    String two(int number) => number.toString().padLeft(2, '0');
+    final startedAt = '${two(started.day)}/${two(started.month)}/'
+        '${started.year} ${two(started.hour)}:${two(started.minute)}:'
+        '${two(started.second)}';
     await tester.scrollUntilVisible(find.text(startedAt), 250,
         scrollable: find.byType(Scrollable).first);
     expect(find.text(startedAt), findsOneWidget);
@@ -755,6 +760,71 @@ void main() {
     expect(find.text('Hoàn thành chuyến'), findsNothing);
     expect(trips.transitionCalls, 0);
     expect(trips.confirmCalls, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+      'Narrow active tracking screen keeps map and PENDING cash readable',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    trips.value = tracking('IN_PROGRESS',
+        latitude: 21.1,
+        longitude: 105.1,
+        locationUpdatedAt: DateTime.utc(2026, 10, 16, 10, 11));
+    trips.cash = payment('PENDING');
+    registerScreenServices();
+    await tester.pumpWidget(MaterialApp(
+        theme: AppTheme.light,
+        home: BookingStatusScreen(
+            booking: booking(),
+            trackingMapBuilder: (_, __, ___) => const SizedBox(
+                height: 220, child: Text('Bản đồ thử nghiệm')))));
+    await tester.pump();
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    await tester.scrollUntilVisible(find.text('Bản đồ thử nghiệm'), 190,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Bản đồ thử nghiệm'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Chưa thanh toán (PENDING)'), 190,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Chưa thanh toán (PENDING)'), findsOneWidget);
+    expect(find.text('Số tiền: 16.500 VND'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Narrow completed PAID screen hides Driver GPS', (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    trips.value = tracking('COMPLETED');
+    trips.cash = payment('PAID');
+    registerScreenServices();
+    var mapBuilds = 0;
+    await tester.pumpWidget(MaterialApp(
+        theme: AppTheme.light,
+        home: BookingStatusScreen(
+            booking: booking(),
+            trackingMapBuilder: (_, __, ___) {
+              mapBuilds++;
+              return const Text('Bản đồ thử nghiệm');
+            })));
+    await tester.pump();
+    await tester.pump();
+    await tester.scrollUntilVisible(find.text('Đã thanh toán (PAID)'), 190,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Đã thanh toán (PAID)'), findsOneWidget);
+    expect(mapBuilds, 0);
+    expect(find.text('Vĩ độ: 21.1'), findsNothing);
+    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 

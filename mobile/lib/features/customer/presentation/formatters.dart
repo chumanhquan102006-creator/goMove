@@ -6,7 +6,11 @@ String vnd(String amount) {
   final digits = match.group(2)!;
   final grouped =
       digits.replaceAllMapped(RegExp(r'\B(?=(\d{3})+(?!\d))'), (_) => '.');
-  final fractional = (match.group(3) ?? '').replaceFirst(RegExp(r'0+$'), '');
+  // Whole-VND totals are clean, while nonzero fractional fare lines retain
+  // the exact precision supplied by the server (for example 4.500,50 VND).
+  final suppliedFraction = match.group(3) ?? '';
+  final fractional =
+      RegExp(r'[1-9]').hasMatch(suppliedFraction) ? suppliedFraction : '';
   return '${match.group(1)}$grouped${fractional.isEmpty ? '' : ',$fractional'} VND';
 }
 

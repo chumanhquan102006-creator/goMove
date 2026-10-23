@@ -47,8 +47,13 @@ String customerRealtimeLabel(TripRealtimeConnectionState connection) =>
         'Realtime không khả dụng; đang dựa vào REST',
     };
 
-String _time(DateTime? value) =>
-    value == null ? 'Chưa có' : value.toLocal().toString();
+String _time(DateTime? value) {
+  if (value == null) return 'Chưa có';
+  final local = value.toLocal();
+  String two(int number) => number.toString().padLeft(2, '0');
+  return '${two(local.day)}/${two(local.month)}/${local.year} '
+      '${two(local.hour)}:${two(local.minute)}:${two(local.second)}';
+}
 
 DateTime? _stepTime(TrackingSnapshot? tracking, String status) {
   if (tracking == null) return null;
@@ -133,148 +138,257 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
             final hasRenderableLocation = state.hasLiveLocation &&
                 CustomerTripTrackingMap.isRenderable(location);
             final progress = _progress(state.status);
-            return ListView(padding: const EdgeInsets.all(20), children: [
-              AnimatedSwitcher(
-                duration: const Duration(milliseconds: 250),
-                child: Text(customerTripStatusLabel(state.status),
-                    key: ValueKey(state.status),
-                    style: Theme.of(context).textTheme.headlineSmall),
-              ),
-              const SizedBox(height: 10),
-              LinearProgressIndicator(
-                value: (progress + 1) / _timeline.length,
-                minHeight: 6,
-                semanticsLabel: 'Tiến độ chuyến đi',
-              ),
-              // Keep later sliver children at stable indices while polling so
-              // the native map is not torn down and rebuilt every refresh.
-              Column(children: [
-                if (state.loading) ...[
-                  const SizedBox(height: 8),
-                  const LinearProgressIndicator(
-                      semanticsLabel: 'Đang cập nhật từ máy chủ'),
-                ],
-                if (state.error != null) ...[
-                  const SizedBox(height: 12),
-                  Text(state.error!, style: const TextStyle(color: Colors.red)),
-                ],
-              ]),
-              const SizedBox(height: 12),
-              Card(
-                child: Column(children: [
-                  ListTile(
-                      title: const Text('Mã Booking'),
-                      subtitle: SelectableText(booking.publicId)),
-                  ListTile(
-                      title: const Text('Loại xe'),
-                      subtitle: Text(booking.vehicleType.label)),
-                  ListTile(
-                      title: const Text('Giá đã chấp nhận'),
-                      subtitle: Text(vnd(booking.finalFare))),
-                  ListTile(
-                      title: const Text('Tạo lúc'),
-                      subtitle: Text(_time(booking.createdAt))),
-                  if ((state.tracking?.driverPublicId ??
-                          booking.driverPublicId) !=
-                      null)
-                    ListTile(
-                        title: const Text('Mã tài xế'),
-                        subtitle: SelectableText(
-                            state.tracking?.driverPublicId ??
-                                booking.driverPublicId!)),
-                  if (booking.vehiclePublicId != null)
-                    ListTile(
-                        title: const Text('Mã xe'),
-                        subtitle: SelectableText(booking.vehiclePublicId!)),
-                ]),
-              ),
-              const SizedBox(height: 14),
-              Text('Tiến trình chuyến đi',
-                  style: Theme.of(context).textTheme.titleLarge),
-              ...List.generate(_timeline.length, (index) {
-                final step = _timeline[index];
-                final time = _stepTime(state.tracking, step.$1);
-                final reached = index <= progress;
-                return ListTile(
-                  leading: Icon(index == progress
-                      ? Icons.radio_button_checked
-                      : reached
-                          ? Icons.check_circle
-                          : Icons.radio_button_unchecked),
-                  title: Text(step.$2),
-                  subtitle: time == null ? null : Text(_time(time)),
-                  enabled: reached,
-                );
-              }),
-              const SizedBox(height: 10),
-              Card(
-                key: const ValueKey('customer-live-tracking-card'),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Theo dõi vị trí',
-                            style: Theme.of(context).textTheme.titleMedium),
-                        Text(state.status == 'COMPLETED'
-                            ? 'Chuyến đã hoàn thành; vị trí hiện tại của tài xế được ẩn.'
-                            : customerRealtimeLabel(state.realtimeState)),
-                        if (state.status != 'COMPLETED' &&
-                            !hasRenderableLocation)
-                          const Text('Chưa có vị trí GPS được phép hiển thị.'),
-                        if (hasRenderableLocation && location != null) ...[
-                          const SizedBox(height: 10),
-                          widget.trackingMapBuilder?.call(
-                                  context, location, state.realtimeState) ??
-                              CustomerTripTrackingMap(
-                                  location: location,
-                                  connectionState: state.realtimeState),
-                          const SizedBox(height: 10),
-                          Text('Vĩ độ: ${location.latitude}'),
-                          Text('Kinh độ: ${location.longitude}'),
-                          if (location.accuracy != null)
-                            Text('Độ chính xác: ${location.accuracy} m'),
-                          if (location.bearing != null)
-                            Text('Hướng: ${location.bearing}°'),
-                          Text('Cập nhật: ${_time(location.updatedAt)}'),
-                        ],
-                        if (state.status != 'COMPLETED')
-                          const Text(
-                              'REST là nguồn trạng thái bền vững khi mất realtime.'),
-                      ]),
-                ),
-              ),
-              const SizedBox(height: 10),
-              Card(
-                child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
+            final colors = Theme.of(context).colorScheme;
+            return ListView(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+                children: [
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Thanh toán tiền mặt',
-                              style: Theme.of(context).textTheme.titleMedium),
-                          if (payment == null)
-                            const Text(
-                                'Đang chờ xác minh thanh toán từ máy chủ.')
-                          else ...[
-                            Text(payment.isPaid
-                                ? 'Đã thanh toán (PAID)'
-                                : 'Chưa thanh toán (PENDING)'),
-                            Text('Số tiền: ${vnd(payment.amount)}'),
-                            if (payment.paidAt != null)
-                              Text('Đã trả lúc: ${_time(payment.paidAt)}'),
-                          ],
-                        ])),
-              ),
-              const SizedBox(height: 16),
-              OutlinedButton.icon(
-                onPressed: state.loading
-                    ? null
-                    : () => context.read<BookingStatusCubit>().refresh(),
-                icon: const Icon(Icons.refresh),
-                label: const Text('Cập nhật từ máy chủ'),
-              ),
-            ]);
+                          Text('TRẠNG THÁI CHUYẾN ĐI',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelMedium
+                                  ?.copyWith(
+                                      color: colors.primary,
+                                      fontWeight: FontWeight.w700,
+                                      letterSpacing: 0.7)),
+                          const SizedBox(height: 8),
+                          AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 250),
+                            child: Text(customerTripStatusLabel(state.status),
+                                key: ValueKey(state.status),
+                                style:
+                                    Theme.of(context).textTheme.headlineSmall),
+                          ),
+                          const SizedBox(height: 14),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: LinearProgressIndicator(
+                              value: (progress + 1) / _timeline.length,
+                              minHeight: 7,
+                              semanticsLabel: 'Tiến độ chuyến đi',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  // Keep later sliver children at stable indices while polling so
+                  // the native map is not torn down and rebuilt every refresh.
+                  Column(children: [
+                    if (state.loading) ...[
+                      const SizedBox(height: 8),
+                      const LinearProgressIndicator(
+                          semanticsLabel: 'Đang cập nhật từ máy chủ'),
+                    ],
+                    if (state.error != null) ...[
+                      const SizedBox(height: 12),
+                      Semantics(
+                        liveRegion: true,
+                        child: Row(children: [
+                          Icon(Icons.error_outline, color: colors.error),
+                          const SizedBox(width: 8),
+                          Expanded(
+                              child: Text(state.error!,
+                                  style: TextStyle(color: colors.error))),
+                        ]),
+                      ),
+                    ],
+                  ]),
+                  const SizedBox(height: 12),
+                  Card(
+                    child: Column(children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                        child: Row(children: [
+                          Icon(Icons.receipt_long_outlined,
+                              color: colors.primary),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text('Chi tiết chuyến',
+                                style: Theme.of(context).textTheme.titleMedium),
+                          ),
+                        ]),
+                      ),
+                      ListTile(
+                          dense: true,
+                          title: const Text('Mã Booking'),
+                          subtitle: SelectableText(booking.publicId)),
+                      ListTile(
+                          dense: true,
+                          title: const Text('Loại xe'),
+                          subtitle: Text(booking.vehicleType.label)),
+                      ListTile(
+                          dense: true,
+                          title: const Text('Giá đã chấp nhận'),
+                          subtitle: Text(vnd(booking.finalFare),
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleLarge
+                                  ?.copyWith(color: colors.primary))),
+                      ListTile(
+                          dense: true,
+                          title: const Text('Tạo lúc'),
+                          subtitle: Text(_time(booking.createdAt))),
+                      if ((state.tracking?.driverPublicId ??
+                              booking.driverPublicId) !=
+                          null)
+                        ListTile(
+                            dense: true,
+                            title: const Text('Mã tài xế'),
+                            subtitle: SelectableText(
+                                state.tracking?.driverPublicId ??
+                                    booking.driverPublicId!)),
+                      if (booking.vehiclePublicId != null)
+                        ListTile(
+                            dense: true,
+                            title: const Text('Mã xe'),
+                            subtitle: SelectableText(booking.vehiclePublicId!)),
+                    ]),
+                  ),
+                  const SizedBox(height: 14),
+                  Card(
+                    child: Column(children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                        child: Row(children: [
+                          Icon(Icons.route_outlined, color: colors.primary),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text('Tiến trình chuyến đi',
+                                style: Theme.of(context).textTheme.titleMedium),
+                          ),
+                        ]),
+                      ),
+                      ...List.generate(_timeline.length, (index) {
+                        final step = _timeline[index];
+                        final time = _stepTime(state.tracking, step.$1);
+                        final reached = index <= progress;
+                        return ListTile(
+                          dense: true,
+                          leading: Icon(index == progress
+                              ? Icons.radio_button_checked
+                              : reached
+                                  ? Icons.check_circle
+                                  : Icons.radio_button_unchecked),
+                          iconColor: reached ? colors.primary : colors.outline,
+                          title: Text(step.$2),
+                          subtitle: time == null ? null : Text(_time(time)),
+                          enabled: reached,
+                        );
+                      }),
+                    ]),
+                  ),
+                  const SizedBox(height: 10),
+                  Card(
+                    key: const ValueKey('customer-live-tracking-card'),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(children: [
+                              Icon(Icons.location_on_outlined,
+                                  color: colors.primary),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text('Theo dõi vị trí',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleMedium),
+                              ),
+                            ]),
+                            const SizedBox(height: 6),
+                            Text(
+                                state.status == 'COMPLETED'
+                                    ? 'Chuyến đã hoàn thành; vị trí hiện tại của tài xế được ẩn.'
+                                    : customerRealtimeLabel(
+                                        state.realtimeState),
+                                style: Theme.of(context).textTheme.bodySmall),
+                            if (state.status != 'COMPLETED' &&
+                                !hasRenderableLocation)
+                              const Text(
+                                  'Chưa có vị trí GPS được phép hiển thị.'),
+                            if (hasRenderableLocation && location != null) ...[
+                              const SizedBox(height: 10),
+                              widget.trackingMapBuilder?.call(
+                                      context, location, state.realtimeState) ??
+                                  CustomerTripTrackingMap(
+                                      location: location,
+                                      connectionState: state.realtimeState),
+                              const SizedBox(height: 10),
+                              Text('Vĩ độ: ${location.latitude}'),
+                              Text('Kinh độ: ${location.longitude}'),
+                              if (location.accuracy != null)
+                                Text('Độ chính xác: ${location.accuracy} m'),
+                              if (location.bearing != null)
+                                Text('Hướng: ${location.bearing}°'),
+                              Text('Cập nhật: ${_time(location.updatedAt)}'),
+                            ],
+                            if (state.status != 'COMPLETED')
+                              Text(
+                                  'REST là nguồn trạng thái bền vững khi mất realtime.',
+                                  style: Theme.of(context).textTheme.bodySmall),
+                          ]),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Card(
+                    child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(children: [
+                                Icon(Icons.payments_outlined,
+                                    color: payment?.isPaid == true
+                                        ? colors.tertiary
+                                        : colors.primary),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text('Thanh toán tiền mặt',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleMedium),
+                                ),
+                              ]),
+                              const SizedBox(height: 8),
+                              if (payment == null)
+                                const Text(
+                                    'Đang chờ xác minh thanh toán từ máy chủ.')
+                              else ...[
+                                Text(
+                                    payment.isPaid
+                                        ? 'Đã thanh toán (PAID)'
+                                        : 'Chưa thanh toán (PENDING)',
+                                    style: TextStyle(
+                                        color: payment.isPaid
+                                            ? colors.tertiary
+                                            : colors.primary,
+                                        fontWeight: FontWeight.w700)),
+                                const SizedBox(height: 4),
+                                Text('Số tiền: ${vnd(payment.amount)}',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleMedium),
+                                if (payment.paidAt != null)
+                                  Text('Đã trả lúc: ${_time(payment.paidAt)}'),
+                              ],
+                            ])),
+                  ),
+                  const SizedBox(height: 16),
+                  OutlinedButton.icon(
+                    onPressed: state.loading
+                        ? null
+                        : () => context.read<BookingStatusCubit>().refresh(),
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Cập nhật từ máy chủ'),
+                  ),
+                ]);
           }),
         ),
       );

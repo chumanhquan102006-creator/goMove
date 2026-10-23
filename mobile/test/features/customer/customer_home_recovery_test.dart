@@ -244,6 +244,13 @@ void main() {
   Future<void> selectOnFakeMap(
       WidgetTester tester, String mode, Coordinates point) async {
     mapTap = point;
+    // The map button is below the choice chips. A previous selection may leave
+    // the lazy ListView scrolled past them, so begin each selection at the top.
+    tester
+        .state<ScrollableState>(find.byType(Scrollable).first)
+        .position
+        .jumpTo(0);
+    await tester.pump();
     await tester.scrollUntilVisible(find.text(mode), 250,
         scrollable: find.byType(Scrollable).first);
     await tester.tap(find.text(mode));
@@ -337,6 +344,48 @@ void main() {
     });
   });
 
+  testWidgets(
+      'Location summaries label coordinates without inventing addresses',
+      (tester) async {
+    await showHome(tester);
+    expect(find.text('Đang chọn: Điểm đón'), findsOneWidget);
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đến', const Coordinates(21.05, 105.88));
+    tester
+        .state<ScrollableState>(find.byType(Scrollable).first)
+        .position
+        .jumpTo(0);
+    await tester.pump();
+    expect(find.text('Đang chọn: Điểm đến'), findsOneWidget);
+    await tester.scrollUntilVisible(
+        find.text('Vĩ độ 21.050000 · Kinh độ 105.880000'), 250,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Vĩ độ 21.050000 · Kinh độ 105.880000'), findsOneWidget);
+    expect(find.text('Vĩ độ 21.028700 · Kinh độ 105.852400'), findsOneWidget);
+    expect(repository.quoteRequests, isEmpty);
+    expect(repository.createCalls, 0);
+  });
+
+  testWidgets('Narrow Customer Home keeps manual fallback and Quote reachable',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    mapUnavailable = true;
+    repository.quoteError =
+        const ServerException(message: 'routing unavailable', statusCode: 503);
+    await showHome(tester);
+    await enterCoordinate(tester, 'Điểm đón · vĩ độ', '21.03');
+    await enterCoordinate(tester, 'Điểm đến · kinh độ', '105.86');
+    await requestQuote(tester);
+    expect(tester.takeException(), isNull);
+    expect(repository.quoteRequests, hasLength(1));
+    expect(repository.createCalls, 0);
+  });
+
   testWidgets('Unavailable map leaves manual coordinate fallback usable',
       (tester) async {
     mapUnavailable = true;
@@ -388,10 +437,9 @@ void main() {
     await showHome(tester);
     await tester.scrollUntilVisible(find.text('Lấy báo giá từ máy chủ'), 250,
         scrollable: find.byType(Scrollable).first);
-    final action = tester.widget<FilledButton>(
-        find.ancestor(
-            of: find.text('Lấy báo giá từ máy chủ'),
-            matching: find.byType(FilledButton)));
+    final action = tester.widget<FilledButton>(find.ancestor(
+        of: find.text('Lấy báo giá từ máy chủ'),
+        matching: find.byType(FilledButton)));
     action.onPressed!();
     action.onPressed!();
     await tester.pump();

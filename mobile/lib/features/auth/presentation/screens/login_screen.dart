@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../../core/config/app_config.dart';
+import '../../../../core/theme/app_motion.dart';
 import '../bloc/auth_bloc.dart';
 import '../bloc/auth_event.dart';
 import '../bloc/auth_state.dart';
@@ -80,9 +81,7 @@ class _LoginScreenState extends State<LoginScreen> {
             );
           } else if (state is AuthenticatedState) {
             Navigator.of(context).pushReplacement(
-              MaterialPageRoute<void>(
-                builder: (_) => RoleHome(user: state.user),
-              ),
+              AppMotion.immediateRoute<void>(RoleHome(user: state.user)),
             );
           }
         },
@@ -99,27 +98,32 @@ class _LoginScreenState extends State<LoginScreen> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   const SizedBox(height: 10),
-                  Center(
-                    child: Icon(
-                      Icons.electric_moped_rounded,
-                      size: 72,
-                      color: colors.primary,
+                  AppMotion.entrance(
+                    context,
+                    Column(
+                      children: [
+                        Icon(
+                          Icons.electric_moped_rounded,
+                          size: 72,
+                          color: colors.primary,
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'Đăng nhập GoMove',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.headlineSmall,
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          'Ứng dụng di chuyển thông minh cho sinh viên',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodyMedium
+                              ?.copyWith(color: colors.onSurfaceVariant),
+                        ),
+                      ],
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    'Đăng nhập GoMove',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.headlineSmall,
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    'Ứng dụng di chuyển thông minh cho sinh viên',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context)
-                        .textTheme
-                        .bodyMedium
-                        ?.copyWith(color: colors.onSurfaceVariant),
                   ),
                   const SizedBox(height: 32),
                   TextFormField(
@@ -169,20 +173,25 @@ class _LoginScreenState extends State<LoginScreen> {
                       backgroundColor: colors.primary,
                       foregroundColor: colors.onPrimary,
                     ),
-                    child: isLoading
-                        ? const SizedBox(
-                            height: 20,
-                            width: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
+                    child: AnimatedSwitcher(
+                      duration: AppMotion.duration(context, AppMotion.feedback),
+                      child: isLoading
+                          ? const SizedBox(
+                              key: ValueKey('login-loading'),
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Text(
+                              'ĐĂNG NHẬP',
+                              key: ValueKey('login-ready'),
+                              style: TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.bold),
                             ),
-                          )
-                        : const Text(
-                            'ĐĂNG NHẬP',
-                            style: TextStyle(
-                                fontSize: 16, fontWeight: FontWeight.bold),
-                          ),
+                    ),
                   ),
                   const SizedBox(height: 20),
                   Wrap(
@@ -194,8 +203,8 @@ class _LoginScreenState extends State<LoginScreen> {
                         onPressed: () async {
                           final registeredPhone =
                               await Navigator.of(context).push<String>(
-                            MaterialPageRoute(
-                                builder: (_) => const RegisterScreen()),
+                            AppMotion.authRoute<String>(
+                                context, const RegisterScreen()),
                           );
                           if (registeredPhone != null) {
                             setState(() {

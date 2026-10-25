@@ -7,6 +7,7 @@ import 'package:gomove_mobile/core/config/app_config.dart';
 import 'package:gomove_mobile/core/di/injection.dart';
 import 'package:gomove_mobile/core/error/exceptions.dart';
 import 'package:gomove_mobile/core/storage/secure_storage_service.dart';
+import 'package:gomove_mobile/core/theme/app_motion.dart';
 import 'package:gomove_mobile/core/utils/result.dart';
 import 'package:gomove_mobile/features/auth/domain/entities/user.dart';
 import 'package:gomove_mobile/features/auth/domain/repositories/auth_repository.dart';
@@ -232,10 +233,18 @@ void main() {
     AppConfig.reset();
   });
 
-  Future<void> showHome(WidgetTester tester) async {
+  Future<void> showHome(WidgetTester tester,
+      {bool reducedMotion = false}) async {
     await tester.pumpWidget(BlocProvider<AuthBloc>.value(
         value: auth,
         child: MaterialApp(
+            builder: (context, child) => reducedMotion
+                ? MediaQuery(
+                    data: MediaQuery.of(context)
+                        .copyWith(disableAnimations: true),
+                    child: child!,
+                  )
+                : child!,
             home:
                 CustomerHomeScreen(user: userA, mapBuilder: fakeMapBuilder))));
     await tester.pumpAndSettle();
@@ -296,6 +305,63 @@ void main() {
       'vehicleType': 'MOTORBIKE',
     });
     expect(repository.createCalls, 0);
+  });
+
+  testWidgets('Selection motion follows point choice without a Quote request',
+      (tester) async {
+    await showHome(tester);
+    expect(
+        tester
+            .widget<AnimatedScale>(
+                find.byKey(const ValueKey('pickup-selection-motion')))
+            .scale,
+        1);
+    expect(
+        tester
+            .widget<AnimatedScale>(
+                find.byKey(const ValueKey('dropoff-selection-motion')))
+            .duration,
+        AppMotion.touch);
+
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đến', const Coordinates(21.05, 105.88));
+    tester
+        .state<ScrollableState>(find.byType(Scrollable).first)
+        .position
+        .jumpTo(0);
+    await tester.pump();
+    final selected = tester.widget<AnimatedScale>(
+        find.byKey(const ValueKey('dropoff-selection-motion')));
+    expect(selected.scale, 1);
+    expect(selected.duration, AppMotion.touch);
+    expect(lastMapDropoff?.latitude, 21.05);
+    expect(lastMapDropoff?.longitude, 105.88);
+    expect(repository.quoteRequests, isEmpty);
+    expect(repository.createCalls, 0);
+  });
+
+  testWidgets('Reduced motion keeps map point selection immediate',
+      (tester) async {
+    await showHome(tester, reducedMotion: true);
+    expect(
+        tester
+            .widget<AnimatedScale>(
+                find.byKey(const ValueKey('pickup-selection-motion')))
+            .duration,
+        Duration.zero);
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đến', const Coordinates(21.05, 105.88));
+    await tester.scrollUntilVisible(
+        find.text('Vĩ độ 21.050000 · Kinh độ 105.880000'), 250,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Vĩ độ 21.050000 · Kinh độ 105.880000'), findsOneWidget);
+    expect(
+        tester
+            .widget<AnimatedContainer>(find.byKey(
+                const ValueKey('_MapTarget.dropoff-point-summary-motion')))
+            .duration,
+        Duration.zero);
+    expect(repository.quoteRequests, isEmpty);
   });
 
   testWidgets('Map destination selection changes destination but not pickup',
@@ -542,6 +608,27 @@ void main() {
     final resume = tester.widget<FilledButton>(
         find.widgetWithText(FilledButton, 'Tiếp tục chuyến đang diễn ra'));
     expect(resume.onPressed, isNotNull);
+    final entrance = find.ancestor(
+        of: find.text('Tiếp tục chuyến đang diễn ra'),
+        matching: find.byType(TweenAnimationBuilder<double>));
+    expect(entrance, findsOneWidget);
+    expect(tester.widget<TweenAnimationBuilder<double>>(entrance).duration,
+        AppMotion.card);
+    expect(repository.requested, [bookingId]);
+  });
+
+  testWidgets('Reduced motion shows verified Booking without spatial entrance',
+      (tester) async {
+    activeStore.records[customerA] = const ActiveBookingRecord(
+        customerPublicId: customerA, bookingPublicId: bookingId);
+    await showHome(tester, reducedMotion: true);
+    expect(find.text('Tiếp tục chuyến đang diễn ra'), findsOneWidget);
+    expect(
+        find.ancestor(
+            of: find.text('Tiếp tục chuyến đang diễn ra'),
+            matching: find.byType(TweenAnimationBuilder<double>)),
+        findsNothing);
+    expect(repository.requested, [bookingId]);
   });
 
   testWidgets('App resume revalidates an account-scoped saved Booking',

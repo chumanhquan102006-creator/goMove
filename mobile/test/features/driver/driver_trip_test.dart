@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gomove_mobile/core/error/exceptions.dart';
 import 'package:gomove_mobile/core/storage/secure_storage_service.dart';
+import 'package:gomove_mobile/core/theme/app_motion.dart';
 import 'package:gomove_mobile/features/driver/data/location/driver_location_source.dart';
 import 'package:gomove_mobile/features/driver/domain/models/driver_models.dart';
 import 'package:gomove_mobile/features/driver/presentation/bloc/driver_trip_cubit.dart';
+import 'package:gomove_mobile/features/driver/presentation/screens/driver_trip_screen.dart';
 import 'package:gomove_mobile/features/trip/data/trip_realtime_client.dart';
 import 'package:gomove_mobile/features/trip/domain/models/trip_models.dart';
 import 'package:gomove_mobile/features/trip/domain/repositories/trip_repository.dart';
@@ -397,4 +400,146 @@ void main() {
     await cubit.close();
     expect(realtime.latest!.disposed, isTrue);
   });
+
+  testWidgets('Trip card moves only on confirmed status and does not replay',
+      (tester) async {
+    final screenCubit = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        pollInterval: const Duration(hours: 1),
+        gpsInterval: const Duration(hours: 1));
+    await tester.pumpWidget(MaterialApp(
+      home: DriverAcceptedBookingScreen(
+        offer: _offer(),
+        tripCubit: screenCubit,
+      ),
+    ));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('driver-trip-status-DRIVER_ACCEPTED')),
+        findsOneWidget);
+    final motion = tester.widget<AnimatedSwitcher>(
+        find.byKey(const ValueKey('driver-trip-status-motion')));
+    expect(motion.duration, AppMotion.card);
+
+    repository.status = 'DRIVER_ARRIVED';
+    await screenCubit.refresh();
+    await tester.pump();
+    expect(find.byKey(const ValueKey('driver-trip-status-DRIVER_ARRIVED')),
+        findsOneWidget);
+    await tester.pump(AppMotion.card);
+    expect(find.byKey(const ValueKey('driver-trip-status-DRIVER_ACCEPTED')),
+        findsNothing);
+    await screenCubit.refresh();
+    await tester.pump();
+    expect(find.byKey(const ValueKey('driver-trip-status-DRIVER_ARRIVED')),
+        findsOneWidget);
+    expect(repository.transitionCalls, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('CASH stays PENDING until the server returns a PAID receipt',
+      (tester) async {
+    repository.status = 'COMPLETED';
+    final cashReply = Completer<CashReceipt>();
+    repository.cashReply = () => cashReply.future;
+    final screenCubit = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        pollInterval: const Duration(hours: 1),
+        gpsInterval: const Duration(hours: 1));
+    await tester.pumpWidget(MaterialApp(
+      home: DriverAcceptedBookingScreen(
+        offer: _offer(),
+        tripCubit: screenCubit,
+      ),
+    ));
+    await tester.pump();
+    expect(screenCubit.state.payment?.status, 'PENDING');
+    expect(screenCubit.state.receipt, isNull);
+    await tester.scrollUntilVisible(find.text('Xác nhận đã thu tiền mặt'), 250);
+    await tester.tap(find.text('Xác nhận đã thu tiền mặt'));
+    await tester.pump();
+    await tester.tap(find.text('Tôi đã thu tiền mặt'));
+    await tester.pump();
+    expect(repository.cashCalls, 1);
+    expect(screenCubit.state.payment?.status, 'PENDING');
+    expect(screenCubit.state.receipt, isNull);
+    expect(find.text('Biên nhận CASH · PAID'), findsNothing);
+
+    final receiptSeen =
+        screenCubit.stream.firstWhere((state) => state.receipt != null);
+    repository.paymentStatus = 'PAID';
+    cashReply.complete(_receipt('booking-1'));
+    await receiptSeen;
+    await tester.pump();
+    expect(screenCubit.state.payment?.status, 'PAID');
+    expect(screenCubit.state.receipt?.paymentStatus, 'PAID');
+    await tester.scrollUntilVisible(find.text('Biên nhận CASH · PAID'), 200);
+    final receiptMotion = tester.widget<TweenAnimationBuilder<double>>(
+        find.byKey(const ValueKey('driver-cash-receipt-payment-1')));
+    expect(receiptMotion.duration, AppMotion.cash);
+    expect(repository.cashCalls, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Trip and CASH motion are immediate when animations disabled',
+      (tester) async {
+    repository.status = 'COMPLETED';
+    final screenCubit = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        pollInterval: const Duration(hours: 1),
+        gpsInterval: const Duration(hours: 1));
+    await tester.pumpWidget(MaterialApp(
+      home: MediaQuery(
+        data: const MediaQueryData(disableAnimations: true),
+        child: DriverAcceptedBookingScreen(
+          offer: _offer(),
+          tripCubit: screenCubit,
+        ),
+      ),
+    ));
+    await tester.pump();
+    final motion = tester.widget<AnimatedSwitcher>(
+        find.byKey(const ValueKey('driver-trip-status-motion')));
+    expect(motion.duration, Duration.zero);
+    expect(screenCubit.state.status, 'COMPLETED');
+    expect(screenCubit.state.payment?.status, 'PENDING');
+    await screenCubit.confirmCash();
+    await tester.pump();
+    await tester.scrollUntilVisible(find.text('Biên nhận CASH · PAID'), 200);
+    final receiptMotion = tester.widget<TweenAnimationBuilder<double>>(
+        find.byKey(const ValueKey('driver-cash-receipt-payment-1')));
+    expect(receiptMotion.duration, Duration.zero);
+    expect(
+      find.ancestor(
+        of: find.text('Biên nhận CASH · PAID'),
+        matching: find.byType(Opacity),
+      ),
+      findsNothing,
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 }
+
+DriverOffer _offer() => DriverOffer(
+      offerPublicId: 'offer-1',
+      bookingPublicId: 'booking-1',
+      pickupLatitude: 21.0287,
+      pickupLongitude: 105.8524,
+      dropoffLatitude: 21.0245,
+      dropoffLongitude: 105.8576,
+      vehicleType: 'MOTORBIKE',
+      currency: 'VND',
+      finalFare: '16500',
+      expiresAt: DateTime.utc(2026, 10, 16, 10, 0, 15),
+    );

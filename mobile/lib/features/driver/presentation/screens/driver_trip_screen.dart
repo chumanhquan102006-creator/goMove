@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../../core/di/injection.dart';
 import '../../../../core/storage/secure_storage_service.dart';
+import '../../../../core/theme/app_motion.dart';
 import '../../../customer/presentation/formatters.dart';
 import '../../../trip/data/trip_realtime_client.dart';
 import '../../../trip/domain/models/trip_models.dart';
@@ -113,7 +114,20 @@ class _DriverAcceptedBookingScreenState
                               child: Text('Đang tải chuyến đi từ máy chủ…')),
                         if (state.loading || state.operationBusy)
                           const LinearProgressIndicator(),
-                        _statusCard(context, state),
+                        if (state.operationBusy)
+                          const Padding(
+                            padding: EdgeInsets.only(top: 8),
+                            child: Text('Đang xử lý yêu cầu với máy chủ…'),
+                          ),
+                        AnimatedSwitcher(
+                          key: const ValueKey('driver-trip-status-motion'),
+                          duration: AppMotion.duration(context, AppMotion.card),
+                          switchInCurve: AppMotion.enterCurve,
+                          switchOutCurve: AppMotion.exitCurve,
+                          transitionBuilder: (child, animation) =>
+                              _cardTransition(context, child, animation),
+                          child: _statusCard(context, state),
+                        ),
                         if (state.error != null)
                           Card(
                               color:
@@ -139,33 +153,51 @@ class _DriverAcceptedBookingScreenState
                         if (state.payment != null)
                           _paymentCard(context, state.payment!),
                         if (state.receipt != null)
-                          Card(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .secondaryContainer,
-                              child: Padding(
-                                  padding: const EdgeInsets.all(16),
-                                  child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text('Biên nhận CASH · PAID',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .titleMedium),
-                                        const SizedBox(height: 8),
-                                        Text(
-                                            'Đã thu: ${vnd(state.receipt!.cashCollectedAmount)}'),
-                                        Text(
-                                            'Đã thu lúc: ${_time(state.receipt!.paidAt)}'),
-                                        Text('Hoa hồng phải nộp nền tảng: '
-                                            '${vnd(state.receipt!.commissionAmount)}'),
-                                        const Text(
-                                            'Đây là khoản phải thu; không có nghĩa hoa hồng '
-                                            'đã được nộp cho nền tảng.'),
-                                        Text('Tài xế được giải phóng lúc: '
-                                            '${_time(state.receipt!.driverReleasedAt)}'),
-                                      ]))),
+                          TweenAnimationBuilder<double>(
+                            key: ValueKey(
+                                'driver-cash-receipt-${state.receipt!.paymentPublicId}'),
+                            tween: Tween(begin: 0, end: 1),
+                            duration:
+                                AppMotion.duration(context, AppMotion.cash),
+                            curve: AppMotion.enterCurve,
+                            builder: (context, value, child) {
+                              if (AppMotion.reduceMotion(context)) {
+                                return child!;
+                              }
+                              return Transform.translate(
+                                offset: Offset(
+                                    0, AppMotion.cardTravel * (1 - value)),
+                                child: Opacity(opacity: value, child: child),
+                              );
+                            },
+                            child: Card(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .secondaryContainer,
+                                child: Padding(
+                                    padding: const EdgeInsets.all(16),
+                                    child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text('Biên nhận CASH · PAID',
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .titleMedium),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                              'Đã thu: ${vnd(state.receipt!.cashCollectedAmount)}'),
+                                          Text(
+                                              'Đã thu lúc: ${_time(state.receipt!.paidAt)}'),
+                                          Text('Hoa hồng phải nộp nền tảng: '
+                                              '${vnd(state.receipt!.commissionAmount)}'),
+                                          const Text(
+                                              'Đây là khoản phải thu; không có nghĩa hoa hồng '
+                                              'đã được nộp cho nền tảng.'),
+                                          Text('Tài xế được giải phóng lúc: '
+                                              '${_time(state.receipt!.driverReleasedAt)}'),
+                                        ]))),
+                          ),
                         const SizedBox(height: 16),
                         if (state.availableAction != null)
                           FilledButton.icon(
@@ -206,6 +238,7 @@ class _DriverAcceptedBookingScreenState
     final scheme = Theme.of(context).colorScheme;
     final completed = state.status == 'COMPLETED';
     return Card(
+      key: ValueKey('driver-trip-status-${state.status ?? 'loading'}'),
       color: completed ? scheme.secondaryContainer : scheme.primaryContainer,
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -230,6 +263,24 @@ class _DriverAcceptedBookingScreenState
                 'cho đến khi tiền mặt được xác nhận.'),
           ],
         ]),
+      ),
+    );
+  }
+
+  Widget _cardTransition(
+      BuildContext context, Widget child, Animation<double> animation) {
+    if (AppMotion.reduceMotion(context)) {
+      return child;
+    }
+    return FadeTransition(
+      opacity: animation,
+      child: AnimatedBuilder(
+        animation: animation,
+        builder: (_, content) => Transform.translate(
+          offset: Offset(0, AppMotion.cardTravel * (1 - animation.value)),
+          child: content,
+        ),
+        child: child,
       ),
     );
   }
@@ -297,8 +348,14 @@ class _DriverAcceptedBookingScreenState
     final paid = payment.status == 'PAID';
     final pending = payment.status == 'PENDING';
     final scheme = Theme.of(context).colorScheme;
-    return Card(
-      color: paid ? scheme.secondaryContainer : scheme.surfaceContainerHighest,
+    return TweenAnimationBuilder<Color?>(
+      tween: ColorTween(
+        begin: scheme.surfaceContainerHighest,
+        end: paid ? scheme.secondaryContainer : scheme.surfaceContainerHighest,
+      ),
+      duration: AppMotion.duration(context, AppMotion.cash),
+      curve: AppMotion.standardCurve,
+      builder: (context, color, child) => Card(color: color, child: child),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

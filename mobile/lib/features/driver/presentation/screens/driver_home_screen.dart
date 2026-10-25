@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../../core/config/app_config.dart';
 import '../../../../core/di/injection.dart';
+import '../../../../core/theme/app_motion.dart';
 import '../../../auth/domain/entities/user.dart';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../auth/presentation/bloc/auth_event.dart';
@@ -190,6 +191,11 @@ class _DriverContentState extends State<_DriverContent>
                         ?.copyWith(color: scheme.onSurfaceVariant)),
                 const SizedBox(height: 16),
                 if (state.loading) const LinearProgressIndicator(),
+                if (state.actionBusy)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text('Đang cập nhật với máy chủ…'),
+                  ),
                 if (state.error != null)
                   Card(
                       color: scheme.errorContainer,
@@ -329,43 +335,73 @@ class _DriverContentState extends State<_DriverContent>
                 if (state.acceptedOffer != null)
                   _bookingCard(state.acceptedOffer!),
                 if (offer != null && state.acceptedOffer == null)
-                  Card(
-                    color: scheme.primaryContainer,
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('Đề nghị nhận chuyến',
-                              style: Theme.of(context).textTheme.titleMedium),
-                          Text(
-                              'Thời gian còn ${seconds > 0 ? seconds : 0} giây để phản hồi',
-                              style: Theme.of(context).textTheme.bodyMedium),
-                          const SizedBox(height: 12),
-                          _offerDetails(offer),
-                          if (state.unresolvedDecision)
-                            TextButton(
-                                onPressed: cubit.reconcile,
-                                child: const Text('Kiểm tra lại kết quả')),
-                          Row(children: [
-                            Expanded(
-                                child: OutlinedButton(
-                                    onPressed: canDecide
-                                        ? () => cubit.decide(false)
-                                        : null,
-                                    child: const Text('Từ chối'))),
-                            const SizedBox(width: 8),
-                            Expanded(
-                                child: FilledButton(
-                                    onPressed: canDecide
-                                        ? () => cubit.decide(true)
-                                        : null,
-                                    child: const Text('Nhận chuyến'))),
-                          ]),
-                          const SizedBox(height: 4),
-                          const Text(
-                              'Thời hạn do máy chủ quyết định. Nếu đề nghị hết hạn, hãy chờ cuốc tiếp theo.'),
-                        ],
+                  TweenAnimationBuilder<double>(
+                    key: ValueKey('driver-offer-${offer.offerPublicId}'),
+                    tween: Tween(begin: 0, end: 1),
+                    duration: AppMotion.duration(context, AppMotion.card),
+                    curve: AppMotion.enterCurve,
+                    builder: (context, value, child) {
+                      if (AppMotion.reduceMotion(context)) return child!;
+                      return Transform.translate(
+                        offset: Offset(0, AppMotion.cardTravel * (1 - value)),
+                        child: Opacity(opacity: value, child: child),
+                      );
+                    },
+                    child: Card(
+                      color: scheme.primaryContainer,
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Đề nghị nhận chuyến',
+                                style: Theme.of(context).textTheme.titleMedium),
+                            Text(
+                                'Thời gian còn ${seconds > 0 ? seconds : 0} giây để phản hồi',
+                                style: Theme.of(context).textTheme.bodyMedium),
+                            const SizedBox(height: 12),
+                            _offerDetails(offer),
+                            if (state.offerActionBusy)
+                              const Padding(
+                                padding: EdgeInsets.only(top: 8, bottom: 8),
+                                child: Row(children: [
+                                  SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2),
+                                  ),
+                                  SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                        'Đang gửi quyết định đến máy chủ…'),
+                                  ),
+                                ]),
+                              ),
+                            if (state.unresolvedDecision)
+                              TextButton(
+                                  onPressed: cubit.reconcile,
+                                  child: const Text('Kiểm tra lại kết quả')),
+                            Row(children: [
+                              Expanded(
+                                  child: OutlinedButton(
+                                      onPressed: canDecide
+                                          ? () => cubit.decide(false)
+                                          : null,
+                                      child: const Text('Từ chối'))),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                  child: FilledButton(
+                                      onPressed: canDecide
+                                          ? () => cubit.decide(true)
+                                          : null,
+                                      child: const Text('Nhận chuyến'))),
+                            ]),
+                            const SizedBox(height: 4),
+                            const Text(
+                                'Thời hạn do máy chủ quyết định. Nếu đề nghị hết hạn, hãy chờ cuốc tiếp theo.'),
+                          ],
+                        ),
                       ),
                     ),
                   ),

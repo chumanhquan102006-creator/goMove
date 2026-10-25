@@ -3,6 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../../core/di/injection.dart';
 import '../../../../core/storage/secure_storage_service.dart';
+import '../../../../core/theme/app_motion.dart';
 import '../../../trip/data/trip_realtime_client.dart';
 import '../../../trip/domain/models/trip_models.dart';
 import '../../../trip/domain/repositories/trip_repository.dart';
@@ -139,6 +140,9 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                 CustomerTripTrackingMap.isRenderable(location);
             final progress = _progress(state.status);
             final colors = Theme.of(context).colorScheme;
+            final motionDuration = AppMotion.duration(context, AppMotion.card);
+            final cashDuration = AppMotion.duration(context, AppMotion.cash);
+            final reduceMotion = AppMotion.reduceMotion(context);
             return ListView(
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
                 children: [
@@ -158,7 +162,28 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                       letterSpacing: 0.7)),
                           const SizedBox(height: 8),
                           AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 250),
+                            key: const ValueKey('customer-status-switcher'),
+                            duration: motionDuration,
+                            switchInCurve: AppMotion.enterCurve,
+                            switchOutCurve: AppMotion.exitCurve,
+                            transitionBuilder: (child, animation) =>
+                                reduceMotion
+                                    ? child
+                                    : AnimatedBuilder(
+                                        animation: animation,
+                                        child: child,
+                                        builder: (context, child) =>
+                                            Transform.translate(
+                                          offset: Offset(
+                                              0,
+                                              AppMotion.cardTravel *
+                                                  (1 - animation.value)),
+                                          child: Opacity(
+                                            opacity: animation.value,
+                                            child: child,
+                                          ),
+                                        ),
+                                      ),
                             child: Text(customerTripStatusLabel(state.status),
                                 key: ValueKey(state.status),
                                 style:
@@ -167,10 +192,21 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                           const SizedBox(height: 14),
                           ClipRRect(
                             borderRadius: BorderRadius.circular(8),
-                            child: LinearProgressIndicator(
-                              value: (progress + 1) / _timeline.length,
-                              minHeight: 7,
-                              semanticsLabel: 'Tiến độ chuyến đi',
+                            child: TweenAnimationBuilder<double>(
+                              key: const ValueKey('customer-trip-progress'),
+                              tween: Tween<double>(
+                                begin: (_progress(widget.booking.status) + 1) /
+                                    _timeline.length,
+                                end: (progress + 1) / _timeline.length,
+                              ),
+                              duration: motionDuration,
+                              curve: AppMotion.standardCurve,
+                              builder: (context, value, child) =>
+                                  LinearProgressIndicator(
+                                value: value,
+                                minHeight: 7,
+                                semanticsLabel: 'Tiến độ chuyến đi',
+                              ),
                             ),
                           ),
                         ],
@@ -344,10 +380,26 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Row(children: [
-                                Icon(Icons.payments_outlined,
+                                AnimatedSwitcher(
+                                  key: const ValueKey('customer-cash-switcher'),
+                                  duration: cashDuration,
+                                  switchInCurve: AppMotion.enterCurve,
+                                  switchOutCurve: AppMotion.exitCurve,
+                                  transitionBuilder: (child, animation) =>
+                                      reduceMotion
+                                          ? child
+                                          : FadeTransition(
+                                              opacity: animation, child: child),
+                                  child: Icon(
+                                    payment?.isPaid == true
+                                        ? Icons.check_circle_outline
+                                        : Icons.payments_outlined,
+                                    key: ValueKey(payment?.isPaid == true),
                                     color: payment?.isPaid == true
                                         ? colors.tertiary
-                                        : colors.primary),
+                                        : colors.primary,
+                                  ),
+                                ),
                                 const SizedBox(width: 8),
                                 Expanded(
                                   child: Text('Thanh toán tiền mặt',

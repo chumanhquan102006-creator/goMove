@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gomove_mobile/core/di/injection.dart';
 import 'package:gomove_mobile/core/error/exceptions.dart';
 import 'package:gomove_mobile/core/storage/secure_storage_service.dart';
+import 'package:gomove_mobile/core/theme/app_motion.dart';
 import 'package:gomove_mobile/core/theme/app_theme.dart';
 import 'package:gomove_mobile/features/customer/domain/models/booking.dart';
 import 'package:gomove_mobile/features/customer/domain/models/quote.dart';
@@ -878,6 +879,135 @@ void main() {
     await tester.scrollUntilVisible(find.text('Chưa thanh toán (PENDING)'), 250,
         scrollable: find.byType(Scrollable).first);
     expect(find.text('Chưa thanh toán (PENDING)'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Confirmed status motion keeps an active map mounted once',
+      (tester) async {
+    final fixAt = DateTime.utc(2026, 10, 16, 10, 11);
+    trips.value = tracking('DRIVER_ACCEPTED',
+        latitude: 21.1, longitude: 105.1, locationUpdatedAt: fixAt);
+    registerScreenServices();
+    var mounts = 0;
+    var disposals = 0;
+    await tester.pumpWidget(MaterialApp(
+        home: BookingStatusScreen(
+            booking: booking(),
+            trackingMapBuilder: (_, __, ___) => _MapLifecycleSpy(
+                onMount: () => mounts++, onDispose: () => disposals++))));
+    await tester.pump();
+    await tester.pump();
+    await tester.scrollUntilVisible(find.text('Bản đồ thử nghiệm'), 250,
+        scrollable: find.byType(Scrollable).first);
+    expect(mounts, 1);
+    expect(disposals, 0);
+
+    trips.value = tracking('DRIVER_ARRIVED',
+        latitude: 21.1, longitude: 105.1, locationUpdatedAt: fixAt);
+    realtime.last!.eventController.add(TripStatusChangedEvent(
+        bookingId, 'DRIVER_ARRIVED', DateTime.utc(2026, 10, 16, 10, 12)));
+    await tester.pump();
+    await tester.pump();
+    expect(mounts, 1);
+    expect(disposals, 0);
+    expect(find.text('Bản đồ thử nghiệm'), findsOneWidget);
+    await tester.pump(AppMotion.card);
+    expect(mounts, 1);
+    expect(disposals, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(disposals, 1);
+  });
+
+  testWidgets('Session replacement removes the map without an exit animation',
+      (tester) async {
+    var currentSession = true;
+    when(() => session.isCurrentSession(any()))
+        .thenAnswer((_) async => currentSession);
+    trips.value = tracking('IN_PROGRESS',
+        latitude: 21.1,
+        longitude: 105.1,
+        locationUpdatedAt: DateTime.utc(2026, 10, 16, 10, 11));
+    registerScreenServices();
+    var mounts = 0;
+    var disposals = 0;
+    await tester.pumpWidget(MaterialApp(
+        home: BookingStatusScreen(
+            booking: booking(),
+            trackingMapBuilder: (_, __, ___) => _MapLifecycleSpy(
+                onMount: () => mounts++, onDispose: () => disposals++))));
+    await tester.pump();
+    await tester.pump();
+    await tester.scrollUntilVisible(find.text('Bản đồ thử nghiệm'), 250,
+        scrollable: find.byType(Scrollable).first);
+    expect(mounts - disposals, 1);
+
+    currentSession = false;
+    realtime.last!.eventController.add(TripDriverLocationEvent(
+        bookingId, 22, 106, null, null, DateTime.utc(2026, 10, 16, 10, 12)));
+    await tester.pump();
+    await tester.pump();
+    expect(disposals, mounts);
+    expect(find.text('Bản đồ thử nghiệm'), findsNothing);
+    expect(find.textContaining('Phiên đăng nhập đã thay đổi'), findsOneWidget);
+    expect(find.text('Vĩ độ: 21.1'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Status transition uses shared timing and honors reduced motion',
+      (tester) async {
+    trips.value = tracking('DRIVER_ACCEPTED');
+    registerScreenServices();
+    await tester.pumpWidget(MaterialApp(
+        builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(disableAnimations: true),
+            child: child!),
+        home: BookingStatusScreen(booking: booking())));
+    await tester.pump();
+    await tester.pump();
+    final switcher = tester.widget<AnimatedSwitcher>(
+        find.byKey(const ValueKey('customer-status-switcher')));
+    expect(switcher.duration, Duration.zero);
+    final progress = tester.widget<TweenAnimationBuilder<double>>(
+        find.byKey(const ValueKey('customer-trip-progress')));
+    expect(progress.duration, Duration.zero);
+
+    trips.value = tracking('DRIVER_ARRIVED');
+    realtime.last!.eventController.add(TripStatusChangedEvent(
+        bookingId, 'DRIVER_ARRIVED', DateTime.utc(2026, 10, 16, 10, 12)));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Tài xế đã đến điểm đón.'), findsOneWidget);
+    expect(find.text('Tài xế đã nhận chuyến.'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('CASH stays PENDING until server PAID, then icon acknowledges',
+      (tester) async {
+    trips.value = tracking('COMPLETED');
+    trips.cash = payment('PENDING');
+    registerScreenServices();
+    await tester
+        .pumpWidget(MaterialApp(home: BookingStatusScreen(booking: booking())));
+    await tester.pump();
+    await tester.pump();
+    await tester.scrollUntilVisible(find.text('Chưa thanh toán (PENDING)'), 250,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Đã thanh toán (PAID)'), findsNothing);
+    final cashSwitcher = tester.widget<AnimatedSwitcher>(
+        find.byKey(const ValueKey('customer-cash-switcher')));
+    expect(cashSwitcher.duration, AppMotion.cash);
+
+    trips.cash = payment('PAID');
+    await tester.scrollUntilVisible(find.text('Cập nhật từ máy chủ'), 250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.tap(find.text('Cập nhật từ máy chủ'));
+    await tester.pump();
+    await tester.pump();
+    await tester.scrollUntilVisible(find.text('Đã thanh toán (PAID)'), 250,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Đã thanh toán (PAID)'), findsOneWidget);
+    expect(find.byIcon(Icons.check_circle_outline), findsOneWidget);
+    expect(trips.confirmCalls, 0);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 

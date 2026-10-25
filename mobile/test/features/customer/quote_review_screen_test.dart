@@ -2,6 +2,7 @@ import 'package:bloc_test/bloc_test.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gomove_mobile/core/theme/app_motion.dart';
 import 'package:gomove_mobile/features/customer/domain/models/booking_intent.dart';
 import 'package:gomove_mobile/features/customer/domain/models/quote.dart';
 import 'package:gomove_mobile/features/customer/presentation/bloc/booking_cubit.dart';
@@ -46,7 +47,15 @@ void main() {
     when(() => cubit.submit(any())).thenAnswer((_) async {});
   });
 
-  Widget screen(Quote quote, DateTime Function() now) => MaterialApp(
+  Widget screen(Quote quote, DateTime Function() now,
+          {bool reducedMotion = false}) =>
+      MaterialApp(
+        builder: (context, child) => reducedMotion
+            ? MediaQuery(
+                data: MediaQuery.of(context).copyWith(disableAnimations: true),
+                child: child!,
+              )
+            : child!,
         home: BlocProvider<BookingCubit>.value(
             value: cubit, child: QuoteReviewScreen(quote: quote, now: now)),
       );
@@ -95,6 +104,71 @@ void main() {
     expect(find.text('Lấy báo giá mới'), findsOneWidget);
     expect(tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
         isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Server fare reveals once without submitting a Booking',
+      (tester) async {
+    final now = DateTime.utc(2026, 10, 22, 12);
+    await tester.pumpWidget(
+        screen(_quote(now.add(const Duration(seconds: 60))), () => now));
+
+    final reveal = find.byKey(const ValueKey('quote-fare-reveal'));
+    expect(tester.widget<AnimatedOpacity>(reveal).opacity, 0);
+    expect(tester.widget<AnimatedOpacity>(reveal).duration, AppMotion.card);
+    await tester.pump();
+    expect(tester.widget<AnimatedOpacity>(reveal).opacity, 1);
+    await tester.pump(AppMotion.card);
+    await tester.pump(const Duration(seconds: 3));
+    expect(find.text('16.500 VND'), findsOneWidget);
+    verifyNever(() => cubit.submit(any()));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Expiry warning updates at deadline before countdown tick',
+      (tester) async {
+    var now = DateTime.utc(2026, 10, 22, 12);
+    final quote = _quote(now.add(const Duration(milliseconds: 250)));
+    await tester.pumpWidget(screen(quote, () => now));
+    expect(find.text('Còn 1 giây để xác nhận'), findsOneWidget);
+
+    now = quote.expiresAt;
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Báo giá đã hết hạn'), findsOneWidget);
+    expect(tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+        isNull);
+    verifyNever(() => cubit.submit(any()));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Tap rechecks strict expiry even before the warning rebuilds',
+      (tester) async {
+    var now = DateTime.utc(2026, 10, 22, 12);
+    final quote = _quote(now.add(const Duration(milliseconds: 500)));
+    await tester.pumpWidget(screen(quote, () => now));
+    expect(tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+        isNotNull);
+
+    now = quote.expiresAt;
+    await tester.tap(find.text('Xác nhận đặt xe'));
+    await tester.pump();
+    expect(find.text('Báo giá đã hết hạn'), findsOneWidget);
+    verifyNever(() => cubit.submit(any()));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Reduced motion keeps authoritative fare immediately visible',
+      (tester) async {
+    final now = DateTime.utc(2026, 10, 22, 12);
+    await tester.pumpWidget(screen(
+        _quote(now.add(const Duration(seconds: 60))), () => now,
+        reducedMotion: true));
+    final reveal = tester.widget<AnimatedOpacity>(
+        find.byKey(const ValueKey('quote-fare-reveal')));
+    expect(reveal.opacity, 1);
+    expect(reveal.duration, Duration.zero);
+    expect(find.text('16.500 VND'), findsOneWidget);
+    verifyNever(() => cubit.submit(any()));
     await tester.pumpWidget(const SizedBox.shrink());
   });
 

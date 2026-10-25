@@ -7,6 +7,7 @@ import 'package:gomove_mobile/core/config/app_config.dart';
 import 'package:gomove_mobile/core/di/injection.dart';
 import 'package:gomove_mobile/core/error/exceptions.dart';
 import 'package:gomove_mobile/core/storage/secure_storage_service.dart';
+import 'package:gomove_mobile/core/theme/app_motion.dart';
 import 'package:gomove_mobile/features/auth/domain/entities/user.dart';
 import 'package:gomove_mobile/features/auth/presentation/bloc/auth_bloc.dart';
 import 'package:gomove_mobile/features/driver/data/accepted_booking_store.dart';
@@ -257,6 +258,8 @@ class PreviewDriverCubit extends DriverCubit {
   Future<void> initialize() async {
     emit(preview);
   }
+
+  void show(DriverState next) => emit(next);
 }
 
 DriverOffer offer(DateTime expiry) => DriverOffer(
@@ -1043,6 +1046,100 @@ void main() {
     final accept = tester
         .widget<FilledButton>(find.widgetWithText(FilledButton, 'Nhận chuyến'));
     expect(accept.onPressed, isNotNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('New offer enters once and busy decision keeps server authority',
+      (tester) async {
+    AppConfig.reset();
+    await sl.reset();
+    await setupServiceLocator(config: AppConfig.initialize(forceMock: false));
+    final preview = PreviewDriverCubit(
+        DriverState(
+            operatingStatus: 'ONLINE', vehicles: repository.vehicleList),
+        DriverUseCases(repository),
+        location,
+        session,
+        store);
+    await sl.unregister<DriverCubit>();
+    sl.registerFactoryParam<DriverCubit, String, void>((_, __) => preview);
+    const user = User(
+        publicId: 'user-A',
+        phoneNumber: '0900000000',
+        fullName: 'Driver A',
+        role: UserRole.driver);
+    await tester.pumpWidget(BlocProvider<AuthBloc>(
+      create: (_) => sl<AuthBloc>(),
+      child: const MaterialApp(home: DriverHomeScreen(user: user)),
+    ));
+    final incoming = offer(DateTime.utc(2099, 1, 1));
+    preview.show(preview.state.copy(offer: incoming));
+    await tester.pump();
+    final motion = tester.widget<TweenAnimationBuilder<double>>(
+        find.byKey(const ValueKey('driver-offer-offer-1')));
+    expect(motion.duration, AppMotion.card);
+    expect(repository.acceptCalls, 0);
+    await tester.pump(AppMotion.card);
+    final offerFade = find.ancestor(
+      of: find.text('Đề nghị nhận chuyến'),
+      matching: find.byType(Opacity),
+    );
+    expect(tester.widget<Opacity>(offerFade.first).opacity, 1);
+    await tester.pump(const Duration(seconds: 1));
+    expect(tester.widget<Opacity>(offerFade.first).opacity, 1);
+    preview.show(preview.state.copy(offerActionBusy: true));
+    await tester.pump();
+    await tester.scrollUntilVisible(
+        find.text('Đang gửi quyết định đến máy chủ…'), 200);
+    expect(find.text('Đang gửi quyết định đến máy chủ…'), findsOneWidget);
+    final accept = tester
+        .widget<FilledButton>(find.widgetWithText(FilledButton, 'Nhận chuyến'));
+    expect(accept.onPressed, isNull);
+    expect(repository.acceptCalls, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Offer entrance is immediate with reduced motion',
+      (tester) async {
+    AppConfig.reset();
+    await sl.reset();
+    await setupServiceLocator(config: AppConfig.initialize(forceMock: false));
+    await sl.unregister<DriverCubit>();
+    sl.registerFactoryParam<DriverCubit, String, void>((_, __) =>
+        PreviewDriverCubit(
+            DriverState(
+                operatingStatus: 'ONLINE',
+                vehicles: repository.vehicleList,
+                offer: offer(DateTime.utc(2099, 1, 1))),
+            DriverUseCases(repository),
+            location,
+            session,
+            store));
+    const user = User(
+        publicId: 'user-A',
+        phoneNumber: '0900000000',
+        fullName: 'Driver A',
+        role: UserRole.driver);
+    await tester.pumpWidget(BlocProvider<AuthBloc>(
+      create: (_) => sl<AuthBloc>(),
+      child: const MaterialApp(
+        home: MediaQuery(
+          data: MediaQueryData(disableAnimations: true),
+          child: DriverHomeScreen(user: user),
+        ),
+      ),
+    ));
+    final motion = tester.widget<TweenAnimationBuilder<double>>(
+        find.byKey(const ValueKey('driver-offer-offer-1')));
+    expect(motion.duration, Duration.zero);
+    expect(find.text('Đề nghị nhận chuyến'), findsOneWidget);
+    expect(
+      find.ancestor(
+        of: find.text('Đề nghị nhận chuyến'),
+        matching: find.byType(Opacity),
+      ),
+      findsNothing,
+    );
     await tester.pumpWidget(const SizedBox.shrink());
   });
 

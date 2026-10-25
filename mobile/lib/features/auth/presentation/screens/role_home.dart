@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../../../core/theme/app_motion.dart';
 import '../../../../features/customer/presentation/screens/customer_home_screen.dart';
 import '../../../../features/driver/presentation/screens/driver_home_screen.dart';
 import '../../domain/entities/user.dart';
@@ -17,7 +18,7 @@ class RoleHome extends StatelessWidget {
         listener: (context, state) {
           if (state is UnauthenticatedState) {
             Navigator.of(context).pushAndRemoveUntil(
-                MaterialPageRoute<void>(builder: (_) => const LoginScreen()),
+                AppMotion.immediateRoute<void>(const LoginScreen()),
                 (_) => false);
           }
         },

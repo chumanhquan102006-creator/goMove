@@ -1004,9 +1004,24 @@ void main() {
     expect(find.textContaining('Booking UUID: booking-1'), findsOneWidget);
     expect(find.textContaining('Chuyến đi đã hoàn thành'), findsWidgets);
     expect(find.textContaining('16.500 VND'), findsOneWidget);
-    expect(find.textContaining('Điểm đón: 21.0287, 105.8524'), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('Xác nhận đã thu tiền mặt'), 300);
+    await tester.scrollUntilVisible(find.text('Xác nhận đã thu tiền mặt'), 80,
+        scrollable: find.byType(Scrollable).first);
     expect(find.text('Xác nhận đã thu tiền mặt'), findsOneWidget);
+    await tester.dragFrom(
+        tester
+            .getCenter(find.byKey(const ValueKey('driver-trip-sheet-handle'))),
+        const Offset(0, -300));
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.scrollUntilVisible(find.text('Điểm đón và điểm đến'), 80,
+        scrollable: find.byType(Scrollable).first);
+    await tester.ensureVisible(find.text('Điểm đón và điểm đến'));
+    await tester.pump();
+    await tester.tap(find.text('Điểm đón và điểm đến'));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.scrollUntilVisible(
+        find.textContaining('Điểm đón: 21.0287, 105.8524'), 80,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.textContaining('Điểm đón: 21.0287, 105.8524'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -1212,6 +1227,8 @@ void main() {
     await tester.scrollUntilVisible(
         find.text('Lấy lại biên nhận đã xác nhận'), 250);
     expect(find.text('Xác nhận đã thu tiền mặt'), findsNothing);
+    await tester.scrollUntilVisible(find.textContaining('Tiền mặt: Đã thu'), 80,
+        scrollable: find.byType(Scrollable).first);
     expect(find.textContaining('Tiền mặt: Đã thu'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());

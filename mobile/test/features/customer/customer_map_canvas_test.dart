@@ -120,6 +120,83 @@ void main() {
     map.onMapClick!(const Point(0, 0), const LatLng(21.0287, 105.8524));
     expect(taps, 1, reason: 'A late valid style restores map selection');
   });
+
+  testWidgets('Known points create markers, never a fabricated road line',
+      (tester) async {
+    const channel = MethodChannel('plugins.flutter.io/maplibre_gl');
+    tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (_) async => null);
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null));
+    final originalFactory = MapLibrePlatform.createInstance;
+    MapLibrePlatform.createInstance = _FakeMapLibrePlatform.new;
+    addTearDown(() => MapLibrePlatform.createInstance = originalFactory);
+
+    await tester.pumpWidget(const MaterialApp(
+      home: Scaffold(
+        body: CustomerMapCanvas(
+          fullScreen: true,
+          pickup: Coordinates(21.0287, 105.8524),
+          dropoff: Coordinates(21.0245, 105.8576),
+          onTap: _ignoreTap,
+        ),
+      ),
+    ));
+    await tester.pump();
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final controller = _RecordingMapController();
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await tester.pump();
+    await tester.pump();
+
+    expect(controller.recordedCircles, hasLength(2));
+    expect(controller.lineCalls, 0);
+    expect(find.byType(MapLibreMap), findsOneWidget);
+  });
+
+  testWidgets('Fit points respects the visible map height above the keyboard',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetViewInsets);
+    const channel = MethodChannel('plugins.flutter.io/maplibre_gl');
+    tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (_) async => null);
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null));
+    final originalFactory = MapLibrePlatform.createInstance;
+    MapLibrePlatform.createInstance = _FakeMapLibrePlatform.new;
+    addTearDown(() => MapLibrePlatform.createInstance = originalFactory);
+
+    await tester.pumpWidget(const MaterialApp(
+      home: Scaffold(
+        body: CustomerMapCanvas(
+          fullScreen: true,
+          pickup: Coordinates(21.0287, 105.8524),
+          dropoff: Coordinates(21.0245, 105.8576),
+          onTap: _ignoreTap,
+        ),
+      ),
+    ));
+    await tester.pump();
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final controller = _RecordingMapController();
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await tester.pump();
+    await tester.tap(find.byTooltip('Xem 2 điểm'));
+    await tester.pump();
+
+    final update = controller.lastCameraUpdate!.toJson() as List<dynamic>;
+    final mapHeight = tester.getSize(find.byType(CustomerMapCanvas)).height;
+    expect(update.first, 'newLatLngBounds');
+    expect(update[5] as double, lessThanOrEqualTo(mapHeight - 160));
+    expect((update[3] as double) + (update[5] as double), lessThan(mapHeight));
+  });
 }
 
 void _ignoreTap(Coordinates _) {}
@@ -135,4 +212,34 @@ class _FakeMapLibrePlatform extends Fake implements MapLibrePlatform {
 
   @override
   void dispose() {}
+}
+
+class _RecordingMapController extends Fake implements MapLibreMapController {
+  final recordedCircles = <CircleOptions>[];
+  int lineCalls = 0;
+  CameraUpdate? lastCameraUpdate;
+
+  @override
+  Future<bool?> animateCamera(CameraUpdate cameraUpdate,
+      {Duration? duration}) async {
+    lastCameraUpdate = cameraUpdate;
+    return true;
+  }
+
+  @override
+  Future<void> clearCircles() async => recordedCircles.clear();
+
+  @override
+  Future<Circle> addCircle(CircleOptions options,
+      [Map<String, dynamic>? data]) async {
+    recordedCircles.add(options);
+    return Circle('test-circle-${recordedCircles.length}', options, data);
+  }
+
+  @override
+  Future<Line> addLine(LineOptions options,
+      [Map<String, dynamic>? data]) async {
+    lineCalls++;
+    return Line('test-line-$lineCalls', options, data);
+  }
 }

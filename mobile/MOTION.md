@@ -1,6 +1,8 @@
-# GoMove Motion Design — proposed M4.4 specification
+# GoMove Motion Design — M4.4 specification and implementation notes
 
-Status: **M4.4A implemented; M4.4B remains a proposal**. The three
+Status: **M4.4A committed; M4.4B map and sheet UI implemented in the current
+uncommitted mobile worktree**. Authorized road-route geometry, reverse geocoding
+and dual-device performance validation remain separate gates. The three
 user-provided MP4 references were reviewed as motion/visual examples. The
 timings below are **GoMove design targets**, not copies of their brand,
 implementation, easing curves or simulated data. Timestamps in the observation
@@ -14,6 +16,26 @@ interpolation remain M4.4B. `flutter analyze --no-pub` passed and
 `flutter test --no-pub` passed 226 tests. The real-mode debug APK build did not reach
 compilation because Gradle reported `Unable to establish loopback connection`;
 dual-emulator visual/performance validation is still outstanding.
+
+M4.4B implementation note (2026-10-25): Customer booking and authorized trip
+tracking, plus the Driver's accepted trip, now use a stable MapLibre surface
+behind a `DraggableScrollableSheet`. Their Flutter overlays handle status,
+coordinates, controls and CASH without moving the native map on ordinary state
+updates. Only known pickup/dropoff points and authorized live Driver GPS are
+shown. Home hides its map before opening Quote or Booking routes so two native
+maps do not overlap. The Customer marker has a bounded 300 ms interpolation
+experiment between valid ordered fixes, exposed only by
+`--dart-define=GOMOVE_EXPERIMENTAL_MARKER_INTERPOLATION=true`. It is **off by
+default** until native performance is measured; normal tracking applies the
+latest valid GPS fix directly. No road line is drawn because the Backend does
+not currently persist or expose route geometry; see
+`ROUTE_GEOMETRY_FOLLOWUP.md` for the proposed authorized read-only contract.
+Native MapLibre behavior, FPS, RAM and dual-emulator end-to-end operation have
+not yet been measured. Verification on 2026-10-25: `flutter analyze --no-pub`
+exited 0 with no issues; `flutter test --no-pub` exited 0 with 242 tests. The
+real-mode debug APK command exited 1 in Gradle with `Unable to establish
+loopback connection` before compilation, so no APK success or Android visual
+result is claimed.
 
 ## What the three videos actually show
 
@@ -171,7 +193,7 @@ Flutter documents iOS reduced motion separately, so verify that platform path
 before expanding beyond Android. Do not assume overriding `MediaQuery` alone
 changes framework-managed controllers.
 
-## File-by-file implementation plan (future work, not done here)
+## Original file-by-file implementation plan
 
 | File | Proposed change | Phase |
 | --- | --- | --- |

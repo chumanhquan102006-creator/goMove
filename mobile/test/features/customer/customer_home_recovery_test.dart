@@ -167,6 +167,35 @@ class _TripRepository implements TripRepository {
 
 class _Session extends Mock implements SecureStorageService {}
 
+class _MapLifecycleSpy extends StatefulWidget {
+  final VoidCallback onMount;
+  final VoidCallback onDispose;
+  final Widget child;
+
+  const _MapLifecycleSpy(
+      {required this.onMount, required this.onDispose, required this.child});
+
+  @override
+  State<_MapLifecycleSpy> createState() => _MapLifecycleSpyState();
+}
+
+class _MapLifecycleSpyState extends State<_MapLifecycleSpy> {
+  @override
+  void initState() {
+    super.initState();
+    widget.onMount();
+  }
+
+  @override
+  void dispose() {
+    widget.onDispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
 void main() {
   late _CustomerRepository repository;
   late _ActiveStore activeStore;
@@ -177,6 +206,8 @@ void main() {
   late bool mapUnavailable;
   Coordinates? lastMapPickup;
   Coordinates? lastMapDropoff;
+  var mapMounts = 0;
+  var mapDisposals = 0;
 
   Widget fakeMapBuilder(BuildContext context, Coordinates? pickup,
       Coordinates? dropoff, ValueChanged<Coordinates> onTap) {
@@ -185,9 +216,20 @@ void main() {
     if (mapUnavailable) {
       return const Text('Bản đồ giả không tải được');
     }
-    return TextButton(
-        onPressed: () => onTap(mapTap),
-        child: const Text('Chọn trên bản đồ giả'));
+    return _MapLifecycleSpy(
+      onMount: () => mapMounts++,
+      onDispose: () => mapDisposals++,
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: Padding(
+          // Match the uncovered top strip when the booking sheet is expanded.
+          padding: const EdgeInsets.only(top: 8),
+          child: TextButton(
+              onPressed: () => onTap(mapTap),
+              child: const Text('Chọn trên bản đồ giả')),
+        ),
+      ),
+    );
   }
 
   setUp(() async {
@@ -199,6 +241,8 @@ void main() {
     mapUnavailable = false;
     lastMapPickup = null;
     lastMapDropoff = null;
+    mapMounts = 0;
+    mapDisposals = 0;
     activeStore = _ActiveStore();
     tripRepository = _TripRepository();
     session = _Session();
@@ -264,10 +308,8 @@ void main() {
         scrollable: find.byType(Scrollable).first);
     await tester.tap(find.text(mode));
     await tester.pump();
-    await tester.scrollUntilVisible(find.text('Chọn trên bản đồ giả'), 250,
-        scrollable: find.byType(Scrollable).first);
     await tester.tap(find.text('Chọn trên bản đồ giả'));
-    await tester.pump();
+    await tester.pumpAndSettle();
   }
 
   Future<void> enterCoordinate(
@@ -307,9 +349,42 @@ void main() {
     expect(repository.createCalls, 0);
   });
 
+  testWidgets('Booking sheet drags and scrolls without remounting map',
+      (tester) async {
+    await showHome(tester);
+    final sheetFinder = find.byKey(const ValueKey('customer-booking-sheet'));
+    final scrollFinder =
+        find.byKey(const ValueKey('customer-booking-sheet-scroll'));
+    final sheet = tester.widget<DraggableScrollableSheet>(sheetFinder);
+    final scroll = tester.widget<ListView>(scrollFinder);
+    expect(sheet.snap, isTrue);
+    expect(sheet.minChildSize, .46);
+    expect(scroll.controller, isNotNull);
+    expect(mapMounts - mapDisposals, 1);
+    final collapsedHeight = tester.getSize(sheetFinder).height;
+
+    await tester.dragFrom(
+        tester.getCenter(
+            find.byKey(const ValueKey('customer-booking-sheet-handle'))),
+        const Offset(0, -350));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(sheetFinder).height, greaterThan(collapsedHeight));
+    expect(mapMounts - mapDisposals, 1);
+
+    await tester.scrollUntilVisible(find.text('Điểm đến · kinh độ'), 200,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Điểm đến · kinh độ'), findsOneWidget);
+    expect(find.text('Lấy báo giá từ máy chủ'), findsOneWidget);
+    expect(mapMounts - mapDisposals, 1);
+    expect(repository.quoteRequests, isEmpty);
+    expect(repository.createCalls, 0);
+  });
+
   testWidgets('Selection motion follows point choice without a Quote request',
       (tester) async {
     await showHome(tester);
+    await tester.scrollUntilVisible(find.text('Chọn điểm đón'), 250,
+        scrollable: find.byType(Scrollable).first);
     expect(
         tester
             .widget<AnimatedScale>(
@@ -330,6 +405,8 @@ void main() {
         .position
         .jumpTo(0);
     await tester.pump();
+    await tester.scrollUntilVisible(find.text('Chọn điểm đến'), 250,
+        scrollable: find.byType(Scrollable).first);
     final selected = tester.widget<AnimatedScale>(
         find.byKey(const ValueKey('dropoff-selection-motion')));
     expect(selected.scale, 1);
@@ -343,6 +420,8 @@ void main() {
   testWidgets('Reduced motion keeps map point selection immediate',
       (tester) async {
     await showHome(tester, reducedMotion: true);
+    await tester.scrollUntilVisible(find.text('Chọn điểm đón'), 250,
+        scrollable: find.byType(Scrollable).first);
     expect(
         tester
             .widget<AnimatedScale>(
@@ -352,8 +431,10 @@ void main() {
     await selectOnFakeMap(
         tester, 'Chọn điểm đến', const Coordinates(21.05, 105.88));
     await tester.scrollUntilVisible(
-        find.text('Vĩ độ 21.050000 · Kinh độ 105.880000'), 250,
+        find.byKey(const ValueKey('_MapTarget.dropoff-point-summary-motion')),
+        250,
         scrollable: find.byType(Scrollable).first);
+    await tester.pumpAndSettle();
     expect(find.text('Vĩ độ 21.050000 · Kinh độ 105.880000'), findsOneWidget);
     expect(
         tester
@@ -395,6 +476,8 @@ void main() {
     final vehicle = find.byType(DropdownButtonFormField<VehicleType>);
     await tester.scrollUntilVisible(vehicle, 250,
         scrollable: find.byType(Scrollable).first);
+    await tester.ensureVisible(vehicle);
+    await tester.pumpAndSettle();
     await tester.tap(vehicle);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Ô tô 4 chỗ').last);
@@ -414,6 +497,8 @@ void main() {
       'Location summaries label coordinates without inventing addresses',
       (tester) async {
     await showHome(tester);
+    await tester.scrollUntilVisible(find.text('Đang chọn: Điểm đón'), 250,
+        scrollable: find.byType(Scrollable).first);
     expect(find.text('Đang chọn: Điểm đón'), findsOneWidget);
     await selectOnFakeMap(
         tester, 'Chọn điểm đến', const Coordinates(21.05, 105.88));
@@ -422,9 +507,11 @@ void main() {
         .position
         .jumpTo(0);
     await tester.pump();
+    await tester.scrollUntilVisible(find.text('Đang chọn: Điểm đến'), 250,
+        scrollable: find.byType(Scrollable).first);
     expect(find.text('Đang chọn: Điểm đến'), findsOneWidget);
     await tester.scrollUntilVisible(
-        find.text('Vĩ độ 21.050000 · Kinh độ 105.880000'), 250,
+        find.text('Vĩ độ 21.050000 · Kinh độ 105.880000'), 60,
         scrollable: find.byType(Scrollable).first);
     expect(find.text('Vĩ độ 21.050000 · Kinh độ 105.880000'), findsOneWidget);
     expect(find.text('Vĩ độ 21.028700 · Kinh độ 105.852400'), findsOneWidget);
@@ -536,8 +623,7 @@ void main() {
             home:
                 CustomerHomeScreen(user: userB, mapBuilder: fakeMapBuilder))));
     await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(find.text('Chọn trên bản đồ giả'), 250,
-        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Chọn trên bản đồ giả'), findsOneWidget);
 
     expect(lastMapPickup?.latitude, 21.0287);
     expect(lastMapPickup?.longitude, 105.8524);

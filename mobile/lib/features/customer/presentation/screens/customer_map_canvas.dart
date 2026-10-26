@@ -6,6 +6,7 @@ import 'package:flutter/gestures.dart'
 import 'package:flutter/material.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 
+import '../../../../core/theme/app_motion.dart';
 import '../../domain/models/quote.dart';
 import '../widgets/customer_map_source.dart';
 
@@ -21,12 +22,14 @@ class CustomerMapCanvas extends StatefulWidget {
   final Coordinates? pickup;
   final Coordinates? dropoff;
   final ValueChanged<Coordinates> onTap;
+  final bool fullScreen;
 
   const CustomerMapCanvas({
     super.key,
     required this.pickup,
     required this.dropoff,
     required this.onTap,
+    this.fullScreen = false,
   });
 
   @override
@@ -152,6 +155,14 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
     if (!_styleLoaded || controller == null) return;
     final pickup = widget.pickup;
     final dropoff = widget.dropoff;
+    final renderObject = context.findRenderObject();
+    final mapHeight = renderObject is RenderBox && renderObject.hasSize
+        ? renderObject.size.height
+        : MediaQuery.sizeOf(context).height;
+    final maxBottomInset = mapHeight > 160 ? mapHeight - 160 : 0.0;
+    final bottomInset = widget.fullScreen
+        ? (mapHeight * .46).clamp(0.0, maxBottomInset).toDouble()
+        : 48.0;
     try {
       if (pickup != null && dropoff != null && !_samePoint(pickup, dropoff)) {
         await controller.animateCamera(
@@ -177,9 +188,10 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
             left: 48,
             top: 48,
             right: 48,
-            bottom: 48,
+            bottom: bottomInset,
           ),
-          duration: const Duration(milliseconds: 350),
+          duration:
+              AppMotion.duration(context, const Duration(milliseconds: 350)),
         );
       } else {
         final point = pickup ?? dropoff;
@@ -189,7 +201,8 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
             LatLng(point.latitude, point.longitude),
             15,
           ),
-          duration: const Duration(milliseconds: 350),
+          duration:
+              AppMotion.duration(context, const Duration(milliseconds: 350)),
         );
       }
       if (mounted && _cameraUpdateFailed) {
@@ -201,8 +214,123 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
     }
   }
 
+  Widget _mapSurface() => FutureBuilder<bool>(
+        future: _mapReady,
+        builder: (context, snapshot) {
+          if (!snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.data != true) {
+            return const Center(
+                child: Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('Không thể khởi tạo bản đồ trên thiết bị này.',
+                  textAlign: TextAlign.center),
+            ));
+          }
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              MapLibreMap(
+                initialCameraPosition:
+                    const CameraPosition(target: _hanoi, zoom: 14),
+                styleString: CustomerMapSource.styleUrl,
+                myLocationEnabled: false,
+                logoEnabled: true,
+                gestureRecognizers: _mapGestures,
+                onMapCreated: (controller) => _controller = controller,
+                onStyleLoadedCallback: _onStyleLoaded,
+                onMapClick: (_, position) {
+                  if (!_styleLoaded || _mapUnavailable) return;
+                  widget.onTap(
+                    Coordinates(position.latitude, position.longitude),
+                  );
+                },
+              ),
+              if (_mapUnavailable)
+                const AbsorbPointer(
+                  child: ColoredBox(
+                    color: Color(0xDDF8F9FA),
+                    child: Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(16),
+                        child: Text(
+                          'Nền bản đồ tạm thời không tải được.',
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
+      );
+
   @override
   Widget build(BuildContext context) {
+    if (widget.fullScreen) {
+      final scheme = Theme.of(context).colorScheme;
+      return Stack(fit: StackFit.expand, children: [
+        _mapSurface(),
+        Positioned(
+          top: 12,
+          right: 12,
+          child: FloatingActionButton.small(
+            heroTag: 'customer-fit-points',
+            tooltip: 'Xem 2 điểm',
+            onPressed: _styleLoaded && !_mapUnavailable ? _fitPoints : null,
+            backgroundColor: scheme.surface,
+            foregroundColor: scheme.primary,
+            child: const Icon(Icons.zoom_out_map),
+          ),
+        ),
+        Positioned(
+          top: 12,
+          left: 12,
+          right: 76,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: scheme.surface.withAlpha(238),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              child: Text(
+                CustomerMapSource.visibleAttribution,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ),
+          ),
+        ),
+        if (_mapUnavailable ||
+            _setupFailed ||
+            _markerUpdateFailed ||
+            _cameraUpdateFailed)
+          Positioned(
+            top: 76,
+            left: 12,
+            right: 12,
+            child: Material(
+              color: scheme.errorContainer,
+              borderRadius: BorderRadius.circular(12),
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Text(
+                  _mapUnavailable || _setupFailed
+                      ? 'Không tải được bản đồ. Bạn vẫn có thể nhập tọa độ thủ công trong bảng đặt xe.'
+                      : _markerUpdateFailed
+                          ? 'Không thể cập nhật điểm trên bản đồ. Hãy kiểm tra tọa độ trong bảng đặt xe.'
+                          : 'Không thể điều chỉnh góc nhìn bản đồ. Có thể chọn điểm hoặc nhập tọa độ thủ công.',
+                  style: TextStyle(color: scheme.onErrorContainer),
+                ),
+              ),
+            ),
+          ),
+      ]);
+    }
     final media = MediaQuery.of(context);
     // Scaffold removes viewInsets from its body MediaQuery; read the view's
     // original inset so the map still contracts when the keyboard appears.
@@ -217,59 +345,7 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
         borderRadius: BorderRadius.circular(18),
         child: SizedBox(
           height: height,
-          child: FutureBuilder<bool>(
-            future: _mapReady,
-            builder: (context, snapshot) {
-              if (!snapshot.hasData) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              if (snapshot.data != true) {
-                return const Center(
-                    child: Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Text('Không thể khởi tạo bản đồ trên thiết bị này.',
-                      textAlign: TextAlign.center),
-                ));
-              }
-              return Stack(
-                fit: StackFit.expand,
-                children: [
-                  MapLibreMap(
-                    initialCameraPosition:
-                        const CameraPosition(target: _hanoi, zoom: 14),
-                    styleString: CustomerMapSource.styleUrl,
-                    myLocationEnabled: false,
-                    logoEnabled: true,
-                    // The map is inside a ListView; let it handle pan and zoom.
-                    gestureRecognizers: _mapGestures,
-                    onMapCreated: (controller) => _controller = controller,
-                    onStyleLoadedCallback: _onStyleLoaded,
-                    onMapClick: (_, position) {
-                      if (!_styleLoaded || _mapUnavailable) return;
-                      widget.onTap(
-                        Coordinates(position.latitude, position.longitude),
-                      );
-                    },
-                  ),
-                  if (_mapUnavailable)
-                    const AbsorbPointer(
-                      child: ColoredBox(
-                        color: Color(0xDDF8F9FA),
-                        child: Center(
-                          child: Padding(
-                            padding: EdgeInsets.all(16),
-                            child: Text(
-                              'Nền bản đồ tạm thời không tải được.',
-                              textAlign: TextAlign.center,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              );
-            },
-          ),
+          child: _mapSurface(),
         ),
       ),
       const SizedBox(height: 4),

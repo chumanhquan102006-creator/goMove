@@ -92,8 +92,8 @@ class _QuoteReviewScreenState extends State<QuoteReviewScreen> {
     return BlocListener<BookingCubit, BookingState>(
       listener: (context, state) {
         if (state.booking != null) {
-          Navigator.of(context).pushReplacement(MaterialPageRoute<void>(
-              builder: (_) => BookingStatusScreen(booking: state.booking!)));
+          Navigator.of(context).pushReplacement(AppMotion.immediateRoute<void>(
+              BookingStatusScreen(booking: state.booking!)));
         }
       },
       child: Scaffold(

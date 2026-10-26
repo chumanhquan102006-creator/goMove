@@ -148,8 +148,8 @@ class _DriverContentState extends State<_DriverContent>
           listenWhen: (previous, current) =>
               previous.acceptedOffer == null && current.acceptedOffer != null,
           listener: (context, state) {
-            Navigator.of(context).push(MaterialPageRoute<void>(
-              builder: (_) => DriverAcceptedBookingScreen(
+            Navigator.of(context).push(AppMotion.immediateRoute<void>(
+              DriverAcceptedBookingScreen(
                   offer: state.acceptedOffer!,
                   driverCubit: context.read<DriverCubit>()),
             ));
@@ -457,8 +457,8 @@ class _DriverContentState extends State<_DriverContent>
                     width: double.infinity,
                     child: FilledButton.icon(
                         onPressed: () => Navigator.of(context).push(
-                            MaterialPageRoute<void>(
-                                builder: (_) => DriverAcceptedBookingScreen(
+                            AppMotion.immediateRoute<void>(
+                                DriverAcceptedBookingScreen(
                                     offer: offer,
                                     driverCubit: context.read<DriverCubit>()))),
                         icon: const Icon(Icons.route_outlined),

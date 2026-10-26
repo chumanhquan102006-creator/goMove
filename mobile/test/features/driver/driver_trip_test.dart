@@ -7,6 +7,7 @@ import 'package:gomove_mobile/core/theme/app_motion.dart';
 import 'package:gomove_mobile/features/driver/data/location/driver_location_source.dart';
 import 'package:gomove_mobile/features/driver/domain/models/driver_models.dart';
 import 'package:gomove_mobile/features/driver/presentation/bloc/driver_trip_cubit.dart';
+import 'package:gomove_mobile/features/driver/presentation/screens/driver_trip_map.dart';
 import 'package:gomove_mobile/features/driver/presentation/screens/driver_trip_screen.dart';
 import 'package:gomove_mobile/features/trip/data/trip_realtime_client.dart';
 import 'package:gomove_mobile/features/trip/domain/models/trip_models.dart';
@@ -190,6 +191,23 @@ void main() {
   });
 
   tearDown(() async => cubit.close());
+
+  test('Driver map validates both offer points and creates point markers only',
+      () {
+    final markers = DriverTripMap.pointMarkers(_offer());
+    expect(DriverTripMap.hasValidPoints(_offer()), isTrue);
+    expect(markers, hasLength(2));
+    expect(markers.first.geometry?.latitude, closeTo(21.0287, 1e-9));
+    expect(markers.first.geometry?.longitude, closeTo(105.8524, 1e-9));
+    expect(markers.last.geometry?.latitude, closeTo(21.0245, 1e-9));
+    expect(markers.last.geometry?.longitude, closeTo(105.8576, 1e-9));
+    expect(markers.first.circleColor, '#FFFFFF');
+    expect(markers.last.circleColor, '#E87521');
+    expect(DriverTripMap.hasValidPoints(_offer(pickupLatitude: double.nan)),
+        isFalse);
+    expect(
+        DriverTripMap.hasValidPoints(_offer(dropoffLongitude: 181)), isFalse);
+  });
 
   test('all four actions are enabled only by server-confirmed state, in order',
       () async {
@@ -415,6 +433,7 @@ void main() {
       home: DriverAcceptedBookingScreen(
         offer: _offer(),
         tripCubit: screenCubit,
+        mapBuilder: _fakeMap,
       ),
     ));
     await tester.pump();
@@ -440,6 +459,130 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('Driver sheet drags, scrolls and keeps server action reachable',
+      (tester) async {
+    final screenCubit = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        pollInterval: const Duration(hours: 1),
+        gpsInterval: const Duration(hours: 1));
+    await tester.pumpWidget(MaterialApp(
+      home: DriverAcceptedBookingScreen(
+        offer: _offer(),
+        tripCubit: screenCubit,
+        mapBuilder: _fakeMap,
+      ),
+    ));
+    await tester.pump();
+    final sheet = tester.widget<DraggableScrollableSheet>(
+        find.byKey(const ValueKey('driver-trip-sheet')));
+    expect(sheet.minChildSize, .42);
+    expect(sheet.maxChildSize, .84);
+    expect(sheet.snap, isTrue);
+    final scroll = tester.widget<ListView>(
+        find.byKey(const ValueKey('driver-trip-sheet-scroll')));
+    expect(scroll.controller, isNotNull);
+    expect(
+        find.widgetWithText(FilledButton, 'Đã đến điểm đón'), findsOneWidget);
+    final collapsed = tester
+        .getSize(find.byKey(const ValueKey('driver-trip-sheet-surface')))
+        .height;
+
+    await tester.drag(find.byKey(const ValueKey('driver-trip-sheet-scroll')),
+        const Offset(0, -350));
+    await tester.pumpAndSettle();
+    final expanded = tester
+        .getSize(find.byKey(const ValueKey('driver-trip-sheet-surface')))
+        .height;
+    expect(expanded, greaterThan(collapsed));
+    expect(repository.transitionCalls, 0,
+        reason: 'Dragging a sheet is never a trip transition');
+    expect(find.byKey(const ValueKey('driver-trip-fake-map')), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Only the same authorized Booking shows the Driver map',
+      (tester) async {
+    repository.trackingReply = (_) async => const TrackingSnapshot(
+        bookingPublicId: 'another-booking',
+        status: 'DRIVER_ACCEPTED',
+        driverPublicId: 'driver-1');
+    final screenCubit = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        pollInterval: const Duration(hours: 1),
+        gpsInterval: const Duration(hours: 1));
+    var mounts = 0;
+    var disposals = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: DriverAcceptedBookingScreen(
+        offer: _offer(),
+        tripCubit: screenCubit,
+        mapBuilder: (_, __) => _MapMountSpy(
+          onMount: () => mounts++,
+          onDispose: () => disposals++,
+        ),
+      ),
+    ));
+    await tester.pump();
+    expect(find.byType(_MapMountSpy), findsNothing);
+    expect(find.textContaining('Đang xác minh chuyến và vị trí được phép xem'),
+        findsOneWidget);
+
+    repository.trackingReply = null;
+    await screenCubit.refresh();
+    await tester.pump();
+    expect(find.byType(_MapMountSpy), findsOneWidget);
+    expect(mounts, 1);
+    repository.status = 'DRIVER_ARRIVED';
+    await screenCubit.refresh();
+    await tester.pump();
+    expect(mounts, 1);
+    expect(disposals, 0);
+
+    generation = 2;
+    await screenCubit.refresh();
+    await tester.pump();
+    expect(find.byType(_MapMountSpy), findsNothing);
+    expect(disposals, 1);
+    expect(screenCubit.state.sessionEnded, isTrue);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Missing coordinates never fabricate a map or block trip action',
+      (tester) async {
+    final screenCubit = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        pollInterval: const Duration(hours: 1),
+        gpsInterval: const Duration(hours: 1));
+    await tester.pumpWidget(MaterialApp(
+      home: DriverAcceptedBookingScreen(
+        offer: _offer(pickupLatitude: double.nan),
+        tripCubit: screenCubit,
+        mapBuilder: _fakeMap,
+      ),
+    ));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('driver-trip-fake-map')), findsNothing);
+    expect(find.textContaining('Chưa có tọa độ điểm đón/đến hợp lệ'),
+        findsWidgets);
+    final action = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Đã đến điểm đón'));
+    expect(action.onPressed, isNotNull);
+    expect(repository.transitionCalls, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('CASH stays PENDING until the server returns a PAID receipt',
       (tester) async {
     repository.status = 'COMPLETED';
@@ -457,6 +600,7 @@ void main() {
       home: DriverAcceptedBookingScreen(
         offer: _offer(),
         tripCubit: screenCubit,
+        mapBuilder: _fakeMap,
       ),
     ));
     await tester.pump();
@@ -505,6 +649,7 @@ void main() {
         child: DriverAcceptedBookingScreen(
           offer: _offer(),
           tripCubit: screenCubit,
+          mapBuilder: _fakeMap,
         ),
       ),
     ));
@@ -512,6 +657,9 @@ void main() {
     final motion = tester.widget<AnimatedSwitcher>(
         find.byKey(const ValueKey('driver-trip-status-motion')));
     expect(motion.duration, Duration.zero);
+    final sheet = tester.widget<DraggableScrollableSheet>(
+        find.byKey(const ValueKey('driver-trip-sheet')));
+    expect(sheet.snap, isFalse);
     expect(screenCubit.state.status, 'COMPLETED');
     expect(screenCubit.state.payment?.status, 'PENDING');
     await screenCubit.confirmCash();
@@ -531,15 +679,48 @@ void main() {
   });
 }
 
-DriverOffer _offer() => DriverOffer(
+DriverOffer _offer(
+        {double pickupLatitude = 21.0287,
+        double dropoffLongitude = 105.8576}) =>
+    DriverOffer(
       offerPublicId: 'offer-1',
       bookingPublicId: 'booking-1',
-      pickupLatitude: 21.0287,
+      pickupLatitude: pickupLatitude,
       pickupLongitude: 105.8524,
       dropoffLatitude: 21.0245,
-      dropoffLongitude: 105.8576,
+      dropoffLongitude: dropoffLongitude,
       vehicleType: 'MOTORBIKE',
       currency: 'VND',
       finalFare: '16500',
       expiresAt: DateTime.utc(2026, 10, 16, 10, 0, 15),
     );
+
+Widget _fakeMap(BuildContext _, DriverOffer __) =>
+    const ColoredBox(key: ValueKey('driver-trip-fake-map'), color: Colors.blue);
+
+class _MapMountSpy extends StatefulWidget {
+  final VoidCallback onMount;
+  final VoidCallback onDispose;
+
+  const _MapMountSpy({required this.onMount, required this.onDispose});
+
+  @override
+  State<_MapMountSpy> createState() => _MapMountSpyState();
+}
+
+class _MapMountSpyState extends State<_MapMountSpy> {
+  @override
+  void initState() {
+    super.initState();
+    widget.onMount();
+  }
+
+  @override
+  void dispose() {
+    widget.onDispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => const ColoredBox(color: Colors.blue);
+}

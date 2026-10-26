@@ -735,6 +735,14 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(find.text('Chuyến đi đang diễn ra.'), findsOneWidget);
+    final compactStatusCard = find.ancestor(
+        of: find.text('Chuyến đi đang diễn ra.'), matching: find.byType(Card));
+    expect(
+        find.descendant(
+            of: compactStatusCard, matching: find.text('Realtime đã kết nối')),
+        findsOneWidget);
+    await tester.scrollUntilVisible(find.text('16.500 VND'), 80,
+        scrollable: find.byType(Scrollable).first);
     expect(find.text('16.500 VND'), findsOneWidget);
     await tester.scrollUntilVisible(find.text('Tài xế đã đến điểm đón'), 250,
         scrollable: find.byType(Scrollable).first);
@@ -748,11 +756,11 @@ void main() {
     await tester.scrollUntilVisible(find.text(startedAt), 250,
         scrollable: find.byType(Scrollable).first);
     expect(find.text(startedAt), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('Vĩ độ: 21.1'), 250,
-        scrollable: find.byType(Scrollable).first);
     expect(find.text('Bản đồ thử nghiệm'), findsOneWidget);
     expect(seenLocations.last.latitude, 21.1);
     expect(seenLocations.last.longitude, 105.1);
+    await tester.scrollUntilVisible(find.text('Vĩ độ: 21.1'), 250,
+        scrollable: find.byType(Scrollable).first);
     expect(find.text('Vĩ độ: 21.1'), findsOneWidget);
     await tester.scrollUntilVisible(find.text('Chưa thanh toán (PENDING)'), 250,
         scrollable: find.byType(Scrollable).first);
@@ -788,8 +796,6 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(tester.takeException(), isNull);
-    await tester.scrollUntilVisible(find.text('Bản đồ thử nghiệm'), 190,
-        scrollable: find.byType(Scrollable).first);
     expect(find.text('Bản đồ thử nghiệm'), findsOneWidget);
     await tester.scrollUntilVisible(find.text('Chưa thanh toán (PENDING)'), 190,
         scrollable: find.byType(Scrollable).first);
@@ -869,10 +875,9 @@ void main() {
                 const Text('Không tải được bản đồ thử nghiệm'))));
     await tester.pump();
     await tester.pump();
-    await tester.scrollUntilVisible(
-        find.text('Không tải được bản đồ thử nghiệm'), 250,
-        scrollable: find.byType(Scrollable).first);
     expect(find.text('Không tải được bản đồ thử nghiệm'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Vĩ độ: 21.1'), 250,
+        scrollable: find.byType(Scrollable).first);
     expect(find.text('Vĩ độ: 21.1'), findsOneWidget);
     expect(find.text('Kinh độ: 105.1'), findsOneWidget);
     expect(find.text('Độ chính xác: 4.0 m'), findsOneWidget);
@@ -897,8 +902,6 @@ void main() {
                 onMount: () => mounts++, onDispose: () => disposals++))));
     await tester.pump();
     await tester.pump();
-    await tester.scrollUntilVisible(find.text('Bản đồ thử nghiệm'), 250,
-        scrollable: find.byType(Scrollable).first);
     expect(mounts, 1);
     expect(disposals, 0);
 
@@ -916,6 +919,66 @@ void main() {
     expect(disposals, 0);
     await tester.pumpWidget(const SizedBox.shrink());
     expect(disposals, 1);
+  });
+
+  testWidgets('Trip sheet drags and snaps without remounting the live map',
+      (tester) async {
+    trips.value = tracking('IN_PROGRESS',
+        latitude: 21.1,
+        longitude: 105.1,
+        locationUpdatedAt: DateTime.utc(2026, 10, 16, 10, 11));
+    registerScreenServices();
+    var mounts = 0;
+    var disposals = 0;
+    await tester.pumpWidget(MaterialApp(
+        home: BookingStatusScreen(
+            booking: booking(),
+            trackingMapBuilder: (_, __, ___) => _MapLifecycleSpy(
+                onMount: () => mounts++, onDispose: () => disposals++))));
+    await tester.pump();
+    await tester.pump();
+    final sheet = find.byKey(const ValueKey('customer-trip-sheet'));
+    final handle = find.byKey(const ValueKey('customer-trip-sheet-handle'));
+    final settings = tester.widget<DraggableScrollableSheet>(sheet);
+    expect(settings.snap, isTrue);
+    expect(settings.minChildSize, .30);
+    expect(settings.maxChildSize, .86);
+    final collapsedHeight = tester.getSize(sheet).height;
+    expect(mounts - disposals, 1);
+
+    await tester.drag(handle, const Offset(0, -480));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(sheet).height, greaterThan(collapsedHeight));
+    expect(mounts, 1);
+    expect(disposals, 0);
+    await tester.drag(handle, const Offset(0, 480));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(sheet).height, closeTo(collapsedHeight, 2));
+    expect(mounts, 1);
+    expect(disposals, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(disposals, 1);
+  });
+
+  testWidgets('Reduced motion disables automatic trip-sheet snapping',
+      (tester) async {
+    trips.value = tracking('DRIVER_ACCEPTED');
+    registerScreenServices();
+    await tester.pumpWidget(MaterialApp(
+        builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(disableAnimations: true),
+            child: child!),
+        home: BookingStatusScreen(booking: booking())));
+    await tester.pump();
+    await tester.pump();
+    final sheet = tester.widget<DraggableScrollableSheet>(
+        find.byKey(const ValueKey('customer-trip-sheet')));
+    expect(sheet.snap, isFalse);
+    await tester.scrollUntilVisible(
+        find.text('Chưa có vị trí GPS được phép hiển thị.'), 220,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Chưa có vị trí GPS được phép hiển thị.'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets('Session replacement removes the map without an exit animation',
@@ -937,8 +1000,6 @@ void main() {
                 onMount: () => mounts++, onDispose: () => disposals++))));
     await tester.pump();
     await tester.pump();
-    await tester.scrollUntilVisible(find.text('Bản đồ thử nghiệm'), 250,
-        scrollable: find.byType(Scrollable).first);
     expect(mounts - disposals, 1);
 
     currentSession = false;
@@ -1027,8 +1088,6 @@ void main() {
                 onMount: () => mounts++, onDispose: () => disposals++))));
     await tester.pump();
     await tester.pump();
-    await tester.scrollUntilVisible(find.text('Bản đồ thử nghiệm'), 250,
-        scrollable: find.byType(Scrollable).first);
     expect(mounts - disposals, 1);
     final subscription = realtime.last!;
     trips.value = tracking('COMPLETED');
@@ -1068,8 +1127,6 @@ void main() {
     await tester.pumpWidget(screen());
     await tester.pump();
     await tester.pump();
-    await tester.scrollUntilVisible(find.text('Bản đồ thử nghiệm'), 250,
-        scrollable: find.byType(Scrollable).first);
     expect(mounts - disposals, 1);
     final firstEntryMounts = mounts;
     final firstSubscription = realtime.last!;
@@ -1081,8 +1138,6 @@ void main() {
     await tester.pumpWidget(screen());
     await tester.pump();
     await tester.pump();
-    await tester.scrollUntilVisible(find.text('Bản đồ thử nghiệm'), 250,
-        scrollable: find.byType(Scrollable).first);
     expect(mounts, greaterThan(firstEntryMounts));
     expect(mounts - disposals, 1);
     expect(realtime.listens, 2);

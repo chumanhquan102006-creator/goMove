@@ -13,8 +13,10 @@ class ApiEndpoints {
 
   static const String quotes = '/quotes';
   static String quote(String publicId) => '/quotes/$publicId';
+  static String quoteRoute(String publicId) => '/quotes/$publicId/route';
   static const String bookings = '/bookings';
   static String booking(String publicId) => '/bookings/$publicId';
+  static String bookingRoute(String publicId) => '/bookings/$publicId/route';
   static String bookingTracking(String publicId) =>
       '/bookings/$publicId/tracking';
   static String bookingPayment(String publicId) =>

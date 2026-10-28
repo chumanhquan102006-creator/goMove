@@ -90,6 +90,10 @@ public class Quote extends BaseEntity {
     @Column(name = "pricing_snapshot", nullable = false, updatable = false, columnDefinition = "jsonb")
     private Map<String, String> pricingSnapshot;
 
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "route_geometry", updatable = false, columnDefinition = "jsonb")
+    private RouteGeometry routeGeometry;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private QuoteStatus status;
@@ -131,6 +135,8 @@ public class Quote extends BaseEntity {
         this.finalFare = fare.finalFare();
         this.pricingEngineVersion = fare.pricingEngineVersion();
         this.pricingSnapshot = Map.copyOf(fare.snapshot());
+        this.routeGeometry = route.geometry();
+        if (routeGeometry != null) routeGeometry.validateEndpoints(pickup, dropoff);
         this.status = QuoteStatus.ISSUED;
         this.issuedAt = issuedAt;
         this.expiresAt = issuedAt.plusSeconds(60);
@@ -183,6 +189,7 @@ public class Quote extends BaseEntity {
     public BigDecimal getFinalFare() { return finalFare; }
     public String getPricingEngineVersion() { return pricingEngineVersion; }
     public Map<String, String> getPricingSnapshot() { return Map.copyOf(pricingSnapshot); }
+    public RouteGeometry getRouteGeometry() { return routeGeometry; }
     public QuoteStatus getStatus() { return status; }
     public Instant getIssuedAt() { return issuedAt; }
     public Instant getExpiresAt() { return expiresAt; }

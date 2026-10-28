@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 
 import '../../../../core/theme/app_motion.dart';
+import '../../../trip/domain/models/road_route.dart';
+import '../../../trip/presentation/widgets/road_route_line.dart';
 import '../../domain/models/quote.dart';
 import '../widgets/customer_map_source.dart';
 
@@ -23,6 +25,7 @@ class CustomerMapCanvas extends StatefulWidget {
   final Coordinates? dropoff;
   final ValueChanged<Coordinates> onTap;
   final bool fullScreen;
+  final RoadRoute? route;
 
   const CustomerMapCanvas({
     super.key,
@@ -30,6 +33,7 @@ class CustomerMapCanvas extends StatefulWidget {
     required this.dropoff,
     required this.onTap,
     this.fullScreen = false,
+    this.route,
   });
 
   @override
@@ -47,11 +51,13 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
   Timer? _markerDebounce;
   late final Future<bool> _mapReady;
   Future<void> _markerSync = Future<void>.value();
+  Future<void> _routeSync = Future<void>.value();
   bool _styleLoaded = false;
   bool _mapUnavailable = false;
   bool _setupFailed = false;
   bool _markerUpdateFailed = false;
   bool _cameraUpdateFailed = false;
+  bool _routeUpdateFailed = false;
 
   @override
   void initState() {
@@ -86,6 +92,11 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
       _markerDebounce =
           Timer(const Duration(milliseconds: 180), _queueMarkerSync);
     }
+    if (!identical(widget.route, oldWidget.route) ||
+        !_samePoint(widget.pickup, oldWidget.pickup) ||
+        !_samePoint(widget.dropoff, oldWidget.dropoff)) {
+      _queueRouteSync();
+    }
   }
 
   static bool _samePoint(Coordinates? a, Coordinates? b) =>
@@ -107,9 +118,35 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
       _mapUnavailable = false;
       _markerUpdateFailed = false;
       _cameraUpdateFailed = false;
+      _routeUpdateFailed = false;
     });
     _markerDebounce?.cancel();
     _queueMarkerSync();
+    _queueRouteSync();
+  }
+
+  void _queueRouteSync() {
+    _routeSync = _routeSync.then((_) async {
+      final controller = _controller;
+      if (!mounted || !_styleLoaded || controller == null) return;
+      await controller.clearLines();
+      if (!mounted) return;
+      final pickup = widget.pickup;
+      final dropoff = widget.dropoff;
+      final route = widget.route;
+      if (pickup != null &&
+          dropoff != null &&
+          route != null &&
+          route.matchesEndpoints(pickup, dropoff)) {
+        final line = RoadRouteLine.options(route);
+        if (line != null) await controller.addLine(line);
+      }
+      if (mounted && _routeUpdateFailed) {
+        setState(() => _routeUpdateFailed = false);
+      }
+    }).catchError((Object _) {
+      if (mounted) setState(() => _routeUpdateFailed = true);
+    });
   }
 
   void _queueMarkerSync() {
@@ -237,6 +274,10 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
                 styleString: CustomerMapSource.styleUrl,
                 myLocationEnabled: false,
                 logoEnabled: true,
+                annotationOrder: const [
+                  AnnotationType.line,
+                  AnnotationType.circle
+                ],
                 gestureRecognizers: _mapGestures,
                 onMapCreated: (controller) => _controller = controller,
                 onStyleLoadedCallback: _onStyleLoaded,
@@ -308,6 +349,7 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
         if (_mapUnavailable ||
             _setupFailed ||
             _markerUpdateFailed ||
+            _routeUpdateFailed ||
             _cameraUpdateFailed)
           Positioned(
             top: 76,
@@ -323,7 +365,9 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
                       ? 'Không tải được bản đồ. Bạn vẫn có thể nhập tọa độ thủ công trong bảng đặt xe.'
                       : _markerUpdateFailed
                           ? 'Không thể cập nhật điểm trên bản đồ. Hãy kiểm tra tọa độ trong bảng đặt xe.'
-                          : 'Không thể điều chỉnh góc nhìn bản đồ. Có thể chọn điểm hoặc nhập tọa độ thủ công.',
+                          : _routeUpdateFailed
+                              ? 'Không thể vẽ tuyến đường; bạn vẫn có thể xem hai điểm và báo giá.'
+                              : 'Không thể điều chỉnh góc nhìn bản đồ. Có thể chọn điểm hoặc nhập tọa độ thủ công.',
                   style: TextStyle(color: scheme.onErrorContainer),
                 ),
               ),
@@ -356,11 +400,13 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
           'Không tải được bản đồ. Bạn vẫn có thể nhập tọa độ thủ công bên dưới.',
           style: TextStyle(color: Colors.deepOrange),
         ),
-      if (_markerUpdateFailed || _cameraUpdateFailed)
+      if (_markerUpdateFailed || _routeUpdateFailed || _cameraUpdateFailed)
         Text(
           _markerUpdateFailed
               ? 'Không thể cập nhật điểm trên bản đồ. Hãy thử lại hoặc nhập tọa độ thủ công.'
-              : 'Không thể điều chỉnh góc nhìn bản đồ. Bạn vẫn có thể chạm bản đồ hoặc nhập tọa độ thủ công.',
+              : _routeUpdateFailed
+                  ? 'Không thể vẽ tuyến đường; hai điểm và báo giá vẫn dùng được.'
+                  : 'Không thể điều chỉnh góc nhìn bản đồ. Bạn vẫn có thể chạm bản đồ hoặc nhập tọa độ thủ công.',
           style: const TextStyle(color: Colors.deepOrange),
         ),
       Align(

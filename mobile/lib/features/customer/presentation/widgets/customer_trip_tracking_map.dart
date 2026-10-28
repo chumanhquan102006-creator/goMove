@@ -8,16 +8,20 @@ import 'package:flutter/material.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 
 import '../../../../core/theme/app_motion.dart';
+import '../../domain/models/quote.dart';
+import '../../../trip/domain/models/road_route.dart';
+import '../../../trip/presentation/widgets/road_route_line.dart';
 import '../../../trip/data/trip_realtime_client.dart';
 import '../bloc/booking_status_cubit.dart';
 import 'customer_map_source.dart';
 
-/// A single, read-only map of the authorized driver's latest GPS fix.
-///
-/// The caller must remove this widget when the Booking stops allowing live
-/// location; that immediately disposes the platform view and its marker.
+/// One stable native map for authorized Booking points, stored road route and
+/// (only during active tracking) the Driver's latest GPS fix.
 class CustomerTripTrackingMap extends StatefulWidget {
-  final CustomerLiveLocation location;
+  final CustomerLiveLocation? location;
+  final RoadRoute? route;
+  final Coordinates? pickup;
+  final Coordinates? dropoff;
   final TripRealtimeConnectionState connectionState;
   final bool fullBleed;
   final String? bookingPublicId;
@@ -34,6 +38,9 @@ class CustomerTripTrackingMap extends StatefulWidget {
     super.key,
     required this.location,
     required this.connectionState,
+    this.route,
+    this.pickup,
+    this.dropoff,
     this.fullBleed = false,
     this.bookingPublicId,
     this.enableMarkerInterpolation = const bool.fromEnvironment(
@@ -194,15 +201,16 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
     const Factory<EagerGestureRecognizer>(EagerGestureRecognizer.new),
   };
 
-  late CustomerLiveLocation _shownLocation;
+  CustomerLiveLocation? _shownLocation;
   late CustomerMarkerMotion _motion;
-  late LatLng _visualPoint;
+  LatLng? _visualPoint;
   LatLng? _firstCenter;
   late final Future<bool> _mapReady;
   MapLibreMapController? _controller;
   Circle? _driverCircle;
   Timer? _styleTimeout;
   Future<void> _markerSync = Future<void>.value();
+  Future<void> _routeSync = Future<void>.value();
   int? _pendingMarkerVersion;
   int _mapVersion = 0;
   bool _styleLoaded = false;
@@ -212,23 +220,31 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
   bool _reducedMotion = false;
   bool _paused = false;
   bool _scopeChanged = false;
+  bool _gpsRemovalPending = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _shownLocation = widget.location;
-    _visualPoint = _point(_shownLocation);
+    _visualPoint = _shownLocation == null ? null : _point(_shownLocation!);
     _motion = CustomerMarkerMotion(
         now: widget.motionNow,
         onPosition: (point) {
           _visualPoint = point;
           widget.onVisualPosition?.call(point);
           _queueMarkerSync();
-        })
-      ..accept(_shownLocation, animate: false);
+        });
+    if (_shownLocation != null) {
+      _motion.accept(_shownLocation!, animate: false);
+    }
     if (CustomerTripTrackingMap.isRenderable(_shownLocation)) {
-      _firstCenter = _point(_shownLocation);
+      _firstCenter = _point(_shownLocation!);
+    } else if (widget.route?.available == true) {
+      final first = widget.route!.points.first;
+      _firstCenter = LatLng(first.latitude, first.longitude);
+    } else if (widget.pickup?.isValid == true) {
+      _firstCenter = LatLng(widget.pickup!.latitude, widget.pickup!.longitude);
     }
     _mapReady = _configureMapRequests();
   }
@@ -279,11 +295,43 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
       _mapVersion++;
       return;
     }
-    if (CustomerTripTrackingMap.shouldAcceptNewFix(
-        _shownLocation, widget.location)) {
+    if (!identical(widget.route, oldWidget.route)) {
+      if (_firstCenter == null && widget.route?.available == true) {
+        final first = widget.route!.points.first;
+        _firstCenter = LatLng(first.latitude, first.longitude);
+      }
+      _queueRouteSync();
+    }
+    if (widget.pickup?.latitude != oldWidget.pickup?.latitude ||
+        widget.pickup?.longitude != oldWidget.pickup?.longitude ||
+        widget.dropoff?.latitude != oldWidget.dropoff?.latitude ||
+        widget.dropoff?.longitude != oldWidget.dropoff?.longitude) {
+      if (_firstCenter == null && widget.pickup?.isValid == true) {
+        _firstCenter =
+            LatLng(widget.pickup!.latitude, widget.pickup!.longitude);
+      }
+      _queueStaticMarkerSync();
+    }
+    if (widget.location == null && _shownLocation != null) {
+      // Completion/privacy loss removes the native GPS annotation immediately.
+      _gpsRemovalPending = true;
+      _motion.dispose();
+      _motion = CustomerMarkerMotion(
+          now: widget.motionNow,
+          onPosition: (point) {
+            _visualPoint = point;
+            widget.onVisualPosition?.call(point);
+            _queueMarkerSync();
+          });
+      _shownLocation = null;
+      _visualPoint = null;
+      _queueMarkerSync();
+    } else if (widget.location != null &&
+        CustomerTripTrackingMap.shouldAcceptNewFix(
+            _shownLocation, widget.location!)) {
       _shownLocation = widget.location;
-      _firstCenter ??= _point(_shownLocation);
-      _motion.accept(_shownLocation,
+      _firstCenter ??= _point(_shownLocation!);
+      _motion.accept(_shownLocation!,
           animate: widget.enableMarkerInterpolation &&
               !_paused &&
               !_reducedMotion &&
@@ -330,7 +378,77 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
       _styleLoaded = true;
       _mapUnavailable = false;
     });
-    _queueMarkerSync();
+    _queueRouteSync();
+    _queueStaticMarkerSync();
+  }
+
+  void _queueStaticMarkerSync() {
+    final version = _mapVersion;
+    _markerSync = _markerSync
+        .then((_) async {
+          final controller = _controller;
+          if (!mounted ||
+              !_styleLoaded ||
+              controller == null ||
+              version != _mapVersion) {
+            return;
+          }
+          await controller.clearCircles();
+          if (!mounted || version != _mapVersion) {
+            return;
+          }
+          _driverCircle = null;
+          final pickup = widget.pickup;
+          if (pickup?.isValid == true) {
+            await controller.addCircle(CircleOptions(
+              geometry: LatLng(pickup!.latitude, pickup.longitude),
+              circleRadius: 12,
+              circleColor: '#FFFFFF',
+              circleStrokeColor: '#0066FF',
+              circleStrokeWidth: 4,
+            ));
+          }
+          if (!mounted || version != _mapVersion) {
+            return;
+          }
+          final dropoff = widget.dropoff;
+          if (dropoff?.isValid == true) {
+            await controller.addCircle(CircleOptions(
+              geometry: LatLng(dropoff!.latitude, dropoff.longitude),
+              circleRadius: 11,
+              circleColor: '#E87521',
+              circleStrokeColor: '#FFFFFF',
+              circleStrokeWidth: 3,
+            ));
+          }
+        })
+        .then((_) => _queueMarkerSync())
+        .catchError((Object _) {
+          // Trip details and CASH stay available if native annotations fail.
+        });
+  }
+
+  void _queueRouteSync() {
+    final version = _mapVersion;
+    _routeSync = _routeSync.then((_) async {
+      final controller = _controller;
+      if (!mounted ||
+          !_styleLoaded ||
+          controller == null ||
+          version != _mapVersion) {
+        return;
+      }
+      await controller.clearLines();
+      if (!mounted || version != _mapVersion) {
+        return;
+      }
+      final line = RoadRouteLine.options(widget.route);
+      if (line != null) {
+        await controller.addLine(line);
+      }
+    }).catchError((Object _) {
+      // The GPS and trip details remain usable if native route drawing fails.
+    });
   }
 
   void _queueMarkerSync() {
@@ -346,12 +464,22 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
           _scopeChanged ||
           !_styleLoaded ||
           controller == null ||
-          version != _mapVersion ||
-          !CustomerTripTrackingMap.isRenderable(_shownLocation)) {
+          version != _mapVersion) {
         return;
       }
       final position = _visualPoint;
       final circle = _driverCircle;
+      if (!CustomerTripTrackingMap.isRenderable(_shownLocation) ||
+          position == null) {
+        if (circle != null) {
+          await controller.removeCircle(circle);
+          if (mounted && version == _mapVersion) _driverCircle = null;
+        }
+        if (mounted && version == _mapVersion && _gpsRemovalPending) {
+          setState(() => _gpsRemovalPending = false);
+        }
+        return;
+      }
       if (circle == null) {
         final created = await controller.addCircle(CircleOptions(
           geometry: position,
@@ -384,12 +512,45 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
     try {
       // newLatLng changes the target, not the user's current zoom level.
       await controller.animateCamera(
-        CameraUpdate.newLatLng(_point(_shownLocation)),
+        CameraUpdate.newLatLng(_point(_shownLocation!)),
         duration:
             AppMotion.duration(context, const Duration(milliseconds: 300)),
       );
     } catch (_) {
       if (mounted) setState(() => _mapUnavailable = true);
+    }
+  }
+
+  Future<void> _fitRoute() async {
+    final controller = _controller;
+    final route = widget.route;
+    if (!_styleLoaded || controller == null || route?.available != true) return;
+    var south = route!.points.first.latitude;
+    var north = south;
+    var west = route.points.first.longitude;
+    var east = west;
+    for (final point in route.points.skip(1)) {
+      if (point.latitude < south) south = point.latitude;
+      if (point.latitude > north) north = point.latitude;
+      if (point.longitude < west) west = point.longitude;
+      if (point.longitude > east) east = point.longitude;
+    }
+    try {
+      await controller.animateCamera(
+        CameraUpdate.newLatLngBounds(
+          LatLngBounds(
+              southwest: LatLng(south, west), northeast: LatLng(north, east)),
+          left: 40,
+          right: 40,
+          top: 56,
+          bottom:
+              widget.fullBleed ? MediaQuery.sizeOf(context).height * .38 : 48,
+        ),
+        duration:
+            AppMotion.duration(context, const Duration(milliseconds: 300)),
+      );
+    } catch (_) {
+      // Camera controls are optional; never replace confirmed route/GPS data.
     }
   }
 
@@ -419,12 +580,15 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
               ignoring: !widget.fullBleed && !_mapInteractive,
               child: MapLibreMap(
                 initialCameraPosition:
-                    CameraPosition(target: _firstCenter!, zoom: 15),
+                    CameraPosition(target: _firstCenter!, zoom: 14),
                 styleString: CustomerMapSource.styleUrl,
                 myLocationEnabled: false,
                 logoEnabled: true,
                 gestureRecognizers: _mapGestures,
-                annotationOrder: const [AnnotationType.circle],
+                annotationOrder: const [
+                  AnnotationType.line,
+                  AnnotationType.circle
+                ],
                 annotationConsumeTapEvents: const [AnnotationType.circle],
                 onMapCreated: _onMapCreated,
                 onStyleLoadedCallback: _onStyleLoaded,
@@ -470,20 +634,42 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
                   ),
                 ),
               ),
-            Positioned(
-              top: 8,
-              right: 8,
-              child: Material(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(8),
-                elevation: 2,
-                child: TextButton.icon(
-                  onPressed: _styleLoaded ? _recenter : null,
-                  icon: const Icon(Icons.my_location),
-                  label: const Text('Tìm tài xế'),
+            if (widget.route?.available == true)
+              Positioned(
+                top: 8,
+                right: 8,
+                child: Material(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                  elevation: 2,
+                  child: TextButton.icon(
+                    onPressed: _styleLoaded ? _fitRoute : null,
+                    icon: const Icon(Icons.route),
+                    label: const Text('Xem tuyến'),
+                  ),
                 ),
               ),
-            ),
+            if (CustomerTripTrackingMap.isRenderable(_shownLocation))
+              Positioned(
+                top: widget.route?.available == true ? 54 : 8,
+                right: 8,
+                child: Material(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                  elevation: 2,
+                  child: TextButton.icon(
+                    onPressed: _styleLoaded ? _recenter : null,
+                    icon: const Icon(Icons.my_location),
+                    label: const Text('Tìm tài xế'),
+                  ),
+                ),
+              ),
+            if (_gpsRemovalPending)
+              const Positioned.fill(
+                child: AbsorbPointer(
+                  child: ColoredBox(color: Color(0xFFF8F9FA)),
+                ),
+              ),
           ]);
         },
       );
@@ -493,7 +679,10 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
     if (_scopeChanged) {
       return const Text('Phiên theo dõi đã thay đổi. Hãy mở lại chuyến.');
     }
-    if (!CustomerTripTrackingMap.isRenderable(_shownLocation)) {
+    if (!CustomerTripTrackingMap.isRenderable(_shownLocation) &&
+        widget.route?.available != true &&
+        widget.pickup?.isValid != true &&
+        widget.dropoff?.isValid != true) {
       return const Text('Chưa có tọa độ GPS hợp lệ để hiển thị trên bản đồ.');
     }
     if (widget.fullBleed) {
@@ -524,7 +713,7 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
     }
     final height =
         (MediaQuery.sizeOf(context).height * .30).clamp(220.0, 290.0);
-    final accuracy = _shownLocation.accuracy;
+    final accuracy = _shownLocation?.accuracy;
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       ClipRRect(
         borderRadius: BorderRadius.circular(16),
@@ -540,11 +729,12 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
           'Không tải được bản đồ. Vị trí GPS bằng chữ vẫn có ở bên dưới.',
           style: TextStyle(color: Colors.deepOrange),
         ),
-      const Row(children: [
-        Icon(Icons.circle, color: Color(0xFF3559D5), size: 16),
-        SizedBox(width: 4),
-        Expanded(child: Text('Vị trí tài xế')),
-      ]),
+      if (CustomerTripTrackingMap.isRenderable(_shownLocation))
+        const Row(children: [
+          Icon(Icons.circle, color: Color(0xFF3559D5), size: 16),
+          SizedBox(width: 4),
+          Expanded(child: Text('Vị trí tài xế')),
+        ]),
       Text(
         _mapInteractive
             ? 'Đang điều khiển bản đồ. Chạm nút bên trái để cuộn trang.'
@@ -552,11 +742,12 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
         style: Theme.of(context).textTheme.bodySmall,
       ),
       Text(_connectionLabel, style: Theme.of(context).textTheme.bodySmall),
-      Text(
-        'GPS: ${_shownLocation.updatedAt.toLocal()}'
-        '${accuracy != null && accuracy.isFinite && accuracy >= 0 ? ' · ±${accuracy.toStringAsFixed(1)} m' : ''}',
-        style: Theme.of(context).textTheme.bodySmall,
-      ),
+      if (CustomerTripTrackingMap.isRenderable(_shownLocation))
+        Text(
+          'GPS: ${_shownLocation!.updatedAt.toLocal()}'
+          '${accuracy != null && accuracy.isFinite && accuracy >= 0 ? ' · ±${accuracy.toStringAsFixed(1)} m' : ''}',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
       Text(CustomerMapSource.visibleAttribution,
           style: Theme.of(context).textTheme.bodySmall),
     ]);

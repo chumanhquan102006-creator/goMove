@@ -74,4 +74,15 @@ public class QuoteController {
         return ApiResponse.success("QUOTE_FETCHED", "Quote fetched",
                 service.getOwned(quotePublicId, principal.publicId(), principal.role()));
     }
+
+    @GetMapping("/{quotePublicId}/route")
+    @Operation(summary = "Retrieve the stored route for an owned Quote",
+            description = "Returns the immutable road geometry captured while pricing. Historical quotes without geometry return UNAVAILABLE. No routing or repricing occurs.")
+    public ApiResponse<RouteResponse> getOwnedRoute(
+            @AuthenticationPrincipal CustomUserPrincipal principal,
+            @PathVariable UUID quotePublicId
+    ) {
+        return ApiResponse.success("QUOTE_ROUTE_FETCHED", "Quote route fetched",
+                service.getOwnedRoute(quotePublicId, principal.publicId(), principal.role()));
+    }
 }

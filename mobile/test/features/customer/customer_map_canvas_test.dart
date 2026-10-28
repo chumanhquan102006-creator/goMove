@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gomove_mobile/features/customer/domain/models/quote.dart';
 import 'package:gomove_mobile/features/customer/presentation/screens/customer_map_canvas.dart';
+import 'package:gomove_mobile/features/trip/domain/models/road_route.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 
 void main() {
@@ -155,6 +156,94 @@ void main() {
     expect(find.byType(MapLibreMap), findsOneWidget);
   });
 
+  testWidgets('Authorized road geometry draws in lon/lat order without remount or camera move',
+      (tester) async {
+    const channel = MethodChannel('plugins.flutter.io/maplibre_gl');
+    tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (_) async => null);
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null));
+    final originalFactory = MapLibrePlatform.createInstance;
+    MapLibrePlatform.createInstance = _FakeMapLibrePlatform.new;
+    addTearDown(() => MapLibrePlatform.createInstance = originalFactory);
+
+    final route = RoadRoute.fromJson({
+      'sourceQuotePublicId': 'quote-1',
+      'bookingPublicId': null,
+      'availability': 'AVAILABLE',
+      'geometryFormat': 'GEOJSON_LINESTRING',
+      'geometry': {
+        'type': 'LineString',
+        'coordinates': [
+          [105.8524, 21.0287],
+          [105.8551, 21.0261],
+          [105.8576, 21.0245],
+        ],
+      },
+    });
+
+    Future<void> show(RoadRoute? currentRoute) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: CustomerMapCanvas(
+            fullScreen: true,
+            pickup: const Coordinates(21.0287, 105.8524),
+            dropoff: const Coordinates(21.0245, 105.8576),
+            route: currentRoute,
+            onTap: _ignoreTap,
+          ),
+        ),
+      ));
+      await tester.pump();
+    }
+
+    await show(null);
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final controller = _RecordingMapController();
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await tester.pump();
+    await tester.pump();
+    final nativeState = tester.state(find.byType(MapLibreMap));
+    expect(controller.recordedCircles, hasLength(2));
+    expect(controller.recordedLines, isEmpty);
+
+    await show(route);
+    await tester.pump();
+    expect(tester.state(find.byType(MapLibreMap)), same(nativeState));
+    expect(controller.recordedCircles, hasLength(2));
+    expect(controller.recordedLines, hasLength(1));
+    final line = controller.recordedLines.single.geometry!;
+    expect(line, hasLength(3));
+    expect(line[1].latitude, 21.0261);
+    expect(line[1].longitude, 105.8551);
+    expect(controller.cameraMoves, 0);
+
+    final reversed = RoadRoute.fromJson({
+      'sourceQuotePublicId': 'quote-1',
+      'bookingPublicId': null,
+      'availability': 'AVAILABLE',
+      'geometryFormat': 'GEOJSON_LINESTRING',
+      'geometry': {
+        'type': 'LineString',
+        'coordinates': [
+          [105.8576, 21.0245],
+          [105.8551, 21.0261],
+          [105.8524, 21.0287],
+        ],
+      },
+    });
+    await show(reversed);
+    await tester.pump();
+    expect(controller.recordedLines, isEmpty);
+    expect(controller.recordedCircles, hasLength(2));
+    expect(tester.state(find.byType(MapLibreMap)), same(nativeState));
+    expect(controller.cameraMoves, 0);
+    await tester.tap(find.byTooltip('Xem 2 điểm'));
+    await tester.pump();
+    expect(controller.cameraMoves, 1);
+  });
+
   testWidgets('Fit points respects the visible map height above the keyboard',
       (tester) async {
     tester.view.physicalSize = const Size(320, 640);
@@ -216,12 +305,15 @@ class _FakeMapLibrePlatform extends Fake implements MapLibrePlatform {
 
 class _RecordingMapController extends Fake implements MapLibreMapController {
   final recordedCircles = <CircleOptions>[];
+  final recordedLines = <LineOptions>[];
   int lineCalls = 0;
+  int cameraMoves = 0;
   CameraUpdate? lastCameraUpdate;
 
   @override
   Future<bool?> animateCamera(CameraUpdate cameraUpdate,
       {Duration? duration}) async {
+    cameraMoves++;
     lastCameraUpdate = cameraUpdate;
     return true;
   }
@@ -240,6 +332,10 @@ class _RecordingMapController extends Fake implements MapLibreMapController {
   Future<Line> addLine(LineOptions options,
       [Map<String, dynamic>? data]) async {
     lineCalls++;
+    recordedLines.add(options);
     return Line('test-line-$lineCalls', options, data);
   }
+
+  @override
+  Future<void> clearLines() async => recordedLines.clear();
 }

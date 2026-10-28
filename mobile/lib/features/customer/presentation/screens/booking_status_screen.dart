@@ -7,6 +7,7 @@ import '../../../../core/theme/app_motion.dart';
 import '../../../trip/data/trip_realtime_client.dart';
 import '../../../trip/domain/models/trip_models.dart';
 import '../../../trip/domain/repositories/trip_repository.dart';
+import '../../../trip/presentation/widgets/authorized_road_route.dart';
 import '../../domain/models/booking.dart';
 import '../../domain/models/quote.dart';
 import '../../domain/usecases/customer_usecases.dart';
@@ -89,6 +90,9 @@ class BookingStatusScreen extends StatefulWidget {
 class _BookingStatusScreenState extends State<BookingStatusScreen>
     with WidgetsBindingObserver {
   late final BookingStatusCubit _cubit;
+  Coordinates? _pickup;
+  Coordinates? _dropoff;
+  int _pointsRequest = 0;
 
   @override
   void initState() {
@@ -101,12 +105,50 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
       realtime: sl<TripRealtimeClient>(),
     )..start();
     WidgetsBinding.instance.addObserver(this);
+    _loadPoints();
+  }
+
+  Future<void> _loadPoints() async {
+    if (!sl.isRegistered<GetQuoteUseCase>() ||
+        !sl.isRegistered<SecureStorageService>()) {
+      return;
+    }
+    final request = ++_pointsRequest;
+    final session = sl<SecureStorageService>();
+    try {
+      final snapshot = await session.getSession();
+      if (!mounted ||
+          request != _pointsRequest ||
+          snapshot.accessToken == null) {
+        return;
+      }
+      final quote = await sl<GetQuoteUseCase>()(widget.booking.quotePublicId);
+      if (!mounted ||
+          request != _pointsRequest ||
+          !await session.isCurrentSession(snapshot.generation) ||
+          quote.publicId != widget.booking.quotePublicId ||
+          !quote.pickup.isValid ||
+          !quote.dropoff.isValid) {
+        return;
+      }
+      setState(() {
+        _pickup = quote.pickup;
+        _dropoff = quote.dropoff;
+      });
+    } catch (_) {
+      // A failed authorized Quote read cannot block Booking or CASH details.
+    }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _cubit.start();
+      setState(() {
+        _pickup = null;
+        _dropoff = null;
+      });
+      _loadPoints();
     } else {
       _cubit.stop();
     }
@@ -115,6 +157,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _pointsRequest++;
     _cubit.stop();
     super.dispose();
   }
@@ -147,44 +190,60 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
             return SafeArea(
               child: Stack(children: [
                 Positioned.fill(
-                  child: hasRenderableLocation && location != null
-                      ? (widget.trackingMapBuilder
-                              ?.call(context, location, state.realtimeState) ??
-                          CustomerTripTrackingMap(
-                            key: ValueKey(
-                                'customer-trip-map-${booking.publicId}'),
-                            bookingPublicId: booking.publicId,
-                            location: location,
-                            connectionState: state.realtimeState,
-                            fullBleed: true,
-                          ))
-                      : ColoredBox(
-                          color: colors.surfaceContainerHighest,
-                          child: Center(
-                            child: Padding(
-                              padding: const EdgeInsets.all(24),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    state.status == 'COMPLETED'
-                                        ? Icons.flag_circle_outlined
-                                        : Icons.location_searching,
-                                    size: 42,
-                                    color: colors.primary,
+                  child: AuthorizedRoadRoute(
+                    key: ValueKey('customer-route-${booking.publicId}'),
+                    publicId: booking.publicId,
+                    expectedSourceQuotePublicId: booking.quotePublicId,
+                    isQuote: false,
+                    builder: (context, route) => hasRenderableLocation &&
+                            location != null &&
+                            widget.trackingMapBuilder != null
+                        ? widget.trackingMapBuilder!(
+                            context, location, state.realtimeState)
+                        : (hasRenderableLocation ||
+                                route?.available == true ||
+                                _pickup?.isValid == true ||
+                                _dropoff?.isValid == true)
+                            ? CustomerTripTrackingMap(
+                                key: ValueKey(
+                                    'customer-trip-map-${booking.publicId}'),
+                                bookingPublicId: booking.publicId,
+                                location:
+                                    hasRenderableLocation ? location : null,
+                                route: route,
+                                pickup: _pickup,
+                                dropoff: _dropoff,
+                                connectionState: state.realtimeState,
+                                fullBleed: true,
+                              )
+                            : ColoredBox(
+                                color: colors.surfaceContainerHighest,
+                                child: Center(
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(24),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          state.status == 'COMPLETED'
+                                              ? Icons.flag_circle_outlined
+                                              : Icons.location_searching,
+                                          size: 42,
+                                          color: colors.primary,
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          state.status == 'COMPLETED'
+                                              ? 'Chuyến đã hoàn thành; vị trí tài xế được ẩn.'
+                                              : 'Bản đồ vị trí tài xế sẽ hiện khi có GPS được phép hiển thị.',
+                                          textAlign: TextAlign.center,
+                                        ),
+                                      ],
+                                    ),
                                   ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    state.status == 'COMPLETED'
-                                        ? 'Chuyến đã hoàn thành; vị trí tài xế được ẩn.'
-                                        : 'Bản đồ vị trí tài xế sẽ hiện khi có GPS được phép hiển thị.',
-                                    textAlign: TextAlign.center,
-                                  ),
-                                ],
+                                ),
                               ),
-                            ),
-                          ),
-                        ),
+                  ),
                 ),
                 Align(
                   alignment: Alignment.bottomCenter,
@@ -446,6 +505,8 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                         style: Theme.of(context)
                                             .textTheme
                                             .bodySmall),
+                                    const Text(
+                                        'Nếu chưa có dữ liệu tuyến đường, bản đồ chỉ hiển thị các điểm đã được xác minh; không nối thẳng thành đường đi.'),
                                     if (state.status != 'COMPLETED' &&
                                         !hasRenderableLocation)
                                       const Text(

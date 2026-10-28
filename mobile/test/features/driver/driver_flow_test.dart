@@ -22,6 +22,7 @@ import 'package:gomove_mobile/features/driver/presentation/screens/driver_accept
 import 'package:gomove_mobile/features/trip/data/trip_realtime_client.dart';
 import 'package:gomove_mobile/features/trip/domain/models/trip_models.dart';
 import 'package:gomove_mobile/features/trip/domain/repositories/trip_repository.dart';
+import 'package:gomove_mobile/features/trip/domain/repositories/road_route_repository.dart';
 import 'package:mocktail/mocktail.dart';
 
 class MockSession extends Mock implements SecureStorageService {}
@@ -1253,6 +1254,7 @@ void main() {
     await sl.reset();
     AppConfig.reset();
     await setupServiceLocator(config: AppConfig.initialize(forceMock: false));
+    await sl.unregister<RoadRouteRepository>();
     await sl.unregister<TripRepository>();
     sl.registerSingleton<TripRepository>(trip);
     await sl.unregister<TripRealtimeClient>();

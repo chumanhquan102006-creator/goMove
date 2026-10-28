@@ -1,11 +1,12 @@
 # Follow-up Backend contract: authorized road-route geometry
 
-This is a proposal for a separate Backend review, **not** an implemented M4.4B
-API. The mobile app must keep pickup/dropoff markers and omit a road line until
-an authorized geometry response exists. It must not ask a public OSRM server or
-join the endpoints with a straight line and call that a driving route.
+This document originated as the M4.4B follow-up proposal. The V14 worktree
+implements its two authorized read-only endpoints and stores the validated
+GeoJSON LineString on the accepted Quote. The mobile app omits a road line
+unless an authorized geometry response is available. It never asks a public
+OSRM server or joins endpoints with a straight line and calls that a route.
 
-## Current contract evidence
+## Pre-V14 contract evidence (historical)
 
 - `QuoteResponse` exposes pickup/dropoff coordinates, road distance and duration,
   but no route geometry.
@@ -17,7 +18,7 @@ join the endpoints with a straight line and call that a driving route.
   duration and provider in `RouteEstimate`. No Backend route-geometry endpoint
   exists in the current pricing, booking, trip or dispatch API controllers.
 
-## Proposed read-only endpoints
+## Read-only endpoints implemented by V14
 
 1. `GET /api/v1/quotes/{quotePublicId}/route`: only the authenticated CUSTOMER
    who owns that Quote, including after expiry for historical display.
@@ -28,7 +29,7 @@ join the endpoints with a straight line and call that a driving route.
    authorization. The assigned Driver may retrieve the static route while
    handling or reviewing their own trip, subject to the existing history policy.
 
-Both endpoints should return one immutable route snapshot derived from the
+Both endpoints return one immutable route snapshot derived from the
 Quote accepted by the Booking. The response can use this shape inside the
 existing `ApiResponse` envelope:
 
@@ -57,10 +58,9 @@ point markers, coordinates and existing trip/payment information.
 
 ## Capture, validation and financial invariants
 
-- In a separate Backend milestone, request detailed OSRM geometry from the
-  **same routing result** used to issue the Quote, and validate it before
-  persisting it immutably with that Quote (a new migration, not a historical
-  migration edit). Booking references the accepted Quote's route snapshot.
+- V14 requests detailed OSRM geometry from the **same routing result** used to
+  issue the Quote and validates it before persisting it immutably with that
+  Quote. Booking references the accepted Quote's route snapshot.
 - Validate a `LineString` with at least two finite points, longitude in
   [-180, 180], latitude in [-90, 90], documented size/vertex limits and
   endpoints consistent with the accepted pickup/dropoff within an explicit

@@ -5,10 +5,12 @@ import '../../../../core/di/injection.dart';
 import '../../../../core/storage/secure_storage_service.dart';
 import '../../../../core/theme/app_motion.dart';
 import '../../../customer/presentation/formatters.dart';
+import '../../../customer/domain/models/quote.dart';
 import '../../../customer/presentation/widgets/customer_map_source.dart';
 import '../../../trip/data/trip_realtime_client.dart';
 import '../../../trip/domain/models/trip_models.dart';
 import '../../../trip/domain/repositories/trip_repository.dart';
+import '../../../trip/presentation/widgets/authorized_road_route.dart';
 import '../../data/location/driver_location_source.dart';
 import '../../domain/models/driver_models.dart';
 import '../bloc/driver_cubit.dart';
@@ -371,11 +373,22 @@ class _DriverAcceptedBookingScreenState
         ),
       );
     }
-    return widget.mapBuilder?.call(context, widget.offer) ??
-        DriverTripMap(
-          key: ValueKey('driver-trip-map-${widget.offer.bookingPublicId}'),
-          offer: widget.offer,
-        );
+    return AuthorizedRoadRoute(
+      key: ValueKey('driver-route-${widget.offer.bookingPublicId}'),
+      publicId: widget.offer.bookingPublicId,
+      isQuote: false,
+      pickup: Coordinates(
+          widget.offer.pickupLatitude, widget.offer.pickupLongitude),
+      dropoff: Coordinates(
+          widget.offer.dropoffLatitude, widget.offer.dropoffLongitude),
+      builder: (context, route) =>
+          widget.mapBuilder?.call(context, widget.offer) ??
+          DriverTripMap(
+            key: ValueKey('driver-trip-map-${widget.offer.bookingPublicId}'),
+            offer: widget.offer,
+            route: route,
+          ),
+    );
   }
 
   Widget _statusCard(BuildContext context, DriverTripState state) {
@@ -466,7 +479,7 @@ class _DriverAcceptedBookingScreenState
                 ),
               const SizedBox(height: 8),
               const Text(
-                  'Chưa có dữ liệu tuyến đường từ máy chủ; bản đồ chỉ đánh dấu hai điểm.'),
+                  'Đường màu xanh chỉ hiện khi máy chủ có tuyến đường hợp lệ; nếu không, bản đồ vẫn đánh dấu hai điểm.'),
               const SizedBox(height: 12),
               Text('Loại xe: ${_vehicleLabel(widget.offer.vehicleType)}'),
               const SizedBox(height: 4),

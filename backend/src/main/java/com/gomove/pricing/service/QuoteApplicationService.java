@@ -4,6 +4,7 @@ import com.gomove.auth.domain.UserRole;
 import com.gomove.common.exception.DomainException;
 import com.gomove.pricing.api.CreateQuoteRequest;
 import com.gomove.pricing.api.QuoteResponse;
+import com.gomove.pricing.api.RouteResponse;
 import com.gomove.pricing.domain.GeoCoordinate;
 import com.gomove.pricing.domain.Quote;
 import com.gomove.pricing.domain.RouteEstimate;
@@ -48,6 +49,11 @@ public class QuoteApplicationService {
         requireCustomer(role);
         Quote quote = persistence.findOwned(quotePublicId, customerPublicId);
         return QuoteResponse.from(quote, clock.instant());
+    }
+
+    public RouteResponse getOwnedRoute(UUID quotePublicId, UUID customerPublicId, UserRole role) {
+        requireCustomer(role);
+        return RouteResponse.from(persistence.findOwned(quotePublicId, customerPublicId), null);
     }
 
     private void requireCustomer(UserRole role) {

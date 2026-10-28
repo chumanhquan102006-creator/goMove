@@ -3,16 +3,28 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../../core/di/injection.dart';
+import '../../../../core/storage/secure_storage_service.dart';
 import '../../../../core/theme/app_motion.dart';
+import '../../../trip/domain/repositories/road_route_repository.dart';
+import '../../../trip/presentation/widgets/authorized_road_route.dart';
 import '../../domain/models/quote.dart';
 import '../bloc/booking_cubit.dart';
 import '../formatters.dart';
 import 'booking_status_screen.dart';
+import 'customer_map_canvas.dart';
 
 class QuoteReviewScreen extends StatefulWidget {
   final Quote quote;
   final DateTime Function()? now;
-  const QuoteReviewScreen({super.key, required this.quote, this.now});
+  final RoadRouteRepository? routeRepository;
+  final SecureStorageService? routeSession;
+  const QuoteReviewScreen(
+      {super.key,
+      required this.quote,
+      this.now,
+      this.routeRepository,
+      this.routeSession});
 
   @override
   State<QuoteReviewScreen> createState() => _QuoteReviewScreenState();
@@ -100,6 +112,40 @@ class _QuoteReviewScreenState extends State<QuoteReviewScreen> {
         appBar: AppBar(title: const Text('Xác nhận chuyến')),
         body: SafeArea(
           child: ListView(padding: const EdgeInsets.all(16), children: [
+            if ((widget.routeRepository != null ||
+                    sl.isRegistered<RoadRouteRepository>()) &&
+                (widget.routeSession != null ||
+                    sl.isRegistered<SecureStorageService>())) ...[
+              Text('Tuyến đường theo phố', style: textTheme.titleMedium),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 260,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(18),
+                  child: AuthorizedRoadRoute(
+                    publicId: quote.publicId,
+                    isQuote: true,
+                    pickup: quote.pickup,
+                    dropoff: quote.dropoff,
+                    repository: widget.routeRepository,
+                    session: widget.routeSession,
+                    builder: (context, route) => CustomerMapCanvas(
+                      pickup: quote.pickup,
+                      dropoff: quote.dropoff,
+                      route: route,
+                      onTap: (_) {},
+                      fullScreen: true,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                  'Đường màu xanh chỉ hiện khi máy chủ cung cấp hình học hợp lệ. '
+                  'Chạm “Xem 2 điểm” để căn lại bản đồ.',
+                  style: textTheme.bodySmall),
+              const SizedBox(height: 12),
+            ],
             AnimatedOpacity(
               key: const ValueKey('quote-fare-reveal'),
               opacity: revealFare ? 1 : 0,

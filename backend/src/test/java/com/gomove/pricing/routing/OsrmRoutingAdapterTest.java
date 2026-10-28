@@ -25,7 +25,10 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import static org.springframework.http.HttpMethod.GET;
 
 class OsrmRoutingAdapterTest {
-    private static final String URL = "http://osrm.test/route/v1/driving/105.8524,21.0287;105.8576,21.0245?overview=false";
+    private static final String URL = "http://osrm.test/route/v1/driving/105.8524,21.0287;105.8576,21.0245?overview=full&geometries=geojson";
+    private static final String VALID_GEOMETRY = """
+            {"type":"LineString","coordinates":[[105.8524,21.0287],[105.854,21.027],[105.8576,21.0245]]}
+            """;
     private MockRestServiceServer server;
     private OsrmRoutingAdapter adapter;
 
@@ -41,13 +44,45 @@ class OsrmRoutingAdapterTest {
     @Test
     void parsesRoadDistanceAndDurationWithLongitudeBeforeLatitude() {
         server.expect(requestTo(URL)).andExpect(method(GET))
-                .andRespond(withSuccess("{\"code\":\"Ok\",\"routes\":[{\"distance\":754.3,\"duration\":123.5}]}", MediaType.APPLICATION_JSON));
+                .andRespond(withSuccess(response(VALID_GEOMETRY), MediaType.APPLICATION_JSON));
 
         RouteEstimate route = adapter.calculateRoute(pickup(), dropoff());
 
         assertThat(route.distanceMeters()).isEqualTo(new BigDecimal("754.300"));
         assertThat(route.durationSeconds()).isEqualTo(new BigDecimal("123.500"));
         assertThat(route.provider()).isEqualTo("OSRM");
+        assertThat(route.geometry().type()).isEqualTo("LineString");
+        assertThat(route.geometry().coordinates().getFirst().getFirst())
+                .isEqualByComparingTo(new BigDecimal("105.8524"));
+        assertThat(route.geometry().coordinates().getLast().get(1))
+                .isEqualByComparingTo(new BigDecimal("21.0245"));
+        server.verify();
+    }
+
+    @Test
+    void rejectsMalformedOversizedOrReversedProviderGeometry() {
+        String[] invalid = {
+                "null",
+                "{\"type\":\"Point\",\"coordinates\":[105.8524,21.0287]}",
+                "{\"type\":\"LineString\",\"coordinates\":[[105.8524,21.0287]]}",
+                "{\"type\":\"LineString\",\"coordinates\":[[105.8524,21.0287],[181,21.0245]]}",
+                "{\"type\":\"LineString\",\"coordinates\":[[105.8576,21.0245],[105.8524,21.0287]]}",
+                "{\"type\":\"LineString\",\"coordinates\":[[106,22],[106.01,22.01]]}"
+        };
+        for (String geometry : invalid) {
+            setUp();
+            server.expect(requestTo(URL)).andRespond(withSuccess(response(geometry), MediaType.APPLICATION_JSON));
+            assertThatThrownBy(() -> adapter.calculateRoute(pickup(), dropoff()))
+                    .isInstanceOf(DomainException.class).hasMessageContaining("invalid response");
+            server.verify();
+        }
+
+        setUp();
+        String oversized = "{\"type\":\"LineString\",\"coordinates\":["
+                + "[105.8524,21.0287],".repeat(8192) + "[105.8576,21.0245]]}";
+        server.expect(requestTo(URL)).andRespond(withSuccess(response(oversized), MediaType.APPLICATION_JSON));
+        assertThatThrownBy(() -> adapter.calculateRoute(pickup(), dropoff()))
+                .isInstanceOf(DomainException.class).hasMessageContaining("invalid response");
         server.verify();
     }
 
@@ -130,5 +165,10 @@ class OsrmRoutingAdapterTest {
 
     private GeoCoordinate dropoff() {
         return new GeoCoordinate(new BigDecimal("21.0245"), new BigDecimal("105.8576"));
+    }
+
+    private String response(String geometry) {
+        return "{\"code\":\"Ok\",\"routes\":[{\"distance\":754.3,\"duration\":123.5,\"geometry\":"
+                + geometry + "}]}";
     }
 }

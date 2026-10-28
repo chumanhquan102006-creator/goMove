@@ -11,5 +11,10 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
     @Query("select b from Booking b join fetch b.quote where b.publicId = :bookingPublicId and b.customer.publicId = :customerPublicId")
     Optional<Booking> findOwned(@Param("bookingPublicId") UUID bookingPublicId,
                                 @Param("customerPublicId") UUID customerPublicId);
+
+    @Query("select b from Booking b join fetch b.quote join b.assignedDriver d join d.user u "
+            + "where b.publicId = :bookingPublicId and u.publicId = :driverUserPublicId")
+    Optional<Booking> findAssignedDriverRoute(@Param("bookingPublicId") UUID bookingPublicId,
+                                              @Param("driverUserPublicId") UUID driverUserPublicId);
     long countByQuoteId(Long quoteId);
 }

@@ -1,11 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart' show Factory;
 import 'package:flutter/gestures.dart' show OneSequenceGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gomove_mobile/features/customer/presentation/bloc/booking_status_cubit.dart';
+import 'package:gomove_mobile/features/customer/domain/models/quote.dart';
 import 'package:gomove_mobile/features/customer/presentation/widgets/customer_trip_tracking_map.dart';
 import 'package:gomove_mobile/features/trip/data/trip_realtime_client.dart';
+import 'package:gomove_mobile/features/trip/domain/models/road_route.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 
 void main() {
@@ -331,6 +335,84 @@ void main() {
     expect(find.textContaining('Phiên theo dõi đã thay đổi'), findsOneWidget);
   });
 
+  testWidgets('Completed trip covers native GPS until removal and keeps route',
+      (tester) async {
+    const channel = MethodChannel('plugins.flutter.io/maplibre_gl');
+    tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (_) async => null);
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null));
+    final originalFactory = MapLibrePlatform.createInstance;
+    MapLibrePlatform.createInstance = _FakeMapLibrePlatform.new;
+    addTearDown(() => MapLibrePlatform.createInstance = originalFactory);
+    final route = RoadRoute.fromJson({
+      'sourceQuotePublicId': 'quote-a',
+      'bookingPublicId': 'booking-a',
+      'availability': 'AVAILABLE',
+      'geometryFormat': 'GEOJSON_LINESTRING',
+      'geometry': {
+        'type': 'LineString',
+        'coordinates': [
+          [105.8524, 21.0287],
+          [105.8551, 21.0261],
+          [105.8576, 21.0245],
+        ],
+      },
+    });
+    final controller = _RecordingTrackingController();
+    controller.delayRemoval = Completer<void>();
+
+    Future<void> show(CustomerLiveLocation? location) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: SizedBox.expand(
+            child: CustomerTripTrackingMap(
+              bookingPublicId: 'booking-a',
+              fullBleed: true,
+              location: location,
+              route: route,
+              pickup: const Coordinates(21.0287, 105.8524),
+              dropoff: const Coordinates(21.0245, 105.8576),
+              connectionState: TripRealtimeConnectionState.connected,
+            ),
+          ),
+        ),
+      ));
+      await tester.pump();
+    }
+
+    await show(CustomerLiveLocation(21.03, 105.85, 4, 90, firstFix));
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await tester.pump();
+    await tester.pump();
+    expect(controller.circles, hasLength(3));
+    expect(controller.lines, hasLength(1));
+    final mapState = tester.state(find.byType(MapLibreMap));
+
+    await show(null);
+    expect(find.text('Tìm tài xế'), findsNothing);
+    expect(
+        find.byWidgetPredicate((widget) =>
+            widget is ColoredBox && widget.color == const Color(0xFFF8F9FA)),
+        findsOneWidget,
+        reason: 'Native GPS must be hidden while removeCircle is pending');
+    expect(controller.removalStarted.isCompleted, isTrue);
+    expect(tester.state(find.byType(MapLibreMap)), same(mapState));
+
+    controller.delayRemoval!.complete();
+    await tester.pump();
+    await tester.pump();
+    expect(
+        find.byWidgetPredicate((widget) =>
+            widget is ColoredBox && widget.color == const Color(0xFFF8F9FA)),
+        findsNothing);
+    expect(controller.circles, hasLength(2));
+    expect(controller.lines, hasLength(1));
+    expect(tester.state(find.byType(MapLibreMap)), same(mapState));
+  });
+
   testWidgets('Pause, style reload and disposal stop in-flight marker motion',
       (tester) async {
     const channel = MethodChannel('plugins.flutter.io/maplibre_gl');
@@ -412,11 +494,42 @@ class _FakeMapLibrePlatform extends Fake implements MapLibrePlatform {
 class _RecordingTrackingController extends Fake
     implements MapLibreMapController {
   int cameraMoves = 0;
+  int _nextCircle = 0;
+  @override
+  final circles = <Circle>{};
+  @override
+  final lines = <Line>{};
+  Completer<void>? delayRemoval;
+  final removalStarted = Completer<void>();
 
   @override
   Future<Circle> addCircle(CircleOptions options,
-          [Map<String, dynamic>? data]) async =>
-      Circle('driver-location', options, data);
+      [Map<String, dynamic>? data]) async {
+    final circle = Circle('circle-${_nextCircle++}', options, data);
+    circles.add(circle);
+    return circle;
+  }
+
+  @override
+  Future<void> clearCircles() async => circles.clear();
+
+  @override
+  Future<void> removeCircle(Circle circle) async {
+    if (!removalStarted.isCompleted) removalStarted.complete();
+    await delayRemoval?.future;
+    circles.remove(circle);
+  }
+
+  @override
+  Future<void> clearLines() async => lines.clear();
+
+  @override
+  Future<Line> addLine(LineOptions options,
+      [Map<String, dynamic>? data]) async {
+    final line = Line('line-1', options, data);
+    lines.add(line);
+    return line;
+  }
 
   @override
   Future<void> updateCircle(Circle circle, CircleOptions changes) async {}

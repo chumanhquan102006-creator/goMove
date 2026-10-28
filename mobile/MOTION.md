@@ -1,8 +1,11 @@
 # GoMove Motion Design — M4.4 specification and implementation notes
 
-Status: **M4.4A committed; M4.4B map and sheet UI implemented in the current
-uncommitted mobile worktree**. Authorized road-route geometry, reverse geocoding
-and dual-device performance validation remain separate gates. The three
+Status: **M4.4A and M4.4B are present at the `e487ca6` baseline**. The V14
+authorized road-route implementation is present as uncommitted work. Backend
+`mvnw.cmd clean test` passed 126 tests; Flutter analyze passed, Flutter test
+passed 252 tests, and a real-mode debug APK built on 2026-10-27. Native
+Android route rendering and dual-device performance remain unverified. Reverse
+geocoding remains outside this milestone. The three
 user-provided MP4 references were reviewed as motion/visual examples. The
 timings below are **GoMove design targets**, not copies of their brand,
 implementation, easing curves or simulated data. Timestamps in the observation
@@ -30,7 +33,7 @@ default** until native performance is measured; normal tracking applies the
 latest valid GPS fix directly. No road line is drawn because the Backend does
 not currently persist or expose route geometry; see
 `ROUTE_GEOMETRY_FOLLOWUP.md` for the proposed authorized read-only contract.
-Native MapLibre behavior, FPS, RAM and dual-emulator end-to-end operation have
+This paragraph records the M4.4B baseline before V14. Native MapLibre behavior, FPS, RAM and dual-emulator end-to-end operation have
 not yet been measured. Verification on 2026-10-25: `flutter analyze --no-pub`
 exited 0 with no issues; `flutter test --no-pub` exited 0 with 242 tests. The
 real-mode debug APK command exited 1 in Gradle with `Unable to establish
@@ -57,8 +60,9 @@ independent, optional proposal.
 Motion should make a state change legible, not make a ride appear to advance
 before the server says it has. Keep the M4.3 light GoMove palette and readable
 Vietnamese labels; do not copy reference branding or adopt a dark map merely
-because a reference has one. Do not add route lines: the current Quote supplies
-distance and duration but no route geometry. No animation may create a Booking,
+because a reference has one. Draw only the immutable road geometry returned by
+an authorized V14 route API; an unavailable route retains point markers and no
+line. No animation may create a Booking,
 driver assignment, GPS sample, payment result, or authenticated session.
 
 The existing Cubits, repositories, Backend responses and security checks remain

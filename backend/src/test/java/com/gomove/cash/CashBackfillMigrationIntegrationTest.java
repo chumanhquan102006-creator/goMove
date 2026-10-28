@@ -98,7 +98,7 @@ class CashBackfillMigrationIntegrationTest extends BaseIntegrationTest {
             assertThat(jdbc.queryForObject("""
                     SELECT version FROM flyway_schema_history WHERE success=TRUE
                     ORDER BY installed_rank DESC LIMIT 1
-                    """, String.class)).isEqualTo("13");
+                    """, String.class)).isEqualTo("14");
             assertThat(jdbc.queryForObject("SELECT status FROM cash_payments", String.class))
                     .isEqualTo("PENDING");
             assertThat(jdbc.queryForObject("SELECT amount FROM cash_payments", BigDecimal.class))

@@ -3,7 +3,11 @@ package com.gomove.pricing.domain;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 
-public record RouteEstimate(BigDecimal distanceMeters, BigDecimal durationSeconds, String provider) {
+public record RouteEstimate(BigDecimal distanceMeters, BigDecimal durationSeconds, String provider,
+                            RouteGeometry geometry) {
+    public RouteEstimate(BigDecimal distanceMeters, BigDecimal durationSeconds, String provider) {
+        this(distanceMeters, durationSeconds, provider, null);
+    }
     public RouteEstimate {
         if (distanceMeters == null || durationSeconds == null
                 || distanceMeters.signum() <= 0 || durationSeconds.signum() <= 0

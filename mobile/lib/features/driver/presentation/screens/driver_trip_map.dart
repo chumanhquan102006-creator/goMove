@@ -8,14 +8,18 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 
 import '../../../../core/theme/app_motion.dart';
 import '../../../customer/presentation/widgets/customer_map_source.dart';
+import '../../../customer/domain/models/quote.dart';
+import '../../../trip/domain/models/road_route.dart';
+import '../../../trip/presentation/widgets/road_route_line.dart';
 import '../../domain/models/driver_models.dart';
 
 /// Presentation of the two points supplied by an authorized Driver offer.
 /// No Customer location or driving route is inferred from these coordinates.
 class DriverTripMap extends StatefulWidget {
   final DriverOffer offer;
+  final RoadRoute? route;
 
-  const DriverTripMap({super.key, required this.offer});
+  const DriverTripMap({super.key, required this.offer, this.route});
 
   static bool hasValidPoints(DriverOffer offer) =>
       _valid(offer.pickupLatitude, offer.pickupLongitude) &&
@@ -29,8 +33,7 @@ class DriverTripMap extends StatefulWidget {
       longitude >= -180 &&
       longitude <= 180;
 
-  /// Only point annotations are available from this mobile contract. No
-  /// polyline or Customer live-location annotation is constructed here.
+  /// Point markers come from the authorized offer, never from route endpoints.
   static List<CircleOptions> pointMarkers(DriverOffer offer) => [
         CircleOptions(
           geometry: LatLng(offer.pickupLatitude, offer.pickupLongitude),
@@ -96,10 +99,11 @@ class _DriverTripMapState extends State<DriverTripMap> {
         oldWidget.offer.pickupLatitude != widget.offer.pickupLatitude ||
         oldWidget.offer.pickupLongitude != widget.offer.pickupLongitude ||
         oldWidget.offer.dropoffLatitude != widget.offer.dropoffLatitude ||
-        oldWidget.offer.dropoffLongitude != widget.offer.dropoffLongitude) {
+        oldWidget.offer.dropoffLongitude != widget.offer.dropoffLongitude ||
+        !identical(oldWidget.route, widget.route)) {
       // A different authorized offer may change annotations, but not the
       // platform-view identity or the user's camera position.
-      _queueMarkerSync();
+      _queueAnnotationSync();
     }
   }
 
@@ -131,7 +135,7 @@ class _DriverTripMapState extends State<DriverTripMap> {
       _styleLoaded = true;
       _mapUnavailable = false;
     });
-    _queueMarkerSync();
+    _queueAnnotationSync();
     // Initial fit is allowed once. A later style reload must not recenter a
     // map the Driver has already panned or zoomed.
     if (!_initialFitDone) {
@@ -140,7 +144,7 @@ class _DriverTripMapState extends State<DriverTripMap> {
     }
   }
 
-  void _queueMarkerSync() {
+  void _queueAnnotationSync() {
     final version = _mapVersion;
     _annotationSync = _annotationSync.then((_) async {
       final controller = _controller;
@@ -150,6 +154,19 @@ class _DriverTripMapState extends State<DriverTripMap> {
           version != _mapVersion) {
         return;
       }
+      await controller.clearLines();
+      if (!mounted || version != _mapVersion) return;
+      final route = widget.route;
+      if (route != null &&
+          route.matchesEndpoints(
+              Coordinates(
+                  widget.offer.pickupLatitude, widget.offer.pickupLongitude),
+              Coordinates(widget.offer.dropoffLatitude,
+                  widget.offer.dropoffLongitude))) {
+        final line = RoadRouteLine.options(route);
+        if (line != null) await controller.addLine(line);
+      }
+      if (!mounted || version != _mapVersion) return;
       await controller.clearCircles();
       if (!mounted || version != _mapVersion) return;
       for (final marker in DriverTripMap.pointMarkers(widget.offer)) {
@@ -249,7 +266,7 @@ class _DriverTripMapState extends State<DriverTripMap> {
             myLocationEnabled: false,
             logoEnabled: true,
             gestureRecognizers: _mapGestures,
-            annotationOrder: const [AnnotationType.circle],
+            annotationOrder: const [AnnotationType.line, AnnotationType.circle],
             onMapCreated: _onMapCreated,
             onStyleLoadedCallback: _onStyleLoaded,
           ),

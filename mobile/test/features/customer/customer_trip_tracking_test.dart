@@ -15,7 +15,9 @@ import 'package:gomove_mobile/features/customer/presentation/bloc/booking_status
 import 'package:gomove_mobile/features/customer/presentation/screens/booking_status_screen.dart';
 import 'package:gomove_mobile/features/trip/data/trip_realtime_client.dart';
 import 'package:gomove_mobile/features/trip/domain/models/trip_models.dart';
+import 'package:gomove_mobile/features/trip/domain/models/trip_eta.dart';
 import 'package:gomove_mobile/features/trip/domain/repositories/trip_repository.dart';
+import 'package:gomove_mobile/features/trip/domain/repositories/trip_eta_repository.dart';
 import 'package:mocktail/mocktail.dart';
 
 const bookingId = '550e8400-e29b-41d4-a716-446655440002';
@@ -143,6 +145,29 @@ class TripRepositoryStub implements TripRepository {
   Future<CashReceipt> confirmCash(String id, int generation) {
     confirmCalls++;
     throw UnimplementedError();
+  }
+}
+
+class EtaRepositoryStub implements TripEtaRepository {
+  int calls = 0;
+  double durationSeconds = 240;
+
+  @override
+  Future<TripEta> booking(String id, int generation) async {
+    calls++;
+    final now = DateTime.now().toUtc();
+    return TripEta(
+      bookingPublicId: id,
+      status: 'DRIVER_ACCEPTED',
+      phase: 'PICKUP',
+      availability: 'AVAILABLE',
+      distanceMeters: 900,
+      durationSeconds: durationSeconds,
+      calculatedAt: now,
+      locationUpdatedAt: now.subtract(const Duration(seconds: 1)),
+      expiresAt: now.add(const Duration(seconds: 30)),
+      servedAt: now,
+    );
   }
 }
 
@@ -919,6 +944,54 @@ void main() {
     expect(disposals, 0);
     await tester.pumpWidget(const SizedBox.shrink());
     expect(disposals, 1);
+  });
+
+  testWidgets('ETA refresh keeps map mounted and landscape sheet scrollable',
+      (tester) async {
+    tester.view.physicalSize = const Size(640, 320);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    trips.value = tracking('DRIVER_ACCEPTED',
+        latitude: 21.1,
+        longitude: 105.1,
+        locationUpdatedAt: DateTime.utc(2026, 10, 16, 10, 11));
+    registerScreenServices();
+    final eta = EtaRepositoryStub();
+    sl.registerSingleton<TripEtaRepository>(eta);
+    var mounts = 0;
+    var disposals = 0;
+    await tester.pumpWidget(MaterialApp(
+        home: BookingStatusScreen(
+            booking: booking(),
+            trackingMapBuilder: (_, __, ___) => _MapLifecycleSpy(
+                onMount: () => mounts++, onDispose: () => disposals++))));
+    await tester.pump();
+    await tester.pump();
+    await tester.scrollUntilVisible(find.text('Đón bạn sau khoảng 4 phút'), 100,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Cách điểm đón khoảng 900 m'), findsOneWidget);
+    expect(eta.calls, 1);
+    expect(mounts, 1);
+    expect(disposals, 0);
+    expect(tester.takeException(), isNull);
+
+    eta.durationSeconds = 180;
+    trips.value = tracking('DRIVER_ACCEPTED',
+        latitude: 21.101,
+        longitude: 105.101,
+        locationUpdatedAt: DateTime.utc(2026, 10, 16, 10, 11, 30));
+    await tester.pump(const Duration(seconds: 15));
+    await tester.pump();
+    await tester.scrollUntilVisible(find.text('Đón bạn sau khoảng 3 phút'), 100,
+        scrollable: find.byType(Scrollable).first);
+    expect(eta.calls, 2);
+    expect(mounts, 1);
+    expect(disposals, 0);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets('Trip sheet drags and snaps without remounting the live map',

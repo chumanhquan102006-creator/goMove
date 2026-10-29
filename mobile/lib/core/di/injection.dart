@@ -27,9 +27,11 @@ import '../../features/driver/domain/usecases/driver_usecases.dart';
 import '../../features/driver/presentation/bloc/driver_cubit.dart';
 import '../../features/driver/presentation/bloc/onboarding_cubit.dart';
 import '../../features/trip/data/repositories/trip_repository_impl.dart';
+import '../../features/trip/data/repositories/trip_eta_repository_impl.dart';
 import '../../features/trip/data/repositories/road_route_repository_impl.dart';
 import '../../features/trip/data/trip_realtime_client.dart';
 import '../../features/trip/domain/repositories/trip_repository.dart';
+import '../../features/trip/domain/repositories/trip_eta_repository.dart';
 import '../../features/trip/domain/repositories/road_route_repository.dart';
 import '../config/app_config.dart';
 import '../network/api_client.dart';
@@ -181,6 +183,8 @@ Future<void> setupServiceLocator({required AppConfig config}) async {
       () => SecureAcceptedBookingStore());
   sl.registerLazySingleton<TripRepository>(
       () => TripRepositoryImpl(sl<ApiClient>()));
+  sl.registerLazySingleton<TripEtaRepository>(
+      () => TripEtaRepositoryImpl(sl<ApiClient>()));
   sl.registerLazySingleton<RoadRouteRepository>(
       () => RoadRouteRepositoryImpl(sl<ApiClient>()));
   sl.registerFactoryParam<CustomerActiveBookingCubit, String, void>(

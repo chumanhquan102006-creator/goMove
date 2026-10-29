@@ -19,6 +19,7 @@ class ApiEndpoints {
   static String bookingRoute(String publicId) => '/bookings/$publicId/route';
   static String bookingTracking(String publicId) =>
       '/bookings/$publicId/tracking';
+  static String bookingEta(String publicId) => '/bookings/$publicId/eta';
   static String bookingPayment(String publicId) =>
       '/bookings/$publicId/payment';
   static String driverTripAction(String bookingPublicId, String action) =>

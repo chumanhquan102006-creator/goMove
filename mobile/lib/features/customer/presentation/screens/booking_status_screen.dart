@@ -15,6 +15,7 @@ import '../bloc/booking_status_cubit.dart';
 import '../formatters.dart';
 import '../widgets/customer_map_source.dart';
 import '../widgets/customer_trip_tracking_map.dart';
+import '../widgets/customer_trip_eta.dart';
 
 typedef CustomerTripMapBuilder = Widget Function(BuildContext context,
     CustomerLiveLocation location, TripRealtimeConnectionState connectionState);
@@ -358,6 +359,11 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                 ],
                               ),
                             ),
+                          ),
+                          CustomerTripEta(
+                            key: ValueKey('customer-eta-${booking.publicId}'),
+                            bookingPublicId: booking.publicId,
+                            status: state.status,
                           ),
                           // Keep later sliver children at stable indices while polling so
                           // the native map is not torn down and rebuilt every refresh.

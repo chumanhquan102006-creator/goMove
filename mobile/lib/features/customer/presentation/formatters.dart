@@ -27,3 +27,17 @@ String durationLabel(Quote quote) {
       ? '${quote.durationSeconds} giây'
       : '${(seconds / 60).ceil()} phút';
 }
+
+/// Road ETA is approximate and independent of the immutable Quote fare.
+String roadDistanceLabel(double meters) {
+  if (!meters.isFinite || meters < 0) return 'Chưa rõ';
+  if (meters > 0 && meters < 10) return 'dưới 10 m';
+  if (meters < 995) return '${(meters / 10).round() * 10} m';
+  final km = (meters / 1000).toStringAsFixed(1).replaceAll('.', ',');
+  return '${km.endsWith(',0') ? km.substring(0, km.length - 2) : km} km';
+}
+
+String roadDurationLabel(double seconds) {
+  if (!seconds.isFinite || seconds < 0) return 'Chưa rõ';
+  return seconds < 60 ? 'dưới 1 phút' : '${(seconds / 60).ceil()} phút';
+}

@@ -68,6 +68,38 @@ public class TripStore {
                 role.name(), userPublicId).stream().findFirst();
     }
 
+    /** One authorized, short database read. Routing HTTP is performed only after this query returns. */
+    public Optional<EtaSnapshot> etaSnapshot(UUID bookingPublicId, UUID userPublicId, UserRole role) {
+        if (role != UserRole.CUSTOMER && role != UserRole.DRIVER) return Optional.empty();
+        return jdbc.query("""
+                SELECT b.status, b.assigned_driver_id,
+                       ST_Y(b.pickup_location::geometry) AS pickup_latitude,
+                       ST_X(b.pickup_location::geometry) AS pickup_longitude,
+                       ST_Y(b.dropoff_location::geometry) AS dropoff_latitude,
+                       ST_X(b.dropoff_location::geometry) AS dropoff_longitude,
+                       ST_Y(dl.current_location::geometry) AS driver_latitude,
+                       ST_X(dl.current_location::geometry) AS driver_longitude,
+                       dl.accuracy, dl.updated_at AS location_updated_at
+                FROM bookings b JOIN users customer ON customer.id = b.customer_id
+                LEFT JOIN drivers d ON d.id = b.assigned_driver_id
+                LEFT JOIN users driver_user ON driver_user.id = d.user_id
+                LEFT JOIN driver_locations dl ON dl.driver_id = d.id
+                    AND b.status IN ('DRIVER_ACCEPTED', 'IN_PROGRESS')
+                WHERE b.public_id = ? AND
+                    ((? = 'CUSTOMER' AND customer.public_id = ?) OR
+                     (? = 'DRIVER' AND driver_user.public_id = ?))
+                """, (rs, row) -> new EtaSnapshot(
+                BookingStatus.valueOf(rs.getString("status")),
+                rs.getObject("assigned_driver_id", Long.class),
+                rs.getDouble("pickup_latitude"), rs.getDouble("pickup_longitude"),
+                rs.getDouble("dropoff_latitude"), rs.getDouble("dropoff_longitude"),
+                rs.getObject("driver_latitude", Double.class),
+                rs.getObject("driver_longitude", Double.class),
+                rs.getObject("accuracy", Double.class), instant(rs, "location_updated_at")),
+                bookingPublicId, role.name(), userPublicId, role.name(), userPublicId)
+                .stream().findFirst();
+    }
+
     public boolean mayTrack(UUID bookingPublicId, UUID driverUserPublicId) {
         return jdbc.query("""
                 SELECT b.status FROM bookings b JOIN drivers d ON d.id = b.assigned_driver_id
@@ -103,4 +135,10 @@ public class TripStore {
                                 Instant passengerOnboardAt, Instant tripStartedAt, Instant tripCompletedAt,
                                 Double latitude, Double longitude, Double accuracy, Double bearing,
                                 Instant locationUpdatedAt) {}
+
+    public record EtaSnapshot(BookingStatus status, Long assignedDriverId,
+                              double pickupLatitude, double pickupLongitude,
+                              double dropoffLatitude, double dropoffLongitude,
+                              Double driverLatitude, Double driverLongitude,
+                              Double accuracy, Instant locationUpdatedAt) {}
 }

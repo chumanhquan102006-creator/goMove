@@ -32,3 +32,41 @@ registers the JWT expiration against its server session ID. Every private ride f
 is checked again on the client outbound channel; an expired session remains unable
 to receive events even if its broker subscription has not yet been removed. The
 client must reconnect using a fresh access token.
+
+## Transient road ETA (M4.5A)
+
+`GET /api/v1/bookings/{bookingPublicId}/eta` is available only to the Booking
+Customer and assigned Driver. Its `data` contains the current Booking `status`,
+`phase` (`PICKUP`, `DESTINATION`, or `NONE`), `availability`, optional `reason`,
+road `distanceMeters` and `durationSeconds`, `calculatedAt`, `locationUpdatedAt`,
+`expiresAt`, and `servedAt`. It contains no GPS coordinates. `DRIVER_ACCEPTED`
+routes the latest Driver position to pickup; `IN_PROGRESS` routes it to dropoff.
+Other states return `UNAVAILABLE` without reading a Driver position. ETA reads
+never alter the accepted fare, Quote, Booking, or CASH records.
+
+The Backend requires a latest GPS row no older than the existing 30-second
+dispatch freshness policy, with reported accuracy at most 100 meters. A null
+accuracy is unavailable. The OSRM response must snap both endpoints within
+200 meters. A bad fix, missing route, timeout, or invalid response produces a
+neutral `UNAVAILABLE` result. Live ETA uses a transient OSRM metrics request;
+the immutable Quote route remains the blue map polyline and is never repriced.
+The new live route may differ from that original polyline if the Driver goes
+off the original route.
+
+For each Booking, a bounded in-memory cache holds at most a 30-second estimate.
+It recalculates after at least 15 seconds when GPS has moved 50 meters or more,
+or when the old estimate expires; a routing failure has a 15-second retry
+cooldown. Each request rechecks authorized Booking status, GPS freshness and
+accuracy before using the cache. A request also rechecks state after OSRM
+returns, discarding a result superseded by completion or material GPS movement.
+`expiresAt` never exceeds the source GPS freshness boundary. Clients use
+`expiresAt - servedAt` as a local monotonic display TTL, capped at 30 seconds,
+so an incorrect device clock cannot extend the estimate. Do not count an ETA
+down without a new valid estimate.
+
+GPS freshness is based on server receipt time: the V12 location payload has no
+original Android sample timestamp. Existing mobile sample-age checks reduce
+the risk of replaying an old fix, but the Backend cannot independently prove
+the age of a resampled coordinate. An exact arrival at a routing endpoint may
+yield zero OSRM metrics, for which this endpoint returns `UNAVAILABLE` rather
+than inventing a remaining time.

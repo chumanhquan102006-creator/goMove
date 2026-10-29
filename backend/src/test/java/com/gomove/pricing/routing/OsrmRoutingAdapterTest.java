@@ -26,6 +26,7 @@ import static org.springframework.http.HttpMethod.GET;
 
 class OsrmRoutingAdapterTest {
     private static final String URL = "http://osrm.test/route/v1/driving/105.8524,21.0287;105.8576,21.0245?overview=full&geometries=geojson";
+    private static final String ETA_URL = "http://osrm.test/route/v1/driving/105.8524,21.0287;105.8576,21.0245?overview=false";
     private static final String VALID_GEOMETRY = """
             {"type":"LineString","coordinates":[[105.8524,21.0287],[105.854,21.027],[105.8576,21.0245]]}
             """;
@@ -56,6 +57,54 @@ class OsrmRoutingAdapterTest {
                 .isEqualByComparingTo(new BigDecimal("105.8524"));
         assertThat(route.geometry().coordinates().getLast().get(1))
                 .isEqualByComparingTo(new BigDecimal("21.0245"));
+        server.verify();
+    }
+
+    @Test
+    void transientEtaRequestsRoadMetricsWithoutGeometryInLongitudeLatitudeOrder() {
+        server.expect(requestTo(ETA_URL)).andExpect(method(GET))
+                .andRespond(withSuccess(etaResponse(8, "[105.8524,21.0287]", "[105.8576,21.0245]"),
+                        MediaType.APPLICATION_JSON));
+
+        RouteEstimate estimate = adapter.calculateTravelMetrics(pickup(), dropoff());
+        assertThat(estimate.distanceMeters()).isEqualByComparingTo("754.300");
+        assertThat(estimate.durationSeconds()).isEqualByComparingTo("123.500");
+        assertThat(estimate.geometry()).isNull();
+        server.verify();
+    }
+
+    @Test
+    void etaRejectsMissingOrDistantSnappedWaypointsAndInvalidMetrics() {
+        String[] invalid = {
+                "{\"code\":\"Ok\",\"routes\":[{\"distance\":754.3,\"duration\":123.5}]}",
+                etaResponse(201, "[105.8524,21.0287]", "[105.8576,21.0245]"),
+                etaResponse(100, "[105.8524,21.0315]", "[105.8576,21.0245]"),
+                etaResponse(8, "[21.0287,105.8524]", "[105.8576,21.0245]"),
+                "{\"code\":\"Ok\",\"routes\":[{\"distance\":0,\"duration\":123.5}],"
+                        + "\"waypoints\":[{\"distance\":0,\"location\":[105.8524,21.0287]},"
+                        + "{\"distance\":0,\"location\":[105.8576,21.0245]}]}"
+        };
+        for (String body : invalid) {
+            setUp();
+            server.expect(requestTo(ETA_URL)).andRespond(withSuccess(body, MediaType.APPLICATION_JSON));
+            assertThatThrownBy(() -> adapter.calculateTravelMetrics(pickup(), dropoff()))
+                    .isInstanceOf(DomainException.class).hasMessageContaining("invalid response");
+            server.verify();
+        }
+    }
+
+    @Test
+    void etaNoRouteAndTimeoutRemainUnavailableWithoutFareSideEffects() {
+        server.expect(requestTo(ETA_URL)).andRespond(withSuccess(
+                "{\"code\":\"NoRoute\",\"routes\":[]}", MediaType.APPLICATION_JSON));
+        assertThatThrownBy(() -> adapter.calculateTravelMetrics(pickup(), dropoff()))
+                .isInstanceOf(DomainException.class).hasMessageContaining("No road route");
+        server.verify();
+
+        setUp();
+        server.expect(requestTo(ETA_URL)).andRespond(withException(new SocketTimeoutException("timeout")));
+        assertThatThrownBy(() -> adapter.calculateTravelMetrics(pickup(), dropoff()))
+                .isInstanceOf(DomainException.class).hasMessageContaining("temporarily unavailable");
         server.verify();
     }
 
@@ -170,5 +219,11 @@ class OsrmRoutingAdapterTest {
     private String response(String geometry) {
         return "{\"code\":\"Ok\",\"routes\":[{\"distance\":754.3,\"duration\":123.5,\"geometry\":"
                 + geometry + "}]}";
+    }
+
+    private String etaResponse(int snapDistance, String start, String end) {
+        return "{\"code\":\"Ok\",\"routes\":[{\"distance\":754.3,\"duration\":123.5}],"
+                + "\"waypoints\":[{\"distance\":" + snapDistance + ",\"location\":" + start + "},"
+                + "{\"distance\":0,\"location\":" + end + "}]}";
     }
 }

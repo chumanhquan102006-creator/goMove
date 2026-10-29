@@ -38,8 +38,17 @@ public class OsrmRoutingAdapter implements RoutingService {
 
     @Override
     public RouteEstimate calculateRoute(GeoCoordinate pickup, GeoCoordinate dropoff) {
+        return requestRoute(pickup, dropoff, true);
+    }
+
+    @Override
+    public RouteEstimate calculateTravelMetrics(GeoCoordinate origin, GeoCoordinate destination) {
+        return requestRoute(origin, destination, false);
+    }
+
+    private RouteEstimate requestRoute(GeoCoordinate pickup, GeoCoordinate dropoff, boolean includeGeometry) {
         try {
-            URI uri = routeUri(pickup, dropoff);
+            URI uri = routeUri(pickup, dropoff, includeGeometry);
             String body = client.get().uri(uri).header("User-Agent", "GoMove-Academic/1.0")
                     .retrieve().body(String.class);
             if (body == null || body.length() > MAX_RESPONSE_CHARACTERS) throw invalidResponse();
@@ -60,7 +69,9 @@ public class OsrmRoutingAdapter implements RoutingService {
             BigDecimal distance = decimal(routes.get(0).path("distance"));
             BigDecimal duration = decimal(routes.get(0).path("duration"));
             try {
-                RouteGeometry geometry = geometry(routes.get(0).path("geometry"), pickup, dropoff);
+                RouteGeometry geometry = includeGeometry
+                        ? geometry(routes.get(0).path("geometry"), pickup, dropoff) : null;
+                if (!includeGeometry) validateEtaWaypoints(response.path("waypoints"), pickup, dropoff);
                 return new RouteEstimate(distance, duration, "OSRM", geometry);
             } catch (IllegalArgumentException ex) {
                 throw invalidResponse();
@@ -89,13 +100,13 @@ public class OsrmRoutingAdapter implements RoutingService {
         }
     }
 
-    private URI routeUri(GeoCoordinate pickup, GeoCoordinate dropoff) {
+    private URI routeUri(GeoCoordinate pickup, GeoCoordinate dropoff, boolean includeGeometry) {
         try {
             return URI.create(properties.getBaseUrl().replaceAll("/+$", "")
                     + "/route/v1/driving/"
                     + pickup.longitude().toPlainString() + "," + pickup.latitude().toPlainString()
                     + ";" + dropoff.longitude().toPlainString() + "," + dropoff.latitude().toPlainString()
-                    + "?overview=full&geometries=geojson");
+                    + (includeGeometry ? "?overview=full&geometries=geojson" : "?overview=false"));
         } catch (IllegalArgumentException | NullPointerException ex) {
             throw new DomainException(HttpStatus.SERVICE_UNAVAILABLE,
                     "ROUTING_UNAVAILABLE", "Road routing is temporarily unavailable");
@@ -105,6 +116,36 @@ public class OsrmRoutingAdapter implements RoutingService {
     private BigDecimal decimal(JsonNode node) {
         if (!node.isNumber()) throw invalidResponse();
         return node.decimalValue();
+    }
+
+    private void validateEtaWaypoints(JsonNode waypoints, GeoCoordinate origin, GeoCoordinate destination) {
+        if (!waypoints.isArray() || waypoints.size() != 2) throw invalidResponse();
+        List<List<BigDecimal>> snapped = new ArrayList<>(2);
+        for (JsonNode waypoint : waypoints) {
+            BigDecimal snapDistance = decimal(waypoint.path("distance"));
+            if (snapDistance.signum() < 0 || snapDistance.compareTo(BigDecimal.valueOf(200)) > 0) {
+                throw invalidResponse();
+            }
+            JsonNode location = waypoint.path("location");
+            if (!location.isArray() || location.size() != 2) throw invalidResponse();
+            snapped.add(List.of(decimal(location.get(0)), decimal(location.get(1))));
+        }
+        new RouteGeometry("LineString", snapped).validateEndpoints(origin, destination);
+        // Verify the returned coordinates as well as OSRM's reported snap distances.
+        // A distant road snap would make a seemingly precise live ETA misleading.
+        if (snapDistanceMeters(snapped.get(0), origin) > 200
+                || snapDistanceMeters(snapped.get(1), destination) > 200) throw invalidResponse();
+    }
+
+    private double snapDistanceMeters(List<BigDecimal> snapped, GeoCoordinate requested) {
+        double lat1 = Math.toRadians(snapped.get(1).doubleValue());
+        double lat2 = Math.toRadians(requested.latitude().doubleValue());
+        double dLat = lat2 - lat1;
+        double dLon = Math.toRadians(requested.longitude().doubleValue()
+                - snapped.get(0).doubleValue());
+        double a = Math.pow(Math.sin(dLat / 2), 2)
+                + Math.cos(lat1) * Math.cos(lat2) * Math.pow(Math.sin(dLon / 2), 2);
+        return 2 * 6_371_000 * Math.asin(Math.min(1, Math.sqrt(a)));
     }
 
     private RouteGeometry geometry(JsonNode node, GeoCoordinate pickup, GeoCoordinate dropoff)

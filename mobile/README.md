@@ -75,3 +75,11 @@ For an explicitly opted-in, development-only road-following GPS demonstration
 on one Driver emulator, see [mobile/tools/README.md](tools/README.md). The
 PowerShell tool controls only the emulator location provider; it does not call
 Booking, trip, payment or tracking APIs directly.
+
+For M4.6, the simulator has an optional bounded stationary endpoint hold
+(`-HoldAtDestinationSeconds 1..180`, default 0). A successful emulator write
+does not prove fresh Backend GPS. Use the read-only
+[demo readiness and recovery guide](DEMO_READINESS.md) for environment checks,
+the Nokia + one-emulator smoke test and deferred UI ideas. New team members can
+follow [local setup](TEAM_LOCAL_SETUP.md) for their own database, OSRM, secret,
+Backend and device-specific API addresses.

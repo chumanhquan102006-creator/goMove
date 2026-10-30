@@ -17,6 +17,7 @@ param(
     [Nullable[double]]$DestinationLongitude,
     [double]$SpeedKmh = 24,
     [double]$IntervalSeconds = 3,
+    [int]$HoldAtDestinationSeconds = 0,
     [string]$OsrmBaseUrl = 'http://127.0.0.1:5000',
     [switch]$DryRun,
     [switch]$IUnderstandThisSimulatesGps,
@@ -331,6 +332,7 @@ function Invoke-DemoGpsRoute {
         [Nullable[double]]$DestinationLongitude,
         [double]$SpeedKmh = 24,
         [double]$IntervalSeconds = 3,
+        [int]$HoldAtDestinationSeconds = 0,
         [string]$OsrmBaseUrl = 'http://127.0.0.1:5000',
         [switch]$DryRun,
         [switch]$IUnderstandThisSimulatesGps,
@@ -349,6 +351,9 @@ function Invoke-DemoGpsRoute {
     }
     Assert-DemoCoordinate ([double]$StartLatitude) ([double]$StartLongitude)
     Assert-DemoCoordinate ([double]$DestinationLatitude) ([double]$DestinationLongitude)
+    if ($HoldAtDestinationSeconds -lt 0 -or $HoldAtDestinationSeconds -gt 180) {
+        throw 'HoldAtDestinationSeconds must be 0 (off) or 1-180 seconds.'
+    }
     if (-not $DryRun -and -not $IUnderstandThisSimulatesGps) {
         throw 'Live simulation requires -IUnderstandThisSimulatesGps explicit opt-in.'
     }
@@ -362,6 +367,8 @@ function Invoke-DemoGpsRoute {
         Mode = if ($DryRun) { 'DRY_RUN' } else { 'LIVE_EMULATOR' }
         SampleCount = $sampled.Samples.Count
         EmittedSamples = 0
+        HoldAtDestinationSeconds = $HoldAtDestinationSeconds
+        HoldEmittedSamples = 0
         SimulatedDurationSeconds = $sampled.SimulatedDurationSeconds
         RoadDistanceMeters = $route.RoadDistanceMeters
         GeometryDistanceMeters = $sampled.GeometryDistanceMeters
@@ -379,6 +386,7 @@ function Invoke-DemoGpsRoute {
         (Assert-DemoOsrmBaseUrl $OsrmBaseUrl))
     Write-Host ("OSRM road={0:N1} m, geometry={1:N1} m, samples={2}, simulated duration={3:N1} s" -f `
         $plan.RoadDistanceMeters, $plan.GeometryDistanceMeters, $plan.SampleCount, $plan.SimulatedDurationSeconds)
+    Write-Host "Endpoint hold=$HoldAtDestinationSeconds s (9 s updates, maximum 180 s; ADB writes do not prove Backend GPS freshness)"
     Write-Host ("Road start: lon={0} lat={1} (snap={2:N1} m); road end: lon={3} lat={4} (snap={5:N1} m)" -f `
         (Format-DemoDecimal $plan.FirstLongitude), (Format-DemoDecimal $plan.FirstLatitude), $plan.StartSnapMeters, `
         (Format-DemoDecimal $plan.LastLongitude), (Format-DemoDecimal $plan.LastLatitude), $plan.DestinationSnapMeters)
@@ -420,13 +428,26 @@ function Invoke-DemoGpsRoute {
                     ($i + 1), $sampled.Samples.Count, $lon, $lat, $sample.DistanceMeters)
             }
         }
+        $heldSeconds = 0
+        while ($heldSeconds -lt $HoldAtDestinationSeconds) {
+            $delay = [Math]::Min(9, $HoldAtDestinationSeconds - $heldSeconds)
+            & $Wait ([double]$delay)
+            $heldSeconds += $delay
+            $output = Invoke-DemoAdb $DeviceId @('emu', 'geo', 'fix', `
+                (Format-DemoDecimal $last.Longitude), (Format-DemoDecimal $last.Latitude)) $AdbRunner
+            if ($output -notmatch '(?m)^OK\s*$') {
+                throw "ADB emulator console did not confirm endpoint hold: $output"
+            }
+            $plan.HoldEmittedSamples++
+            Write-Host "Endpoint hold $heldSeconds/$HoldAtDestinationSeconds s: same final coordinate, write $($plan.HoldEmittedSamples)"
+        }
         $completed = $true
     } finally {
         if (-not $completed) {
-            Write-Warning "Simulation stopped after $($plan.EmittedSamples)/$($plan.SampleCount) GPS updates. Emulator remains at its last fix; no background job was started."
+            Write-Warning "Simulation stopped after $($plan.EmittedSamples)/$($plan.SampleCount) route updates and $($plan.HoldEmittedSamples) endpoint writes. Emulator remains at its last fix; no background job was started."
         }
     }
-    Write-Host "Simulation complete: $($plan.EmittedSamples) road GPS updates sent to verified emulator $DeviceId. Trip state and CASH were not changed."
+    Write-Host "Simulation complete: $($plan.EmittedSamples) road GPS updates and $($plan.HoldEmittedSamples) endpoint writes sent to verified emulator $DeviceId. Backend GPS freshness is unverified. Trip state and CASH were not changed."
     return $plan
 }
 

@@ -90,6 +90,30 @@ The tool stops at the destination road point. The Driver must manually press
 Complete. CASH remains `PENDING` until the Driver explicitly confirms physical
 collection through the existing UI; then verify `PAID` and Driver release.
 
+### Optional stationary endpoint hold (M4.6)
+
+Add `-HoldAtDestinationSeconds 60` to either **live** segment command when the
+operator needs time to inspect the final position. The default is `0`, so
+existing 81/89 road updates and stop behavior remain unchanged. The accepted
+range is 1–180 seconds; the script writes the **same final snapped coordinate**
+to the same verified emulator every 9 seconds, with a final write at the chosen
+duration if needed. DryRun reports the hold but never emits GPS. Ctrl+C or an
+ADB failure stops the hold immediately; it never runs as a background service.
+
+```powershell
+.\tools\demo-gps-route.ps1 -DeviceId emulator-5554 `
+  -StartLatitude 21.0298 -StartLongitude 105.8440 `
+  -DestinationLatitude 21.0348 -DestinationLongitude 105.8290 `
+  -OsrmBaseUrl 'http://127.0.0.1:5000' `
+  -HoldAtDestinationSeconds 60 -IUnderstandThisSimulatesGps
+```
+
+An ADB `OK` confirms only the emulator console write. It does **not** prove
+Geolocator sampled a new timestamp, the Driver uploaded it, the Backend stored
+it, or ETA remained available. If the existing anti-stale or duplicate-location
+rules reject stationary fixes, leave the Customer's GPS/ETA unavailable state
+visible; do not add fake movement or weaken those rules.
+
 ## Controls and recovery
 
 - Defaults are 24 km/h and one emulator location update every 3 seconds,
@@ -148,6 +172,12 @@ Run the standalone mocked tool tests without an emulator or OSRM:
 
 ```powershell
 .\tools\test-demo-gps-route.ps1
+.\tools\test-check-demo-readiness.ps1
 ```
 
 This checklist and the mocked tests do not constitute Android E2E evidence.
+
+Run `.\tools\check-demo-readiness.ps1` for read-only local environment checks.
+It prints PASS/WARN/FAIL/SKIP and exits `1` when a blocking prerequisite fails.
+See [demo readiness and recovery](../DEMO_READINESS.md) and
+[team local setup](../TEAM_LOCAL_SETUP.md).

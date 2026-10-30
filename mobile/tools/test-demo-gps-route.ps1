@@ -124,7 +124,7 @@ $script:FakeWait = {
 
 function Invoke-TestRoute {
     param([switch]$DryRun, [switch]$OptIn, [switch]$ConfirmSnap,
-          [string]$DeviceId = 'emulator-5554')
+          [string]$DeviceId = 'emulator-5554', [int]$HoldSeconds = 0)
     $options = @{
         DeviceId = $DeviceId
         StartLatitude = 21.0288
@@ -133,6 +133,7 @@ function Invoke-TestRoute {
         DestinationLongitude = 105.8530
         SpeedKmh = 24
         IntervalSeconds = 3
+        HoldAtDestinationSeconds = $HoldSeconds
         OsrmBaseUrl = 'http://127.0.0.1:5000'
         AdbRunner = $script:FakeAdb
         HttpGet = $script:FakeHttp
@@ -320,6 +321,50 @@ Test-Case 'repeated live execution is independent and leaves no jobs' {
     Assert-True ($second.EmittedSamples -eq $firstCount) 'second run complete'
     Assert-True ($script:GeoFixCount -eq 2 * $firstCount) 'second run does not inherit sample index'
     Assert-True (@(Get-Job -ErrorAction SilentlyContinue).Count -eq $jobsBefore) 'no background job leaked'
+}
+
+Test-Case 'endpoint hold defaults off and DryRun emits nothing' {
+    Reset-Fakes
+    $plan = Invoke-TestRoute -DryRun 6>$null
+    Assert-True ($plan.HoldAtDestinationSeconds -eq 0 -and $plan.HoldEmittedSamples -eq 0) 'default hold off'
+    $plan = Invoke-TestRoute -DryRun -HoldSeconds 20 6>$null
+    Assert-True ($plan.HoldAtDestinationSeconds -eq 20 -and $plan.EmittedSamples -eq 0) 'DryRun reports hold without writes'
+    Assert-True ($script:AdbCalls.Count -eq 0 -and $script:WaitCalls.Count -eq 0) 'DryRun never touches ADB or waits'
+}
+
+Test-Case 'endpoint hold rejects invalid duration before side effects' {
+    Reset-Fakes
+    Assert-Throws { Invoke-TestRoute -OptIn -HoldSeconds -1 } 'HoldAtDestinationSeconds'
+    Assert-Throws { Invoke-TestRoute -OptIn -HoldSeconds 181 } 'HoldAtDestinationSeconds'
+    Assert-True ($script:HttpUrls.Count -eq 0 -and $script:AdbCalls.Count -eq 0) 'invalid hold fails before OSRM and ADB'
+}
+
+Test-Case 'endpoint hold re-emits same final coordinate at bounded cadence' {
+    Reset-Fakes
+    $plan = Invoke-TestRoute -OptIn -HoldSeconds 20 6>$null
+    $geos = @($script:AdbCalls | Where-Object { $_.Key -like 'emu geo fix *' })
+    Assert-True ($plan.HoldEmittedSamples -eq 3) '20 seconds gives writes at 9, 18, 20 seconds'
+    Assert-True ($geos.Count -eq $plan.SampleCount + 3) 'original route writes unchanged'
+    $last = $geos[$plan.SampleCount - 1]
+    foreach ($held in @($geos | Select-Object -Last 3)) {
+        Assert-True ($held.DeviceId -ceq 'emulator-5554') 'same verified emulator'
+        Assert-True ($held.Key -ceq $last.Key) 'stationary final coordinate unchanged'
+    }
+    $delays = @($script:WaitCalls | Select-Object -Last 3)
+    Assert-True (($delays -join ',') -eq '9,9,2') 'bounded hold interval'
+}
+
+Test-Case 'endpoint hold cancellation and ADB failure stop without jobs' {
+    Reset-Fakes
+    $jobsBefore = @(Get-Job -ErrorAction SilentlyContinue).Count
+    $script:WaitMode = 'cancel'
+    Assert-Throws { Invoke-TestRoute -OptIn -HoldSeconds 20 6>$null 3>$null } 'Simulated Ctrl\+C'
+    Assert-True ($script:GeoFixCount -eq 1) 'cancelled before further GPS writes'
+    Reset-Fakes
+    $script:AdbMode = 'disconnect'
+    Assert-Throws { Invoke-TestRoute -OptIn -HoldSeconds 20 6>$null 3>$null } 'ADB failed|disconnected'
+    Assert-True ($script:GeoFixCount -eq 2) 'disconnect stops immediately'
+    Assert-True (@(Get-Job -ErrorAction SilentlyContinue).Count -eq $jobsBefore) 'no background job'
 }
 
 Write-Host "Simulator tests: $script:Passed passed, $script:Failed failed."

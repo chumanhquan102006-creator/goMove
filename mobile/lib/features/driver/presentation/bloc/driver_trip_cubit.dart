@@ -103,6 +103,7 @@ class DriverTripCubit extends Cubit<DriverTripState> {
   final Duration gpsInterval;
   int? _generation;
   int _revision = 0;
+  int _participantRevision = 0;
   int _connectionRevision = 0;
   bool _syncing = false;
   Completer<void>? _queuedRefresh;
@@ -197,6 +198,7 @@ class DriverTripCubit extends Cubit<DriverTripState> {
       return;
     }
     _syncing = true;
+    final participantRevision = _participantRevision;
     final confirmedAtStart = _confirmedOperationRevision;
     try {
       final tracking =
@@ -210,7 +212,10 @@ class DriverTripCubit extends Cubit<DriverTripState> {
       final previous = state.tracking;
       final status = tracking.status;
       emit(state.copy(
-          tracking: tracking,
+          tracking:
+              state.foreground && participantRevision == _participantRevision
+                  ? tracking
+                  : tracking.withoutParticipantDetails(),
           payment: payment,
           transition: null,
           loading: false,
@@ -527,9 +532,14 @@ class DriverTripCubit extends Cubit<DriverTripState> {
   }
 
   Future<void> pause() async {
+    _participantRevision++;
     _pollTimer?.cancel();
     _pollTimer = null;
-    if (!isClosed) emit(state.copy(foreground: false));
+    if (!isClosed) {
+      emit(state.copy(
+          foreground: false,
+          tracking: state.tracking?.withoutParticipantDetails()));
+    }
     await _disconnect();
   }
 

@@ -31,6 +31,75 @@ DateTime? _date(dynamic value) =>
 double? _coordinate(dynamic value) =>
     value == null ? null : (value as num).toDouble();
 
+Map<String, dynamic>? _object(dynamic value) =>
+    value is Map<String, dynamic> ? value : null;
+
+class AssignedDriverSummary {
+  final String publicId;
+  final String displayName;
+  final String? phone;
+
+  const AssignedDriverSummary(
+      {required this.publicId, required this.displayName, this.phone});
+
+  static AssignedDriverSummary? fromJson(dynamic value) {
+    final json = _object(value);
+    if (json == null ||
+        json['publicId'] is! String ||
+        json['displayName'] is! String) {
+      return null;
+    }
+    return AssignedDriverSummary(
+        publicId: json['publicId'] as String,
+        displayName: json['displayName'] as String,
+        phone: json['phone'] is String ? json['phone'] as String : null);
+  }
+}
+
+class AssignedVehicleSummary {
+  final String vehicleType;
+  final String licensePlate;
+  final String? brand;
+  final String? model;
+
+  const AssignedVehicleSummary(
+      {required this.vehicleType,
+      required this.licensePlate,
+      this.brand,
+      this.model});
+
+  static AssignedVehicleSummary? fromJson(dynamic value) {
+    final json = _object(value);
+    if (json == null ||
+        json['vehicleType'] is! String ||
+        json['licensePlate'] is! String) {
+      return null;
+    }
+    return AssignedVehicleSummary(
+        vehicleType: json['vehicleType'] as String,
+        licensePlate: json['licensePlate'] as String,
+        brand: json['brand'] is String ? json['brand'] as String : null,
+        model: json['model'] is String ? json['model'] as String : null);
+  }
+}
+
+class CustomerSummary {
+  final String displayName;
+  final String? phone;
+
+  const CustomerSummary({required this.displayName, this.phone});
+
+  static CustomerSummary? fromJson(dynamic value) {
+    final json = _object(value);
+    if (json == null || json['displayName'] is! String) {
+      return null;
+    }
+    return CustomerSummary(
+        displayName: json['displayName'] as String,
+        phone: json['phone'] is String ? json['phone'] as String : null);
+  }
+}
+
 class TrackingSnapshot {
   final String bookingPublicId;
   final String status;
@@ -45,6 +114,9 @@ class TrackingSnapshot {
   final double? accuracy;
   final double? bearing;
   final DateTime? locationUpdatedAt;
+  final AssignedDriverSummary? assignedDriver;
+  final AssignedVehicleSummary? assignedVehicle;
+  final CustomerSummary? customer;
 
   const TrackingSnapshot(
       {required this.bookingPublicId,
@@ -59,7 +131,10 @@ class TrackingSnapshot {
       this.longitude,
       this.accuracy,
       this.bearing,
-      this.locationUpdatedAt});
+      this.locationUpdatedAt,
+      this.assignedDriver,
+      this.assignedVehicle,
+      this.customer});
 
   bool get allowsLiveLocation => const {
         'DRIVER_ACCEPTED',
@@ -67,6 +142,22 @@ class TrackingSnapshot {
         'PASSENGER_ONBOARD',
         'IN_PROGRESS'
       }.contains(status);
+
+  TrackingSnapshot withoutParticipantDetails() => TrackingSnapshot(
+        bookingPublicId: bookingPublicId,
+        status: status,
+        driverPublicId: driverPublicId,
+        driverAcceptedAt: driverAcceptedAt,
+        driverArrivedAt: driverArrivedAt,
+        passengerOnboardAt: passengerOnboardAt,
+        tripStartedAt: tripStartedAt,
+        tripCompletedAt: tripCompletedAt,
+        latitude: latitude,
+        longitude: longitude,
+        accuracy: accuracy,
+        bearing: bearing,
+        locationUpdatedAt: locationUpdatedAt,
+      );
 
   factory TrackingSnapshot.fromJson(Map<String, dynamic> json) {
     final status = json['status'] as String;
@@ -91,6 +182,12 @@ class TrackingSnapshot {
       accuracy: live ? _coordinate(json['accuracy']) : null,
       bearing: live ? _coordinate(json['bearing']) : null,
       locationUpdatedAt: live ? _date(json['locationUpdatedAt']) : null,
+      assignedDriver:
+          live ? AssignedDriverSummary.fromJson(json['assignedDriver']) : null,
+      assignedVehicle: live
+          ? AssignedVehicleSummary.fromJson(json['assignedVehicle'])
+          : null,
+      customer: live ? CustomerSummary.fromJson(json['customer']) : null,
     );
   }
 }

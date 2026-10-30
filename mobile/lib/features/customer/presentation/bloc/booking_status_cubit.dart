@@ -341,11 +341,17 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
     _epoch++;
     _timer?.cancel();
     _timer = null;
-    _disconnectRealtime();
-    // A foreground return must revalidate the last GPS fix through REST.
-    if (!isClosed && state.liveLocation != null) {
-      emit(state.copyWith(liveLocation: null));
+    // A foreground return must revalidate contact details and the last GPS fix.
+    final tracking = state.tracking;
+    if (!isClosed &&
+        (state.liveLocation != null ||
+            tracking?.assignedDriver != null ||
+            tracking?.assignedVehicle != null ||
+            tracking?.customer != null)) {
+      emit(state.copyWith(
+          tracking: tracking?.withoutParticipantDetails(), liveLocation: null));
     }
+    _disconnectRealtime();
   }
 
   Future<void> refresh() async {

@@ -42,6 +42,8 @@ TrackingSnapshot tracking(
   double? accuracy,
   double? bearing,
   DateTime? locationUpdatedAt,
+  AssignedDriverSummary? assignedDriver,
+  AssignedVehicleSummary? assignedVehicle,
 }) =>
     TrackingSnapshot(
       bookingPublicId: bookingPublicId,
@@ -73,6 +75,8 @@ TrackingSnapshot tracking(
       accuracy: accuracy,
       bearing: bearing,
       locationUpdatedAt: locationUpdatedAt,
+      assignedDriver: assignedDriver,
+      assignedVehicle: assignedVehicle,
     );
 
 CashPayment payment(String status) => CashPayment(
@@ -715,6 +719,74 @@ void main() {
     await cubit.close();
   });
 
+  test('Background clears contact until a fresh authorized tracking read',
+      () async {
+    const driver = AssignedDriverSummary(
+        publicId: driverId, displayName: 'Driver A', phone: '0900000001');
+    trips.value = tracking('DRIVER_ARRIVED', assignedDriver: driver);
+    final cubit = BookingStatusCubit(
+        GetBookingUseCase(CustomerStub()), booking(),
+        tripRepository: trips, session: session, realtime: realtime);
+    cubit.start();
+    await flush();
+    expect(cubit.state.tracking?.assignedDriver, isNotNull);
+    final status = cubit.state.status;
+    final payment = cubit.state.payment;
+
+    cubit.stop();
+    expect(cubit.state.tracking?.assignedDriver, isNull);
+    expect(cubit.state.status, status);
+    expect(cubit.state.payment, same(payment));
+    trips.heldTracking = Completer<TrackingSnapshot>();
+    cubit.start();
+    await flush();
+    expect(cubit.state.tracking?.assignedDriver, isNull);
+    trips.heldTracking!
+        .complete(tracking('DRIVER_ARRIVED', assignedDriver: driver));
+    await flush();
+    expect(cubit.state.tracking?.assignedDriver?.displayName, 'Driver A');
+    await cubit.close();
+  });
+
+  test('Background session change never restores Customer contact', () async {
+    trips.value = tracking('IN_PROGRESS',
+        assignedDriver: const AssignedDriverSummary(
+            publicId: driverId, displayName: 'Driver A', phone: '0900000001'));
+    var current = true;
+    when(() => session.isCurrentSession(any()))
+        .thenAnswer((_) async => current);
+    final cubit = BookingStatusCubit(
+        GetBookingUseCase(CustomerStub()), booking(),
+        tripRepository: trips, session: session, realtime: realtime);
+    cubit.start();
+    await flush();
+    cubit.stop();
+    current = false;
+    cubit.start();
+    await flush();
+    expect(cubit.state.sessionEnded, isTrue);
+    expect(cubit.state.tracking, isNull);
+    await cubit.close();
+  });
+
+  test('Failed resume tracking cannot restore Customer contact', () async {
+    trips.value = tracking('IN_PROGRESS',
+        assignedDriver: const AssignedDriverSummary(
+            publicId: driverId, displayName: 'Driver A', phone: '0900000001'));
+    final cubit = BookingStatusCubit(
+        GetBookingUseCase(CustomerStub()), booking(),
+        tripRepository: trips, session: session, realtime: realtime);
+    cubit.start();
+    await flush();
+    cubit.stop();
+    trips.trackingError = const NetworkException();
+    cubit.start();
+    await flush();
+    expect(cubit.state.tracking?.assignedDriver, isNull);
+    expect(cubit.state.error, isNotNull);
+    await cubit.close();
+  });
+
   testWidgets('Background and dispose cancel bounded polling/subscription',
       (tester) async {
     final cubit = BookingStatusCubit(
@@ -794,6 +866,63 @@ void main() {
     expect(find.text('Hoàn thành chuyến'), findsNothing);
     expect(trips.transitionCalls, 0);
     expect(trips.confirmCalls, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+      'Customer card uses authorized tracking and disappears at completion',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    trips.value = tracking('DRIVER_ARRIVED',
+        assignedDriver: const AssignedDriverSummary(
+            publicId: driverId, displayName: 'Tài xế A', phone: '0900000001'),
+        assignedVehicle: const AssignedVehicleSummary(
+            vehicleType: 'MOTORBIKE', licensePlate: '29A-12345'));
+    registerScreenServices();
+    await tester.pumpWidget(MaterialApp(
+        home: BookingStatusScreen(
+            booking: booking(),
+            trackingMapBuilder: (_, __, ___) =>
+                const Text('Bản đồ thử nghiệm'))));
+    await tester.pump();
+    await tester.pump();
+    await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('customer-assigned-driver-card')), 180,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Tài xế A'), findsOneWidget);
+    expect(find.text('Điện thoại: 0900000001'), findsOneWidget);
+    expect(find.text('Xe máy · 29A-12345'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    trips.value = tracking('COMPLETED',
+        assignedDriver: const AssignedDriverSummary(
+            publicId: driverId, displayName: 'Tài xế A', phone: '0900000001'));
+    realtime.last!.eventController.add(TripStatusChangedEvent(
+        bookingId, 'COMPLETED', DateTime.utc(2026, 10, 16, 10, 20)));
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const ValueKey('customer-assigned-driver-card')),
+        findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Searching Booking has no Driver contact card', (tester) async {
+    registerScreenServices();
+    await tester.pumpWidget(MaterialApp(
+        home: BookingStatusScreen(
+            booking: booking('SEARCHING_DRIVER'),
+            trackingMapBuilder: (_, __, ___) =>
+                const Text('Bản đồ thử nghiệm'))));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const ValueKey('customer-assigned-driver-card')),
+        findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 

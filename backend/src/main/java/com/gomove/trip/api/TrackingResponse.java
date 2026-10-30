@@ -9,11 +9,13 @@ public record TrackingResponse(UUID bookingPublicId, BookingStatus status, UUID 
                                Instant driverAcceptedAt, Instant driverArrivedAt,
                                Instant passengerOnboardAt, Instant tripStartedAt, Instant tripCompletedAt,
                                Double latitude, Double longitude, Double accuracy, Double bearing,
-                               Instant locationUpdatedAt) {
+                               Instant locationUpdatedAt, TripStore.DriverSummary assignedDriver,
+                               TripStore.VehicleSummary assignedVehicle, TripStore.CustomerSummary customer) {
     public static TrackingResponse from(TripStore.TrackingState row) {
         return new TrackingResponse(row.bookingPublicId(), row.status(), row.driverPublicId(),
                 row.driverAcceptedAt(), row.driverArrivedAt(), row.passengerOnboardAt(),
                 row.tripStartedAt(), row.tripCompletedAt(), row.latitude(), row.longitude(),
-                row.accuracy(), row.bearing(), row.locationUpdatedAt());
+                row.accuracy(), row.bearing(), row.locationUpdatedAt(), row.assignedDriver(),
+                row.assignedVehicle(), row.customer());
     }
 }

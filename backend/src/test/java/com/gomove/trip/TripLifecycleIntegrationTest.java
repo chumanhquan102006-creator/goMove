@@ -140,7 +140,14 @@ class TripLifecycleIntegrationTest extends BaseIntegrationTest {
         mvc.perform(get(tracking).header("Authorization", bearer(stranger))).andExpect(status().isNotFound());
         mvc.perform(get(tracking).header("Authorization", bearer(other.getUser()))).andExpect(status().isNotFound());
         mvc.perform(get(tracking).header("Authorization", bearer(ride.customer())))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.latitude").value(org.hamcrest.Matchers.nullValue()));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.latitude").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.data.assignedDriver.publicId").value(ride.driver().getPublicId().toString()))
+                .andExpect(jsonPath("$.data.assignedDriver.displayName").value(ride.driver().getUser().getFullName()))
+                .andExpect(jsonPath("$.data.assignedDriver.phone").value(ride.driver().getUser().getPhone()))
+                .andExpect(jsonPath("$.data.assignedVehicle.vehicleType").value("MOTORBIKE"))
+                .andExpect(jsonPath("$.data.assignedVehicle.licensePlate").value(ride.vehicle().getLicensePlate()))
+                .andExpect(jsonPath("$.data.assignedVehicle.brand").value("Test"))
+                .andExpect(jsonPath("$.data.customer").value(org.hamcrest.Matchers.nullValue()));
 
         trips.updateRideLocation(ride.booking().getPublicId(), ride.driver().getUser().getPublicId(),
                 UserRole.DRIVER, new UpdateDriverLocationRequest(21.0287, 105.8524, 8.5, 120.0));
@@ -149,7 +156,11 @@ class TripLifecycleIntegrationTest extends BaseIntegrationTest {
                 .andExpect(jsonPath("$.data.longitude").value(105.8524))
                 .andExpect(jsonPath("$.data.locationUpdatedAt").exists());
         mvc.perform(get(tracking).header("Authorization", bearer(ride.driver().getUser())))
-                .andExpect(status().isOk());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.customer.displayName").value(ride.customer().getFullName()))
+                .andExpect(jsonPath("$.data.customer.phone").value(ride.customer().getPhone()))
+                .andExpect(jsonPath("$.data.assignedDriver").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.data.assignedVehicle").value(org.hamcrest.Matchers.nullValue()));
         assertThat(jdbc.queryForObject("SELECT ST_SRID(current_location::geometry) FROM driver_locations WHERE driver_id=?",
                 Integer.class, ride.driver().getId())).isEqualTo(4326);
         assertThatThrownBy(() -> trips.updateRideLocation(ride.booking().getPublicId(),
@@ -171,6 +182,13 @@ class TripLifecycleIntegrationTest extends BaseIntegrationTest {
                 .andExpect(jsonPath("$.data.accuracy").value(org.hamcrest.Matchers.nullValue()))
                 .andExpect(jsonPath("$.data.bearing").value(org.hamcrest.Matchers.nullValue()))
                 .andExpect(jsonPath("$.data.locationUpdatedAt").value(org.hamcrest.Matchers.nullValue()));
+        mvc.perform(get(tracking).header("Authorization", bearer(ride.customer())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.assignedDriver").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.data.assignedVehicle").value(org.hamcrest.Matchers.nullValue()));
+        mvc.perform(get(tracking).header("Authorization", bearer(ride.driver().getUser())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.customer").value(org.hamcrest.Matchers.nullValue()));
         driverLocations.updateOwnLocation(ride.driver().getUser().getPublicId(), UserRole.DRIVER,
                 22.1234, 106.5678, 3.0, 90.0);
         assertThat(jdbc.queryForObject("SELECT ST_Y(current_location::geometry) FROM driver_locations WHERE driver_id=?",
@@ -189,6 +207,36 @@ class TripLifecycleIntegrationTest extends BaseIntegrationTest {
                 new UpdateDriverLocationRequest(21.0, 105.0, null, null)))
                 .isInstanceOf(DomainException.class)
                 .extracting(ex -> ((DomainException) ex).getCode()).isEqualTo("TRIP_TRACKING_CLOSED");
+    }
+
+    @Test
+    void unassignedBookingHasNoParticipantContact() throws Exception {
+        Ride ride = unassignedRide();
+        mvc.perform(get("/api/v1/bookings/" + ride.booking().getPublicId() + "/tracking")
+                .header("Authorization", bearer(ride.customer())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.assignedDriver").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.data.assignedVehicle").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.data.customer").value(org.hamcrest.Matchers.nullValue()));
+    }
+
+    @Test
+    void optionalVehicleBrandAndModelCanBeNull() throws Exception {
+        Ride ride = unassignedRide();
+        Driver driver = driver();
+        Vehicle vehicle = vehicles.saveAndFlush(new Vehicle(driver,
+                "TRIP-" + UUID.randomUUID().toString().substring(0, 12),
+                VehicleType.MOTORBIKE, null, null, null));
+        jdbc.update("""
+                UPDATE bookings SET status='DRIVER_ACCEPTED', assigned_driver_id=?, assigned_vehicle_id=?,
+                    driver_accepted_at=?, version=version+1 WHERE id=?
+                """, driver.getId(), vehicle.getId(), Timestamp.from(Instant.now()), ride.booking().getId());
+        mvc.perform(get("/api/v1/bookings/" + ride.booking().getPublicId() + "/tracking")
+                .header("Authorization", bearer(ride.customer())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.assignedVehicle.licensePlate").value(vehicle.getLicensePlate()))
+                .andExpect(jsonPath("$.data.assignedVehicle.brand").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.data.assignedVehicle.model").value(org.hamcrest.Matchers.nullValue()));
     }
 
     @Test

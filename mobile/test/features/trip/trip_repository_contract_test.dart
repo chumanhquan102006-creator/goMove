@@ -98,6 +98,47 @@ class _TripAdapter implements HttpClientAdapter {
 }
 
 void main() {
+  test('Tracking participant summaries parse optionally and expire with trip',
+      () {
+    final active = TrackingSnapshot.fromJson({
+      'bookingPublicId': 'booking-1',
+      'status': 'DRIVER_ARRIVED',
+      'assignedDriver': {
+        'publicId': 'driver-1',
+        'displayName': 'Tài xế A',
+        'phone': '0900000001'
+      },
+      'assignedVehicle': {
+        'vehicleType': 'MOTORBIKE',
+        'licensePlate': '29A-12345',
+        'brand': null,
+        'model': null
+      },
+      'customer': {'displayName': 'Khách B', 'phone': '0900000002'},
+    });
+    expect(active.assignedDriver?.displayName, 'Tài xế A');
+    expect(active.assignedVehicle?.licensePlate, '29A-12345');
+    expect(active.assignedVehicle?.brand, isNull);
+    expect(active.customer?.phone, '0900000002');
+    final missing = TrackingSnapshot.fromJson(
+        {'bookingPublicId': 'booking-1', 'status': 'DRIVER_ACCEPTED'});
+    expect(missing.assignedDriver, isNull);
+    expect(missing.assignedVehicle, isNull);
+    expect(missing.customer, isNull);
+    final completed = TrackingSnapshot.fromJson({
+      'bookingPublicId': 'booking-1',
+      'status': 'COMPLETED',
+      'assignedDriver': {'publicId': 'driver-1', 'displayName': 'Tài xế A'},
+      'assignedVehicle': {
+        'vehicleType': 'MOTORBIKE',
+        'licensePlate': '29A-12345'
+      },
+      'customer': {'displayName': 'Khách B'},
+    });
+    expect(completed.assignedDriver, isNull);
+    expect(completed.assignedVehicle, isNull);
+    expect(completed.customer, isNull);
+  });
   test(
       'Trip REST methods, exact action paths, no POST body and session binding',
       () async {

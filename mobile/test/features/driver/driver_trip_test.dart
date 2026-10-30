@@ -419,6 +419,84 @@ void main() {
     expect(realtime.latest!.disposed, isTrue);
   });
 
+  test('Driver contact stays cleared until resume tracking is authorized',
+      () async {
+    const active = TrackingSnapshot(
+        bookingPublicId: 'booking-1',
+        status: 'DRIVER_ACCEPTED',
+        driverPublicId: 'driver-1',
+        customer:
+            CustomerSummary(displayName: 'Customer A', phone: '0900000002'));
+    repository.trackingReply = (_) async => active;
+    await cubit.initialize();
+    expect(cubit.state.tracking?.customer, isNotNull);
+    final payment = cubit.state.payment;
+    await cubit.pause();
+    expect(cubit.state.tracking?.customer, isNull);
+    expect(cubit.state.status, 'DRIVER_ACCEPTED');
+    expect(cubit.state.payment, same(payment));
+
+    final fresh = Completer<TrackingSnapshot>();
+    repository.trackingReply = (_) => fresh.future;
+    final resumed = cubit.resume();
+    await Future<void>.delayed(Duration.zero);
+    expect(cubit.state.tracking?.customer, isNull);
+    fresh.complete(active);
+    await resumed;
+    expect(cubit.state.tracking?.customer?.displayName, 'Customer A');
+  });
+
+  test('In-flight Driver tracking cannot restore contact after pause',
+      () async {
+    const active = TrackingSnapshot(
+        bookingPublicId: 'booking-1',
+        status: 'DRIVER_ACCEPTED',
+        driverPublicId: 'driver-1',
+        customer:
+            CustomerSummary(displayName: 'Customer A', phone: '0900000002'));
+    repository.trackingReply = (_) async => active;
+    await cubit.initialize();
+    final old = Completer<TrackingSnapshot>();
+    repository.trackingReply = (_) => old.future;
+    final pending = cubit.refresh();
+    await Future<void>.delayed(Duration.zero);
+    await cubit.pause();
+    old.complete(active);
+    await pending;
+    expect(cubit.state.tracking?.customer, isNull);
+    repository.trackingReply = (_) async => active;
+    await cubit.resume();
+    expect(cubit.state.tracking?.customer?.displayName, 'Customer A');
+  });
+
+  test('Failed Driver resume does not resurrect contact', () async {
+    repository.trackingReply = (_) async => const TrackingSnapshot(
+        bookingPublicId: 'booking-1',
+        status: 'DRIVER_ACCEPTED',
+        driverPublicId: 'driver-1',
+        customer: CustomerSummary(displayName: 'Customer A'));
+    await cubit.initialize();
+    await cubit.pause();
+    repository.trackingReply = (_) async => throw const NetworkException();
+    await cubit.resume();
+    expect(cubit.state.tracking?.customer, isNull);
+    expect(cubit.state.error, isNotNull);
+  });
+
+  test('Background account change clears Driver contact permanently', () async {
+    repository.trackingReply = (_) async => const TrackingSnapshot(
+        bookingPublicId: 'booking-1',
+        status: 'DRIVER_ACCEPTED',
+        driverPublicId: 'driver-1',
+        customer: CustomerSummary(displayName: 'Customer A'));
+    await cubit.initialize();
+    await cubit.pause();
+    generation = 2;
+    await cubit.resume();
+    expect(cubit.state.sessionEnded, isTrue);
+    expect(cubit.state.tracking, isNull);
+  });
+
   testWidgets('Trip card moves only on confirmed status and does not replay',
       (tester) async {
     final screenCubit = DriverTripCubit(
@@ -439,6 +517,7 @@ void main() {
     await tester.pump();
     expect(find.byKey(const ValueKey('driver-trip-status-DRIVER_ACCEPTED')),
         findsOneWidget);
+    expect(find.byKey(const ValueKey('driver-customer-card')), findsNothing);
     final motion = tester.widget<AnimatedSwitcher>(
         find.byKey(const ValueKey('driver-trip-status-motion')));
     expect(motion.duration, AppMotion.card);
@@ -456,6 +535,49 @@ void main() {
     expect(find.byKey(const ValueKey('driver-trip-status-DRIVER_ARRIVED')),
         findsOneWidget);
     expect(repository.transitionCalls, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Driver customer card requires active authorized tracking',
+      (tester) async {
+    repository.trackingReply = (_) async => const TrackingSnapshot(
+        bookingPublicId: 'booking-1',
+        status: 'DRIVER_ACCEPTED',
+        driverPublicId: 'driver-1',
+        customer: CustomerSummary(displayName: 'Khách B', phone: '0900000002'));
+    final screenCubit = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        pollInterval: const Duration(hours: 1),
+        gpsInterval: const Duration(hours: 1));
+    await tester.pumpWidget(MaterialApp(
+        home: DriverAcceptedBookingScreen(
+            offer: _offer(), tripCubit: screenCubit, mapBuilder: _fakeMap)));
+    await tester.pump();
+    await tester.drag(find.byKey(const ValueKey('driver-trip-sheet-scroll')),
+        const Offset(0, -350));
+    await tester.pumpAndSettle();
+    expect(find.text('Khách B', skipOffstage: false), findsOneWidget);
+    expect(find.text('Điện thoại: 0900000002', skipOffstage: false),
+        findsOneWidget);
+
+    repository.trackingReply = (_) async => const TrackingSnapshot(
+        bookingPublicId: 'booking-1',
+        status: 'COMPLETED',
+        driverPublicId: 'driver-1',
+        customer: CustomerSummary(displayName: 'Khách B'));
+    unawaited(screenCubit.refresh());
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const ValueKey('driver-customer-card')), findsNothing);
+    generation = 2;
+    unawaited(screenCubit.refresh());
+    await tester.pump();
+    expect(find.byKey(const ValueKey('driver-customer-card')), findsNothing);
+    expect(screenCubit.state.sessionEnded, isTrue);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 

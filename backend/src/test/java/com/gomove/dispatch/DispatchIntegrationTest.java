@@ -196,7 +196,7 @@ class DispatchIntegrationTest extends BaseIntegrationTest {
     }
 
     @Test
-    void rejectionAndExpiryAdvanceSequentiallyWithoutRecyclingCandidates() {
+    void rejectionAndExpiryAdvanceSequentiallyWithoutRecyclingCandidates() throws Exception {
         Created created = booking(VehicleType.MOTORBIKE);
         Driver first = driver(DriverApprovalStatus.APPROVED, DriverOperatingStatus.ONLINE,
                 VehicleType.MOTORBIKE, true, NOW, 0.0001);
@@ -207,13 +207,20 @@ class DispatchIntegrationTest extends BaseIntegrationTest {
 
         transactions.advance(created.booking().getId());
         DriverOfferResponse firstOffer = active(first).getFirst();
+        String tracking = "/api/v1/bookings/" + created.booking().getPublicId() + "/tracking";
+        mvc.perform(get(tracking).header("Authorization", bearer(first.getUser())))
+                .andExpect(status().isNotFound());
         offers.reject(first.getUser().getPublicId(), UserRole.DRIVER, firstOffer.offerPublicId());
+        mvc.perform(get(tracking).header("Authorization", bearer(first.getUser())))
+                .andExpect(status().isNotFound());
         assertThat(active(first)).isEmpty();
         transactions.advance(created.booking().getId());
         DriverOfferResponse secondOffer = active(second).getFirst();
         assertThat(active(first)).isEmpty();
         clock.set(NOW.plusSeconds(15));
         assertThat(active(second)).isEmpty();
+        mvc.perform(get(tracking).header("Authorization", bearer(second.getUser())))
+                .andExpect(status().isNotFound());
         assertThatThrownBy(() -> offers.accept(second.getUser().getPublicId(), UserRole.DRIVER,
                 secondOffer.offerPublicId())).isInstanceOf(DomainException.class)
                 .extracting(ex -> ((DomainException) ex).getCode()).isEqualTo("OFFER_EXPIRED");
@@ -248,6 +255,8 @@ class DispatchIntegrationTest extends BaseIntegrationTest {
         mvc.perform(get(base + "/active").header("Authorization", bearer(selected.getUser())))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].offerPublicId").value(offer.offerPublicId().toString()))
                 .andExpect(jsonPath("$.data[0].finalFare").value(35400.00))
+                .andExpect(jsonPath("$.data[0].customer").doesNotExist())
+                .andExpect(jsonPath("$.data[0].phone").doesNotExist())
                 .andExpect(jsonPath("$.data[0].driverId").doesNotExist());
         mvc.perform(post(base + "/" + offer.offerPublicId() + "/accept"))
                 .andExpect(status().isUnauthorized());
@@ -274,6 +283,17 @@ class DispatchIntegrationTest extends BaseIntegrationTest {
         assertThat(accepted.getDriverAcceptedAt()).isEqualTo(NOW);
         assertThat(accepted.getFinalFare()).isEqualTo(created.booking().getFinalFare());
         assertThat(accepted.getPricingSnapshot()).isEqualTo(created.booking().getPricingSnapshot());
+        String tracking = "/api/v1/bookings/" + accepted.getPublicId() + "/tracking";
+        mvc.perform(get(tracking).header("Authorization", bearer(created.customer())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.assignedDriver.publicId").value(selected.getPublicId().toString()))
+                .andExpect(jsonPath("$.data.customer").value(org.hamcrest.Matchers.nullValue()));
+        mvc.perform(get(tracking).header("Authorization", bearer(selected.getUser())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.customer.phone").value(created.customer().getPhone()))
+                .andExpect(jsonPath("$.data.assignedDriver").value(org.hamcrest.Matchers.nullValue()));
+        mvc.perform(get(tracking).header("Authorization", bearer(foreign.getUser())))
+                .andExpect(status().isNotFound());
         assertThat(drivers.findById(selected.getId()).orElseThrow().getOperatingStatus())
                 .isEqualTo(DriverOperatingStatus.BUSY);
         mvc.perform(get("/api/v1/bookings/" + accepted.getPublicId())
@@ -353,6 +373,12 @@ class DispatchIntegrationTest extends BaseIntegrationTest {
         assertThat(outcomes).containsExactlyInAnyOrder("OFFER_NOT_PENDING", "ACCEPTED");
         assertThat(bookings.findById(created.booking().getId()).orElseThrow().getAssignedDriver().getId())
                 .isEqualTo(second.getId());
+        String tracking = "/api/v1/bookings/" + created.booking().getPublicId() + "/tracking";
+        mvc.perform(get(tracking).header("Authorization", bearer(first.getUser())))
+                .andExpect(status().isNotFound());
+        mvc.perform(get(tracking).header("Authorization", bearer(second.getUser())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.customer.phone").value(created.customer().getPhone()));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM booking_driver_offers WHERE booking_id=? AND status='ACCEPTED'",
                 Integer.class, created.booking().getId())).isEqualTo(1);
     }

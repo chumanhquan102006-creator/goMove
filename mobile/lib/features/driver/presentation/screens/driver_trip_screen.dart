@@ -245,6 +245,13 @@ class _DriverAcceptedBookingScreenState
                                               padding: const EdgeInsets.all(12),
                                               child: Text(state.notice!))),
                                     _routeCard(context, state),
+                                    if (_verifiedBooking(state) &&
+                                        state.tracking?.allowsLiveLocation ==
+                                            true &&
+                                        state.status != 'COMPLETED' &&
+                                        state.tracking?.customer != null)
+                                      _customerCard(
+                                          context, state.tracking!.customer!),
                                     const SizedBox(height: 8),
                                     _timeline(context, state.tracking),
                                     const SizedBox(height: 8),
@@ -486,6 +493,21 @@ class _DriverAcceptedBookingScreenState
               Text('Giá đã chấp nhận: ${vnd(widget.offer.finalFare)}',
                   style: Theme.of(context).textTheme.titleMedium),
             ],
+          ]),
+        ),
+      );
+
+  Widget _customerCard(BuildContext context, CustomerSummary customer) => Card(
+        key: const ValueKey('driver-customer-card'),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Khách hàng', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 6),
+            Text(customer.displayName),
+            if (customer.phone?.trim().isNotEmpty == true)
+              Text('Điện thoại: ${customer.phone}'),
           ]),
         ),
       );

@@ -51,6 +51,13 @@ String customerRealtimeLabel(TripRealtimeConnectionState connection) =>
         'Realtime không khả dụng; đang dựa vào REST',
     };
 
+String _assignedVehicleLabel(String type) => switch (type) {
+      'MOTORBIKE' => 'Xe máy',
+      'CAR_4_SEAT' => 'Ô tô 4 chỗ',
+      'CAR_7_SEAT' => 'Ô tô 7 chỗ',
+      _ => type,
+    };
+
 String _time(DateTime? value) {
   if (value == null) return 'Chưa có';
   final local = value.toLocal();
@@ -444,6 +451,12 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                         booking.vehiclePublicId!)),
                             ]),
                           ),
+                          if (state.tracking?.bookingPublicId ==
+                                  booking.publicId &&
+                              state.tracking?.allowsLiveLocation == true &&
+                              state.status != 'COMPLETED' &&
+                              state.tracking?.assignedDriver != null)
+                            _assignedDriverCard(context, state.tracking!),
                           const SizedBox(height: 14),
                           Card(
                             child: Column(children: [
@@ -628,4 +641,33 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
           }),
         ),
       );
+}
+
+Widget _assignedDriverCard(BuildContext context, TrackingSnapshot tracking) {
+  final driver = tracking.assignedDriver!;
+  final vehicle = tracking.assignedVehicle;
+  final details = [vehicle?.brand, vehicle?.model]
+      .whereType<String>()
+      .where((value) => value.trim().isNotEmpty)
+      .join(' ');
+  return Card(
+    key: const ValueKey('customer-assigned-driver-card'),
+    child: Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Tài xế và xe đã nhận chuyến',
+            style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 6),
+        Text(driver.displayName),
+        if (driver.phone?.trim().isNotEmpty == true)
+          Text('Điện thoại: ${driver.phone}'),
+        if (vehicle != null) ...[
+          const SizedBox(height: 4),
+          Text('${_assignedVehicleLabel(vehicle.vehicleType)} · '
+              '${vehicle.licensePlate}'),
+          if (details.isNotEmpty) Text(details),
+        ],
+      ]),
+    ),
+  );
 }

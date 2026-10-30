@@ -50,6 +50,9 @@ public class TripStore {
         if (role != UserRole.CUSTOMER && role != UserRole.DRIVER) return Optional.empty();
         return jdbc.query("""
                 SELECT b.public_id AS booking_public_id, b.status, d.public_id AS driver_public_id,
+                       driver_user.full_name AS driver_name, driver_user.phone AS driver_phone,
+                       v.vehicle_type, v.license_plate, v.brand, v.model,
+                       customer.full_name AS customer_name, customer.phone AS customer_phone,
                        b.driver_accepted_at, b.driver_arrived_at, b.passenger_onboard_at,
                        b.trip_started_at, b.trip_completed_at,
                        ST_Y(dl.current_location::geometry) AS latitude,
@@ -58,13 +61,14 @@ public class TripStore {
                 FROM bookings b JOIN users customer ON customer.id = b.customer_id
                 LEFT JOIN drivers d ON d.id = b.assigned_driver_id
                 LEFT JOIN users driver_user ON driver_user.id = d.user_id
+                LEFT JOIN vehicles v ON v.id = b.assigned_vehicle_id AND v.driver_id = d.id
                 LEFT JOIN driver_locations dl ON dl.driver_id = d.id
                     AND b.status IN ('DRIVER_ACCEPTED', 'DRIVER_ARRIVED',
                                      'PASSENGER_ONBOARD', 'IN_PROGRESS')
                 WHERE b.public_id = ? AND
                     ((? = 'CUSTOMER' AND customer.public_id = ?) OR
                      (? = 'DRIVER' AND driver_user.public_id = ?))
-                """, (rs, row) -> trackingRow(rs), bookingPublicId, role.name(), userPublicId,
+                """, (rs, row) -> trackingRow(rs, role), bookingPublicId, role.name(), userPublicId,
                 role.name(), userPublicId).stream().findFirst();
     }
 
@@ -113,14 +117,25 @@ public class TripStore {
                 || status == BookingStatus.PASSENGER_ONBOARD || status == BookingStatus.IN_PROGRESS;
     }
 
-    private TrackingState trackingRow(ResultSet rs) throws SQLException {
+    private TrackingState trackingRow(ResultSet rs, UserRole role) throws SQLException {
+        BookingStatus status = BookingStatus.valueOf(rs.getString("status"));
+        boolean active = isTrackingStatus(status) && rs.getObject("driver_public_id") != null;
+        DriverSummary assignedDriver = active && role == UserRole.CUSTOMER
+                ? new DriverSummary(rs.getObject("driver_public_id", UUID.class),
+                    rs.getString("driver_name"), rs.getString("driver_phone")) : null;
+        VehicleSummary assignedVehicle = assignedDriver != null && rs.getString("vehicle_type") != null
+                ? new VehicleSummary(rs.getString("vehicle_type"), rs.getString("license_plate"),
+                    rs.getString("brand"), rs.getString("model")) : null;
+        CustomerSummary customer = active && role == UserRole.DRIVER
+                ? new CustomerSummary(rs.getString("customer_name"), rs.getString("customer_phone")) : null;
         return new TrackingState(rs.getObject("booking_public_id", UUID.class),
-                BookingStatus.valueOf(rs.getString("status")), rs.getObject("driver_public_id", UUID.class),
+                status, rs.getObject("driver_public_id", UUID.class),
                 instant(rs, "driver_accepted_at"), instant(rs, "driver_arrived_at"),
                 instant(rs, "passenger_onboard_at"), instant(rs, "trip_started_at"),
                 instant(rs, "trip_completed_at"), rs.getObject("latitude", Double.class),
                 rs.getObject("longitude", Double.class), rs.getObject("accuracy", Double.class),
-                rs.getObject("bearing", Double.class), instant(rs, "location_updated_at"));
+                rs.getObject("bearing", Double.class), instant(rs, "location_updated_at"),
+                assignedDriver, assignedVehicle, customer);
     }
 
     private Instant instant(ResultSet rs, String name) throws SQLException {
@@ -134,7 +149,12 @@ public class TripStore {
                                 Instant driverAcceptedAt, Instant driverArrivedAt,
                                 Instant passengerOnboardAt, Instant tripStartedAt, Instant tripCompletedAt,
                                 Double latitude, Double longitude, Double accuracy, Double bearing,
-                                Instant locationUpdatedAt) {}
+                                Instant locationUpdatedAt, DriverSummary assignedDriver,
+                                VehicleSummary assignedVehicle, CustomerSummary customer) {}
+
+    public record DriverSummary(UUID publicId, String displayName, String phone) {}
+    public record VehicleSummary(String vehicleType, String licensePlate, String brand, String model) {}
+    public record CustomerSummary(String displayName, String phone) {}
 
     public record EtaSnapshot(BookingStatus status, Long assignedDriverId,
                               double pickupLatitude, double pickupLongitude,

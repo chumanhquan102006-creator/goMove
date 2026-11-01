@@ -12,6 +12,8 @@ class ApiEndpoints {
   static const String me = '/auth/me';
 
   static const String quotes = '/quotes';
+  static const String locationSearch = '/locations/search';
+  static const String locationReverse = '/locations/reverse';
   static String quote(String publicId) => '/quotes/$publicId';
   static String quoteRoute(String publicId) => '/quotes/$publicId/route';
   static const String bookings = '/bookings';

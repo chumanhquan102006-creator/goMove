@@ -14,7 +14,9 @@ import '../../features/auth/presentation/bloc/auth_bloc.dart';
 import '../../features/customer/data/active_booking_store.dart';
 import '../../features/customer/data/booking_intent_store.dart';
 import '../../features/customer/data/repositories/customer_repository_impl.dart';
+import '../../features/customer/data/repositories/geocoding_repository_impl.dart';
 import '../../features/customer/domain/repositories/customer_repository.dart';
+import '../../features/customer/domain/repositories/geocoding_repository.dart';
 import '../../features/customer/domain/usecases/customer_usecases.dart';
 import '../../features/customer/presentation/bloc/booking_cubit.dart';
 import '../../features/customer/presentation/bloc/customer_active_booking_cubit.dart';
@@ -155,6 +157,8 @@ Future<void> setupServiceLocator({required AppConfig config}) async {
 
   sl.registerLazySingleton<CustomerRepository>(
       () => CustomerRepositoryImpl(sl<ApiClient>()));
+  sl.registerLazySingleton<GeocodingRepository>(
+      () => GeocodingRepositoryImpl(sl<ApiClient>()));
   sl.registerLazySingleton<BookingIntentStore>(
       () => SecureBookingIntentStore());
   sl.registerLazySingleton<ActiveBookingStore>(

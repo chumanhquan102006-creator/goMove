@@ -10,6 +10,7 @@ import 'package:gomove_mobile/core/storage/secure_storage_service.dart';
 import 'package:gomove_mobile/core/theme/app_motion.dart';
 import 'package:gomove_mobile/features/auth/domain/entities/user.dart';
 import 'package:gomove_mobile/features/auth/presentation/bloc/auth_bloc.dart';
+import 'package:gomove_mobile/features/customer/domain/repositories/geocoding_repository.dart';
 import 'package:gomove_mobile/features/driver/data/accepted_booking_store.dart';
 import 'package:gomove_mobile/features/driver/data/location/driver_location_source.dart';
 import 'package:gomove_mobile/features/driver/domain/models/driver_models.dart';
@@ -989,6 +990,8 @@ void main() {
     await sl.reset();
     AppConfig.reset();
     await setupServiceLocator(config: AppConfig.initialize(forceMock: false));
+    // The address provider is outside this trip-flow widget test.
+    await sl.unregister<GeocodingRepository>();
     await sl.unregister<TripRepository>();
     sl.registerSingleton<TripRepository>(trip);
     final fakeSession = MockSession();
@@ -1210,6 +1213,7 @@ void main() {
     await sl.reset();
     AppConfig.reset();
     await setupServiceLocator(config: AppConfig.initialize(forceMock: false));
+    await sl.unregister<GeocodingRepository>();
     await sl.unregister<TripRepository>();
     sl.registerSingleton<TripRepository>(trip);
     final fakeSession = MockSession();
@@ -1254,6 +1258,7 @@ void main() {
     await sl.reset();
     AppConfig.reset();
     await setupServiceLocator(config: AppConfig.initialize(forceMock: false));
+    await sl.unregister<GeocodingRepository>();
     await sl.unregister<RoadRouteRepository>();
     await sl.unregister<TripRepository>();
     sl.registerSingleton<TripRepository>(trip);

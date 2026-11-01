@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../../core/config/app_config.dart';
 import '../../../../core/di/injection.dart';
+import '../../../../core/error/exceptions.dart';
+import '../../../../core/storage/secure_storage_service.dart';
 import '../../../../core/theme/app_motion.dart';
 import '../../../auth/domain/entities/user.dart';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
@@ -10,6 +14,8 @@ import '../../../auth/presentation/bloc/auth_state.dart';
 import '../../../driver/presentation/screens/driver_onboarding_screen.dart';
 import '../../domain/models/booking.dart';
 import '../../domain/models/quote.dart';
+import '../../domain/models/place_search_result.dart';
+import '../../domain/repositories/geocoding_repository.dart';
 import '../bloc/booking_cubit.dart';
 import '../bloc/customer_active_booking_cubit.dart';
 import '../bloc/quote_cubit.dart';
@@ -49,6 +55,23 @@ class _CustomerHomeContent extends StatefulWidget {
 
 enum _MapTarget { pickup, dropoff }
 
+class _PlaceSelection {
+  final query = TextEditingController();
+  Timer? debounce;
+  int revision = 0;
+  List<PlaceSearchResult> suggestions = const [];
+  bool loading = false;
+  String? message;
+  String? label;
+  String? attribution;
+  Coordinates? labelPoint;
+
+  void dispose() {
+    debounce?.cancel();
+    query.dispose();
+  }
+}
+
 class _CustomerHomeContentState extends State<_CustomerHomeContent>
     with WidgetsBindingObserver {
   final _form = GlobalKey<FormState>();
@@ -60,6 +83,16 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
   VehicleType _vehicle = VehicleType.motorbike;
   String? _coordinateError;
   bool _mapVisible = true;
+  bool _foreground = true;
+  bool _authInvalidated = false;
+  final _pickupPlace = _PlaceSelection();
+  final _dropoffPlace = _PlaceSelection();
+  int _pickupReverseRevision = 0;
+  int _dropoffReverseRevision = 0;
+  bool _settingCoordinates = false;
+
+  _PlaceSelection _selection(_MapTarget target) =>
+      target == _MapTarget.pickup ? _pickupPlace : _dropoffPlace;
 
   bool get _isCurrentAccount {
     final auth = context.read<AuthBloc>().state;
@@ -71,39 +104,75 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    for (final controller in [
-      _pickupLat,
-      _pickupLon,
-      _dropoffLat,
-      _dropoffLon,
-    ]) {
-      controller.addListener(_onCoordinateEdited);
-    }
+    _pickupLat.addListener(_onPickupCoordinateEdited);
+    _pickupLon.addListener(_onPickupCoordinateEdited);
+    _dropoffLat.addListener(_onDropoffCoordinateEdited);
+    _dropoffLon.addListener(_onDropoffCoordinateEdited);
   }
 
-  void _onCoordinateEdited() {
-    if (mounted) setState(() => _coordinateError = null);
+  void _onPickupCoordinateEdited() => _onCoordinateEdited(_MapTarget.pickup);
+  void _onDropoffCoordinateEdited() => _onCoordinateEdited(_MapTarget.dropoff);
+
+  void _onCoordinateEdited(_MapTarget target) {
+    if (_settingCoordinates || !mounted) return;
+    final selection = _selection(target);
+    selection.debounce?.cancel();
+    selection.revision++;
+    selection.query.clear();
+    setState(() {
+      _coordinateError = null;
+      selection.suggestions = const [];
+      selection.loading = false;
+      selection.label = null;
+      selection.attribution = null;
+      selection.labelPoint = null;
+      selection.message = 'Chưa có địa chỉ được xác minh cho tọa độ này.';
+      if (target == _MapTarget.pickup) {
+        _pickupReverseRevision++;
+      } else {
+        _dropoffReverseRevision++;
+      }
+    });
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _foreground = state == AppLifecycleState.resumed;
     if (state == AppLifecycleState.resumed && _isCurrentAccount) {
       context.read<CustomerActiveBookingCubit>().restore();
+      if (mounted) setState(() {});
+    } else if (state != AppLifecycleState.resumed) {
+      for (final selection in [_pickupPlace, _dropoffPlace]) {
+        selection.debounce?.cancel();
+        selection.revision++;
+        selection.suggestions = const [];
+        selection.loading = false;
+        if (selection.message == 'Đang tìm địa chỉ cho điểm đã chọn…') {
+          selection.message = 'Địa chỉ chưa khả dụng cho điểm này.';
+        }
+      }
+      _pickupReverseRevision++;
+      _dropoffReverseRevision++;
     }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _pickupLat.removeListener(_onPickupCoordinateEdited);
+    _pickupLon.removeListener(_onPickupCoordinateEdited);
+    _dropoffLat.removeListener(_onDropoffCoordinateEdited);
+    _dropoffLon.removeListener(_onDropoffCoordinateEdited);
     for (final controller in [
       _pickupLat,
       _pickupLon,
       _dropoffLat,
       _dropoffLon
     ]) {
-      controller.removeListener(_onCoordinateEdited);
       controller.dispose();
     }
+    _pickupPlace.dispose();
+    _dropoffPlace.dispose();
     super.dispose();
   }
 
@@ -201,18 +270,297 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
     return point.isValid ? point : null;
   }
 
+  Coordinates? _pointFor(_MapTarget target) => target == _MapTarget.pickup
+      ? _point(_pickupLat, _pickupLon)
+      : _point(_dropoffLat, _dropoffLon);
+
+  bool _samePoint(Coordinates? a, Coordinates? b) =>
+      a != null &&
+      b != null &&
+      a.latitude == b.latitude &&
+      a.longitude == b.longitude;
+
+  bool _canUseSearch(_PlaceSelection selection, int revision) =>
+      mounted &&
+      _foreground &&
+      _isCurrentAccount &&
+      revision == selection.revision;
+
+  bool _canUseReverse(_MapTarget target, int revision, Coordinates point) =>
+      mounted &&
+      _foreground &&
+      _isCurrentAccount &&
+      revision ==
+          (target == _MapTarget.pickup
+              ? _pickupReverseRevision
+              : _dropoffReverseRevision) &&
+      _samePoint(_pointFor(target), point);
+
+  Future<bool> _sessionStillCurrent(
+      SecureStorageService session, int generation) async {
+    try {
+      return await session.isCurrentSession(generation);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String? _selectedLabel(_MapTarget target, Coordinates? point) {
+    final selected = _selection(target);
+    return _samePoint(selected.labelPoint, point) ? selected.label : null;
+  }
+
+  void _setPoint(_MapTarget target, Coordinates point,
+      {String? label, String? attribution}) {
+    final selected = _selection(target);
+    selected.debounce?.cancel();
+    selected.revision++;
+    selected.query.text = label ?? '';
+    _settingCoordinates = true;
+    try {
+      if (target == _MapTarget.pickup) {
+        _pickupLat.text = point.latitude.toString();
+        _pickupLon.text = point.longitude.toString();
+        _pickupReverseRevision++;
+      } else {
+        _dropoffLat.text = point.latitude.toString();
+        _dropoffLon.text = point.longitude.toString();
+        _dropoffReverseRevision++;
+      }
+    } finally {
+      _settingCoordinates = false;
+    }
+    setState(() {
+      _coordinateError = null;
+      selected.suggestions = const [];
+      selected.loading = false;
+      selected.label = label;
+      selected.attribution = attribution;
+      selected.labelPoint = label == null ? null : point;
+      selected.message =
+          label == null ? 'Đang tìm địa chỉ cho điểm đã chọn…' : null;
+    });
+  }
+
+  String _lookupError(Object error) {
+    if (error is ServerException && error.statusCode == 429) {
+      return 'Dịch vụ địa điểm đang giới hạn yêu cầu. Hãy thử lại sau hoặc nhập tọa độ.';
+    }
+    if (error is FormatException) return error.message;
+    return 'Không tìm được địa chỉ lúc này. Bạn vẫn có thể chọn trên bản đồ hoặc nhập tọa độ.';
+  }
+
+  void _onSearchChanged(_MapTarget target, String query) {
+    final selected = _selection(target);
+    selected.debounce?.cancel();
+    final revision = ++selected.revision;
+    final normalized = query.trim();
+    setState(() {
+      selected.suggestions = const [];
+      selected.loading = false;
+      selected.message = normalized.isEmpty
+          ? null
+          : normalized.runes.length < 3
+              ? 'Nhập ít nhất 3 ký tự để tìm địa điểm.'
+              : null;
+    });
+    if (normalized.runes.length < 3) return;
+    selected.debounce = Timer(const Duration(milliseconds: 400),
+        () => unawaited(_search(target, normalized, revision)));
+  }
+
+  Future<void> _search(_MapTarget target, String query, int revision) async {
+    final selected = _selection(target);
+    if (!_canUseSearch(selected, revision)) return;
+    if (AppConfig.instance.isMock ||
+        !sl.isRegistered<GeocodingRepository>() ||
+        !sl.isRegistered<SecureStorageService>()) {
+      setState(() => selected.message =
+          'Tìm địa điểm cần kết nối Backend GoMove ở chế độ thật.');
+      return;
+    }
+    setState(() => selected.loading = true);
+    int? requestGeneration;
+    try {
+      final session = sl<SecureStorageService>();
+      final snapshot = await session.getSession();
+      requestGeneration = snapshot.generation;
+      if (!_canUseSearch(selected, revision)) {
+        return;
+      }
+      if (snapshot.accessToken == null) {
+        setState(() {
+          selected.loading = false;
+          selected.message = 'Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại.';
+        });
+        return;
+      }
+      final results = await sl<GeocodingRepository>()
+          .search(query, sessionGeneration: snapshot.generation);
+      if (!_canUseSearch(selected, revision)) {
+        return;
+      }
+      final current = await _sessionStillCurrent(session, snapshot.generation);
+      if (!current || !_canUseSearch(selected, revision)) {
+        return;
+      }
+      setState(() {
+        selected.suggestions = results.take(5).toList(growable: false);
+        selected.loading = false;
+        selected.message =
+            results.isEmpty ? 'Không tìm thấy địa điểm phù hợp.' : null;
+      });
+    } catch (error) {
+      if (!_canUseSearch(selected, revision)) {
+        return;
+      }
+      if (requestGeneration != null &&
+          !await _sessionStillCurrent(
+              sl<SecureStorageService>(), requestGeneration)) {
+        return;
+      }
+      if (!_canUseSearch(selected, revision)) {
+        return;
+      }
+      setState(() {
+        selected.loading = false;
+        selected.message = _lookupError(error);
+      });
+    }
+  }
+
+  Future<void> _reverseSelected(_MapTarget target, Coordinates point) async {
+    final revision = target == _MapTarget.pickup
+        ? _pickupReverseRevision
+        : _dropoffReverseRevision;
+    if (!_canUseReverse(target, revision, point)) return;
+    if (!sl.isRegistered<GeocodingRepository>() ||
+        !sl.isRegistered<SecureStorageService>() ||
+        AppConfig.instance.isMock) {
+      if (mounted) {
+        setState(() => _selection(target).message =
+            'Chưa có địa chỉ cho điểm này; tọa độ đã chọn vẫn được giữ.');
+      }
+      return;
+    }
+    int? requestGeneration;
+    try {
+      final session = sl<SecureStorageService>();
+      final snapshot = await session.getSession();
+      requestGeneration = snapshot.generation;
+      if (!_canUseReverse(target, revision, point) ||
+          snapshot.accessToken == null) {
+        return;
+      }
+      final result = await sl<GeocodingRepository>()
+          .reverse(point, sessionGeneration: snapshot.generation);
+      if (!_canUseReverse(target, revision, point)) {
+        return;
+      }
+      final current = await _sessionStillCurrent(session, snapshot.generation);
+      if (!current || !_canUseReverse(target, revision, point)) {
+        return;
+      }
+      final validResult =
+          result != null && _samePoint(result.coordinates, point);
+      setState(() {
+        final selected = _selection(target);
+        selected.label = validResult ? result.label : null;
+        selected.attribution = validResult ? result.attribution : null;
+        selected.labelPoint = validResult ? point : null;
+        selected.message = validResult
+            ? null
+            : 'Chưa tìm được địa chỉ cho điểm này; tọa độ đã chọn vẫn được giữ.';
+      });
+    } catch (_) {
+      if (!_canUseReverse(target, revision, point)) {
+        return;
+      }
+      if (requestGeneration != null &&
+          !await _sessionStillCurrent(
+              sl<SecureStorageService>(), requestGeneration)) {
+        return;
+      }
+      if (!_canUseReverse(target, revision, point)) {
+        return;
+      }
+      setState(() => _selection(target).message =
+          'Không thể xác minh địa chỉ lúc này; tọa độ đã chọn vẫn được giữ.');
+    }
+  }
+
+  Widget _searchBox(_MapTarget target) {
+    final selected = _selection(target);
+    final pickup = target == _MapTarget.pickup;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      TextField(
+        key: ValueKey(pickup ? 'pickup-place-search' : 'dropoff-place-search'),
+        controller: selected.query,
+        textInputAction: TextInputAction.search,
+        maxLength: 100,
+        scrollPadding: const EdgeInsets.only(bottom: 120),
+        decoration: InputDecoration(
+          labelText: pickup ? 'Tìm điểm đón' : 'Tìm điểm đến',
+          hintText: 'Tên địa điểm hoặc địa chỉ',
+          prefixIcon: Icon(pickup ? Icons.trip_origin : Icons.location_on),
+          border: const OutlineInputBorder(),
+          suffixIcon: selected.loading
+              ? const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2)))
+              : null,
+        ),
+        onChanged: (query) => _onSearchChanged(target, query),
+      ),
+      if (selected.message != null)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Text(selected.message!,
+              style: Theme.of(context).textTheme.bodySmall),
+        ),
+      for (final result in selected.suggestions)
+        ListTile(
+          dense: true,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+          leading: Icon(pickup ? Icons.trip_origin : Icons.location_on),
+          title: Text(result.name ?? result.label,
+              maxLines: 2, overflow: TextOverflow.ellipsis),
+          subtitle: Text(
+              [
+                if (result.name != null) result.label,
+                if (result.street != null &&
+                    !result.label.contains(result.street!))
+                  result.street!,
+                if (result.district != null &&
+                    !result.label.contains(result.district!))
+                  result.district!,
+                if (result.city != null && !result.label.contains(result.city!))
+                  result.city!,
+                '${result.coordinates.latitude.toStringAsFixed(6)}, '
+                    '${result.coordinates.longitude.toStringAsFixed(6)}',
+                if (result.attribution != null) result.attribution!,
+              ].join(' · '),
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis),
+          onTap: () {
+            if (!_isCurrentAccount) return;
+            FocusScope.of(context).unfocus();
+            _setPoint(target, result.coordinates,
+                label: result.label, attribution: result.attribution);
+          },
+        ),
+    ]);
+  }
+
   void _selectMapPoint(Coordinates point) {
     if (!_isCurrentAccount || !point.isValid) return;
     FocusScope.of(context).unfocus();
-    final latitude = point.latitude.toStringAsFixed(6);
-    final longitude = point.longitude.toStringAsFixed(6);
-    if (_mapTarget == _MapTarget.pickup) {
-      _pickupLat.text = latitude;
-      _pickupLon.text = longitude;
-    } else {
-      _dropoffLat.text = latitude;
-      _dropoffLon.text = longitude;
-    }
+    final target = _mapTarget;
+    _setPoint(target, point);
+    unawaited(_reverseSelected(target, point));
   }
 
   Widget _pointSummary(
@@ -221,6 +569,8 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
     final coordinateLabel = point == null
         ? 'Chưa có tọa độ hợp lệ'
         : 'Vĩ độ ${point.latitude.toStringAsFixed(6)} · Kinh độ ${point.longitude.toStringAsFixed(6)}';
+    final address = _selectedLabel(target, point);
+    final selection = _selection(target);
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: AnimatedContainer(
@@ -249,6 +599,14 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                   children: [
                     Text(label, style: Theme.of(context).textTheme.titleSmall),
                     const SizedBox(height: 2),
+                    Text(
+                        address ??
+                            selection.message ??
+                            'Chưa có địa chỉ được xác minh',
+                        style: Theme.of(context).textTheme.bodyMedium),
+                    if (address != null && selection.attribution != null)
+                      Text(selection.attribution!,
+                          style: Theme.of(context).textTheme.bodySmall),
                     AnimatedSwitcher(
                       duration: AppMotion.duration(context, AppMotion.feedback),
                       switchInCurve: AppMotion.enterCurve,
@@ -330,8 +688,29 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
     final auth = context.watch<AuthBloc>().state;
     if (auth is! AuthenticatedState ||
         auth.user.publicId != widget.user.publicId) {
+      if (!_authInvalidated) {
+        _authInvalidated = true;
+        for (final selected in [_pickupPlace, _dropoffPlace]) {
+          selected.debounce?.cancel();
+          selected.revision++;
+          selected.suggestions = const [];
+          selected.loading = false;
+          selected.label = null;
+          selected.attribution = null;
+          selected.labelPoint = null;
+          selected.message = null;
+        }
+        _pickupReverseRevision++;
+        _dropoffReverseRevision++;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          _pickupPlace.query.clear();
+          _dropoffPlace.query.clear();
+        });
+      }
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+    _authInvalidated = false;
     final pickup = _point(_pickupLat, _pickupLon);
     final dropoff = _point(_dropoffLat, _dropoffLon);
     final routeCurrent = ModalRoute.of(context)?.isCurrent ?? true;
@@ -344,7 +723,13 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
               await Navigator.of(context)
                   .push(AppMotion.immediateRoute<void>(BlocProvider.value(
                 value: context.read<BookingCubit>(),
-                child: QuoteReviewScreen(quote: state.quote!),
+                child: QuoteReviewScreen(
+                  quote: state.quote!,
+                  pickupLabel:
+                      _selectedLabel(_MapTarget.pickup, state.quote!.pickup),
+                  dropoffLabel:
+                      _selectedLabel(_MapTarget.dropoff, state.quote!.dropoff),
+                ),
               )));
             } finally {
               if (mounted && context.mounted && _isCurrentAccount) {
@@ -653,6 +1038,17 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                                         ])));
                           }),
                           const SizedBox(height: 12),
+                          Text('Tìm địa điểm thật',
+                              style: Theme.of(context).textTheme.titleLarge),
+                          const SizedBox(height: 4),
+                          Text(
+                              'Tìm điểm đón và điểm đến độc lập. Chọn kết quả để đặt marker đúng tọa độ; vẫn có thể chạm bản đồ hoặc nhập tọa độ.',
+                              style: Theme.of(context).textTheme.bodyMedium),
+                          const SizedBox(height: 10),
+                          _searchBox(_MapTarget.pickup),
+                          const SizedBox(height: 8),
+                          _searchBox(_MapTarget.dropoff),
+                          const SizedBox(height: 8),
                           Text('Chọn điểm trên bản đồ',
                               style: Theme.of(context).textTheme.titleLarge),
                           const SizedBox(height: 4),
@@ -719,13 +1115,13 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
-                                  Text('Tọa độ và loại xe',
+                                  Text('Tọa độ thủ công và loại xe',
                                       style: Theme.of(context)
                                           .textTheme
                                           .titleMedium),
                                   const SizedBox(height: 4),
                                   Text(
-                                      'Nhập tọa độ thủ công khi bản đồ không tải. Chưa có tìm địa chỉ; đây là tọa độ mẫu Hà Nội.',
+                                      'Có thể nhập tọa độ thủ công khi tìm địa điểm hoặc bản đồ không tải. Các tọa độ ban đầu là ví dụ ở Hà Nội; địa chỉ chỉ hiện sau khi được xác minh.',
                                       style: Theme.of(context)
                                           .textTheme
                                           .bodySmall),

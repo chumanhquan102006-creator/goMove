@@ -23,7 +23,9 @@ import 'package:gomove_mobile/features/customer/data/booking_intent_store.dart';
 import 'package:gomove_mobile/features/customer/domain/models/booking.dart';
 import 'package:gomove_mobile/features/customer/domain/models/booking_intent.dart';
 import 'package:gomove_mobile/features/customer/domain/models/quote.dart';
+import 'package:gomove_mobile/features/customer/domain/models/place_search_result.dart';
 import 'package:gomove_mobile/features/customer/domain/repositories/customer_repository.dart';
+import 'package:gomove_mobile/features/customer/domain/repositories/geocoding_repository.dart';
 import 'package:gomove_mobile/features/customer/domain/usecases/customer_usecases.dart';
 import 'package:gomove_mobile/features/customer/presentation/bloc/booking_cubit.dart';
 import 'package:gomove_mobile/features/customer/presentation/bloc/customer_active_booking_cubit.dart';
@@ -48,6 +50,12 @@ const userB = User(
     phoneNumber: '0900000002',
     fullName: 'Customer B',
     role: UserRole.customer);
+
+PlaceSearchResult place(String label, Coordinates point) => PlaceSearchResult(
+    label: label,
+    name: label,
+    coordinates: point,
+    attribution: '© OpenStreetMap contributors · Photon');
 
 Booking booking(String status) => Booking(
     publicId: bookingId,
@@ -167,6 +175,27 @@ class _TripRepository implements TripRepository {
 
 class _Session extends Mock implements SecureStorageService {}
 
+class _GeocodingRepository implements GeocodingRepository {
+  final searches = <String>[];
+  final reverses = <Coordinates>[];
+  Future<List<PlaceSearchResult>> Function(String)? searchHandler;
+  Future<PlaceSearchResult?> Function(Coordinates)? reverseHandler;
+
+  @override
+  Future<List<PlaceSearchResult>> search(String query,
+      {int? sessionGeneration}) {
+    searches.add(query);
+    return searchHandler?.call(query) ?? Future.value(const []);
+  }
+
+  @override
+  Future<PlaceSearchResult?> reverse(Coordinates point,
+      {int? sessionGeneration}) {
+    reverses.add(point);
+    return reverseHandler?.call(point) ?? Future.value(null);
+  }
+}
+
 class _MapLifecycleSpy extends StatefulWidget {
   final VoidCallback onMount;
   final VoidCallback onDispose;
@@ -201,6 +230,7 @@ void main() {
   late _ActiveStore activeStore;
   late _TripRepository tripRepository;
   late _Session session;
+  late _GeocodingRepository geocoding;
   late AuthBloc auth;
   late Coordinates mapTap;
   late bool mapUnavailable;
@@ -246,6 +276,9 @@ void main() {
     activeStore = _ActiveStore();
     tripRepository = _TripRepository();
     session = _Session();
+    geocoding = _GeocodingRepository();
+    sl.registerSingleton<GeocodingRepository>(geocoding);
+    sl.registerSingleton<SecureStorageService>(session);
     when(() => session.getSession()).thenAnswer(
         (_) async => const AuthSessionSnapshot(7, 'access', 'refresh'));
     when(() => session.getUserPublicId()).thenAnswer((_) async => customerA);
@@ -805,5 +838,377 @@ void main() {
     expect((auth.state as AuthenticatedState).user.publicId, customerB);
     expect(find.textContaining(bookingId), findsNothing);
     expect(find.textContaining('Customer A'), findsNothing);
+  });
+
+  testWidgets('Search debounces, selects real pickup, and keeps destination',
+      (tester) async {
+    geocoding.searchHandler = (_) async => [
+          place('Hồ Hoàn Kiếm', const Coordinates(21.0287, 105.8524)),
+        ];
+    await showHome(tester);
+    final pickupSearch = find.byKey(const ValueKey('pickup-place-search'));
+    await tester.scrollUntilVisible(pickupSearch, 250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.enterText(pickupSearch, 'Hồ Hoàn Kiếm');
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(geocoding.searches, isEmpty);
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump();
+    expect(geocoding.searches, ['Hồ Hoàn Kiếm']);
+    await tester.scrollUntilVisible(find.text('Hồ Hoàn Kiếm').last, 100,
+        scrollable: find.byType(Scrollable).first);
+    await tester.tap(find.text('Hồ Hoàn Kiếm').last);
+    await tester.pumpAndSettle();
+    expect(lastMapPickup?.latitude, 21.0287);
+    expect(lastMapPickup?.longitude, 105.8524);
+    expect(lastMapDropoff?.latitude, 21.0245);
+    expect(lastMapDropoff?.longitude, 105.8576);
+    expect(mapMounts - mapDisposals, 1);
+    expect(find.text('© OpenStreetMap contributors · Photon'), findsOneWidget);
+  });
+
+  testWidgets('Pickup and destination searches stay independent',
+      (tester) async {
+    geocoding.searchHandler = (query) async => [
+          query.contains('Hoàn')
+              ? place('Hồ Hoàn Kiếm', const Coordinates(21.0287, 105.8524))
+              : place('Bến xe Mỹ Đình', const Coordinates(21.028, 105.778)),
+        ];
+    await showHome(tester);
+    for (final entry in [
+      (const ValueKey('pickup-place-search'), 'Hồ Hoàn Kiếm'),
+      (const ValueKey('dropoff-place-search'), 'Bến xe Mỹ Đình'),
+    ]) {
+      final field = find.byKey(entry.$1);
+      await tester.scrollUntilVisible(field, 250,
+          scrollable: find.byType(Scrollable).first);
+      await tester.enterText(field, entry.$2);
+      await tester.pump(const Duration(milliseconds: 450));
+      await tester.pump();
+      await tester.scrollUntilVisible(find.text(entry.$2).last, 100,
+          scrollable: find.byType(Scrollable).first);
+      await tester.tap(find.text(entry.$2).last);
+      await tester.pump();
+    }
+    expect(lastMapPickup?.longitude, 105.8524);
+    expect(lastMapDropoff?.longitude, 105.778);
+    expect(repository.quoteRequests, isEmpty);
+  });
+
+  testWidgets('Late search for old query cannot replace newer results',
+      (tester) async {
+    final old = Completer<List<PlaceSearchResult>>();
+    geocoding.searchHandler = (query) => query == 'Địa điểm cũ'
+        ? old.future
+        : Future.value(
+            [place('Địa điểm mới', const Coordinates(21.03, 105.85))]);
+    await showHome(tester);
+    final field = find.byKey(const ValueKey('pickup-place-search'));
+    await tester.scrollUntilVisible(field, 250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.enterText(field, 'Địa điểm cũ');
+    await tester.pump(const Duration(milliseconds: 450));
+    await tester.enterText(field, 'Địa điểm mới');
+    await tester.pump(const Duration(milliseconds: 450));
+    await tester.pump();
+    old.complete([place('Kết quả cũ', const Coordinates(20, 105))]);
+    await tester.pumpAndSettle();
+    expect(find.text('Kết quả cũ'), findsNothing);
+    expect(find.text('Địa điểm mới'), findsWidgets);
+    expect(geocoding.searches, ['Địa điểm cũ', 'Địa điểm mới']);
+  });
+
+  testWidgets(
+      'Map reverse label is bound to exact point and manual edit clears it',
+      (tester) async {
+    geocoding.reverseHandler = (point) async => place('Phố Tràng Tiền', point);
+    await showHome(tester);
+    await selectOnFakeMap(tester, 'Chọn điểm đón',
+        const Coordinates(21.031234567, 105.841234567));
+    expect(geocoding.reverses.single.latitude, 21.031234567);
+    expect(lastMapPickup?.latitude, 21.031234567);
+    await tester.scrollUntilVisible(find.text('Phố Tràng Tiền'), 100,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Phố Tràng Tiền'), findsOneWidget);
+    await enterCoordinate(tester, 'Điểm đón · vĩ độ', '21.04');
+    expect(find.text('Phố Tràng Tiền'), findsNothing);
+    expect(lastMapPickup?.latitude, 21.04);
+  });
+
+  testWidgets('Unavailable reverse keeps selected marker and fallback message',
+      (tester) async {
+    geocoding.reverseHandler = (_) async =>
+        throw const ServerException(message: 'busy', statusCode: 429);
+    await showHome(tester);
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đến', const Coordinates(21.05, 105.88));
+    expect(lastMapDropoff?.latitude, 21.05);
+    expect(find.textContaining('Không thể xác minh địa chỉ'), findsOneWidget);
+  });
+
+  testWidgets('Account replacement ignores a late place-search response',
+      (tester) async {
+    final pending = Completer<List<PlaceSearchResult>>();
+    geocoding.searchHandler = (_) => pending.future;
+    await showHome(tester);
+    final field = find.byKey(const ValueKey('pickup-place-search'));
+    await tester.scrollUntilVisible(field, 250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.enterText(field, 'Địa chỉ riêng A');
+    await tester.pump(const Duration(milliseconds: 450));
+    final bReady = auth.stream.firstWhere((state) =>
+        state is AuthenticatedState && state.user.publicId == customerB);
+    auth.add(const AuthLoginSubmitted(identifier: 'B', password: 'password'));
+    await tester.runAsync(() => bReady.timeout(const Duration(seconds: 2)));
+    await tester.pumpWidget(BlocProvider<AuthBloc>.value(
+        value: auth,
+        child: MaterialApp(
+            home:
+                CustomerHomeScreen(user: userB, mapBuilder: fakeMapBuilder))));
+    pending.complete([place('Địa chỉ riêng A', const Coordinates(21, 105))]);
+    await tester.pumpAndSettle();
+    expect(find.text('Địa chỉ riêng A'), findsNothing);
+    expect(lastMapPickup?.latitude, 21.0287);
+  });
+
+  testWidgets('Background cancels search and resume keeps Quote fallback',
+      (tester) async {
+    await showHome(tester);
+    final field = find.byKey(const ValueKey('pickup-place-search'));
+    await tester.scrollUntilVisible(field, 250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.enterText(field, 'Đại học Quốc gia Hà Nội');
+    await tester.pump(const Duration(milliseconds: 150));
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(geocoding.searches, isEmpty);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    repository.quoteError =
+        const ServerException(message: 'routing unavailable', statusCode: 503);
+    await requestQuote(tester);
+    expect(repository.quoteRequests, hasLength(1));
+  });
+
+  testWidgets('Late reverse cannot relabel manually changed coordinates',
+      (tester) async {
+    final pending = Completer<PlaceSearchResult?>();
+    geocoding.reverseHandler = (_) => pending.future;
+    await showHome(tester);
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đón', const Coordinates(21.031, 105.841));
+    await enterCoordinate(tester, 'Điểm đón · vĩ độ', '21.04');
+    pending.complete(place('Phố cũ', const Coordinates(21.031, 105.841)));
+    await tester.pumpAndSettle();
+    expect(find.text('Phố cũ'), findsNothing);
+    expect(lastMapPickup?.latitude, 21.04);
+  });
+
+  testWidgets('Small screen and keyboard keep both searches usable',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    await showHome(tester);
+    final field = find.byKey(const ValueKey('dropoff-place-search'));
+    await tester.scrollUntilVisible(field, 250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.tap(field);
+    await tester.enterText(field, 'Bến xe Mỹ Đình');
+    await tester.pump(const Duration(milliseconds: 450));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(geocoding.searches, ['Bến xe Mỹ Đình']);
+    await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('pickup-place-search')), -250,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.byKey(const ValueKey('pickup-place-search')), findsOneWidget);
+  });
+
+  testWidgets('Empty search and rate limit keep manual fallback available',
+      (tester) async {
+    geocoding.searchHandler = (_) async => const [];
+    await showHome(tester);
+    final field = find.byKey(const ValueKey('pickup-place-search'));
+    await tester.scrollUntilVisible(field, 250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.enterText(field, 'Địa điểm không có');
+    await tester.pump(const Duration(milliseconds: 450));
+    await tester.pump();
+    expect(find.text('Không tìm thấy địa điểm phù hợp.'), findsWidgets);
+
+    geocoding.searchHandler = (_) async =>
+        throw const ServerException(message: 'rate limit', statusCode: 429);
+    await tester.enterText(field, 'Địa điểm khác');
+    await tester.pump(const Duration(milliseconds: 450));
+    await tester.pump();
+    expect(find.textContaining('đang giới hạn yêu cầu'), findsWidgets);
+    await enterCoordinate(tester, 'Điểm đón · vĩ độ', '21.03');
+    expect(lastMapPickup?.latitude, 21.03);
+  });
+
+  testWidgets('Duplicate names select the tapped result coordinates',
+      (tester) async {
+    geocoding.searchHandler = (_) async => const [
+          PlaceSearchResult(
+              label: 'Quán cà phê, Quận A',
+              name: 'Quán cà phê',
+              coordinates: Coordinates(21.01, 105.81)),
+          PlaceSearchResult(
+              label: 'Quán cà phê, Quận B',
+              name: 'Quán cà phê',
+              coordinates: Coordinates(21.02, 105.82)),
+        ];
+    await showHome(tester);
+    final field = find.byKey(const ValueKey('dropoff-place-search'));
+    await tester.scrollUntilVisible(field, 250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.enterText(field, 'Quán cà phê');
+    await tester.pump(const Duration(milliseconds: 450));
+    await tester.pump();
+    final secondResult = find.textContaining('Quán cà phê, Quận B');
+    await tester.scrollUntilVisible(secondResult, 100,
+        scrollable: find.byType(Scrollable).first);
+    await tester.tap(secondResult);
+    await tester.pump();
+    expect(lastMapDropoff?.latitude, 21.02);
+    expect(lastMapDropoff?.longitude, 105.82);
+    expect(lastMapPickup?.latitude, 21.0287);
+  });
+
+  testWidgets('Map tap and manual edit clear old place text and suggestions',
+      (tester) async {
+    geocoding.searchHandler = (_) async => [
+          place('Hồ Hoàn Kiếm', const Coordinates(21.0287, 105.8524)),
+        ];
+    await showHome(tester);
+    final pickupSearch = find.byKey(const ValueKey('pickup-place-search'));
+    await tester.scrollUntilVisible(pickupSearch, 250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.enterText(pickupSearch, 'Hồ Hoàn Kiếm');
+    await tester.pump(const Duration(milliseconds: 450));
+    await tester.pump();
+    await tester.tap(find.text('Hồ Hoàn Kiếm').last);
+    await tester.pump();
+    await tester.scrollUntilVisible(pickupSearch, -250,
+        scrollable: find.byType(Scrollable).first);
+    expect(tester.widget<TextField>(pickupSearch).controller!.text,
+        'Hồ Hoàn Kiếm');
+
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đón', const Coordinates(21.031, 105.841));
+    await tester.scrollUntilVisible(pickupSearch, -250,
+        scrollable: find.byType(Scrollable).first);
+    expect(tester.widget<TextField>(pickupSearch).controller!.text, isEmpty);
+    expect(find.text('Hồ Hoàn Kiếm'), findsNothing);
+    expect(lastMapPickup?.latitude, 21.031);
+
+    await tester.scrollUntilVisible(pickupSearch, -250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.enterText(pickupSearch, 'Hồ Hoàn Kiếm');
+    await tester.pump(const Duration(milliseconds: 450));
+    await tester.pump();
+    expect(find.text('Hồ Hoàn Kiếm'), findsWidgets);
+    await enterCoordinate(tester, 'Điểm đón · kinh độ', '105.84');
+    await tester.scrollUntilVisible(pickupSearch, -250,
+        scrollable: find.byType(Scrollable).first);
+    expect(tester.widget<TextField>(pickupSearch).controller!.text, isEmpty);
+    expect(find.text('Hồ Hoàn Kiếm'), findsNothing);
+    expect(lastMapPickup?.longitude, 105.84);
+  });
+
+  testWidgets(
+      'Search result waiting on session check cannot return in background',
+      (tester) async {
+    geocoding.searchHandler = (_) async => [
+          place('Địa chỉ cũ', const Coordinates(21.03, 105.85)),
+        ];
+    await showHome(tester);
+    final check = Completer<bool>();
+    when(() => session.isCurrentSession(7)).thenAnswer((_) => check.future);
+    final field = find.byKey(const ValueKey('pickup-place-search'));
+    await tester.scrollUntilVisible(field, 250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.enterText(field, 'Địa chỉ cũ');
+    await tester.pump(const Duration(milliseconds: 450));
+    await tester.pump();
+    expect(geocoding.searches, ['Địa chỉ cũ']);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    check.complete(true);
+    await tester.pump();
+    expect(
+        find.ancestor(
+            of: find.text('Địa chỉ cũ'), matching: find.byType(ListTile)),
+        findsNothing);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(
+        find.ancestor(
+            of: find.text('Địa chỉ cũ'), matching: find.byType(ListTile)),
+        findsNothing);
+  });
+
+  testWidgets(
+      'Reverse result waiting on session check cannot relabel after resume',
+      (tester) async {
+    geocoding.reverseHandler = (point) async => place('Phố cũ', point);
+    await showHome(tester);
+    final check = Completer<bool>();
+    when(() => session.isCurrentSession(7)).thenAnswer((_) => check.future);
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đón', const Coordinates(21.031, 105.841));
+    expect(geocoding.reverses, hasLength(1));
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    check.complete(true);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(find.text('Phố cũ'), findsNothing);
+    expect(lastMapPickup?.latitude, 21.031);
+  });
+
+  testWidgets('New query invalidates a search waiting on session check',
+      (tester) async {
+    geocoding.searchHandler = (_) async => [
+          place('Kết quả cũ', const Coordinates(21.03, 105.85)),
+        ];
+    await showHome(tester);
+    final check = Completer<bool>();
+    when(() => session.isCurrentSession(7)).thenAnswer((_) => check.future);
+    final field = find.byKey(const ValueKey('pickup-place-search'));
+    await tester.scrollUntilVisible(field, 250,
+        scrollable: find.byType(Scrollable).first);
+    await tester.enterText(field, 'Địa chỉ cũ');
+    await tester.pump(const Duration(milliseconds: 450));
+    await tester.pump();
+    expect(geocoding.searches, ['Địa chỉ cũ']);
+    await tester.enterText(field, 'M');
+    check.complete(true);
+    await tester.pump();
+    expect(find.text('Kết quả cũ'), findsNothing);
+    expect(tester.widget<TextField>(field).controller!.text, 'M');
+  });
+
+  testWidgets('New map point invalidates reverse waiting on session check',
+      (tester) async {
+    geocoding.reverseHandler = (point) async =>
+        place(point.latitude == 21.031 ? 'Phố cũ' : 'Phố mới', point);
+    await showHome(tester);
+    final check = Completer<bool>();
+    when(() => session.isCurrentSession(7)).thenAnswer((_) => check.future);
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đón', const Coordinates(21.031, 105.841));
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đón', const Coordinates(21.04, 105.84));
+    check.complete(true);
+    await tester.pumpAndSettle();
+    expect(find.text('Phố cũ'), findsNothing);
+    await tester.scrollUntilVisible(find.text('Phố mới'), 100,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Phố mới'), findsOneWidget);
+    expect(lastMapPickup?.latitude, 21.04);
   });
 }

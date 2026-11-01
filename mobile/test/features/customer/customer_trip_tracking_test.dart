@@ -8,8 +8,10 @@ import 'package:gomove_mobile/core/storage/secure_storage_service.dart';
 import 'package:gomove_mobile/core/theme/app_motion.dart';
 import 'package:gomove_mobile/core/theme/app_theme.dart';
 import 'package:gomove_mobile/features/customer/domain/models/booking.dart';
+import 'package:gomove_mobile/features/customer/domain/models/place_search_result.dart';
 import 'package:gomove_mobile/features/customer/domain/models/quote.dart';
 import 'package:gomove_mobile/features/customer/domain/repositories/customer_repository.dart';
+import 'package:gomove_mobile/features/customer/domain/repositories/geocoding_repository.dart';
 import 'package:gomove_mobile/features/customer/domain/usecases/customer_usecases.dart';
 import 'package:gomove_mobile/features/customer/presentation/bloc/booking_status_cubit.dart';
 import 'package:gomove_mobile/features/customer/presentation/screens/booking_status_screen.dart';
@@ -93,6 +95,7 @@ TrackingSnapshot initialTracking() => tracking('DRIVER_ACCEPTED');
 CashPayment initialPayment() => payment('PENDING');
 
 class CustomerStub implements CustomerRepository {
+  Quote? quote;
   @override
   Future<Booking> getBooking(String publicId, {int? sessionGeneration}) async =>
       booking();
@@ -101,11 +104,50 @@ class CustomerStub implements CustomerRepository {
           {int? sessionGeneration}) =>
       throw UnimplementedError();
   @override
-  Future<Quote> getQuote(String publicId) => throw UnimplementedError();
+  Future<Quote> getQuote(String publicId) async =>
+      quote ?? (throw UnimplementedError());
   @override
   Future<Quote> requestQuote(QuoteRequest request) =>
       throw UnimplementedError();
 }
+
+class AddressGeocoder implements GeocodingRepository {
+  Future<PlaceSearchResult?> Function(Coordinates point)? reply;
+  int calls = 0;
+
+  @override
+  Future<List<PlaceSearchResult>> search(String query,
+          {int? sessionGeneration}) async =>
+      const [];
+
+  @override
+  Future<PlaceSearchResult?> reverse(Coordinates point,
+      {int? sessionGeneration}) {
+    calls++;
+    return reply?.call(point) ?? Future.value(null);
+  }
+}
+
+Quote addressQuote() => Quote(
+      publicId: booking().quotePublicId,
+      pickup: const Coordinates(21.0287, 105.8524),
+      dropoff: const Coordinates(21.0245, 105.8576),
+      vehicleType: VehicleType.motorbike,
+      distanceMeters: '1000',
+      durationSeconds: '300',
+      currency: 'VND',
+      baseFare: '12000',
+      distanceFare: '4500',
+      timeFare: '0',
+      surcharge: '0',
+      surgeAmount: '0',
+      discountAmount: '0',
+      roundingAdjustment: '0',
+      finalFare: '16500',
+      status: 'CONSUMED',
+      issuedAt: DateTime.utc(2026, 10, 16),
+      expiresAt: DateTime.utc(2026, 10, 16, 0, 1),
+    );
 
 class SessionStub extends Mock implements SecureStorageService {}
 
@@ -279,8 +321,12 @@ void main() {
     when(() => session.isCurrentSession(any())).thenAnswer((_) async => true);
   });
 
-  void registerScreenServices() {
-    sl.registerSingleton<GetBookingUseCase>(GetBookingUseCase(CustomerStub()));
+  void registerScreenServices({CustomerStub? customer}) {
+    final source = customer ?? CustomerStub();
+    sl.registerSingleton<GetBookingUseCase>(GetBookingUseCase(source));
+    if (source.quote != null) {
+      sl.registerSingleton<GetQuoteUseCase>(GetQuoteUseCase(source));
+    }
     sl.registerSingleton<TripRepository>(trips);
     sl.registerSingleton<SecureStorageService>(session);
     sl.registerSingleton<TripRealtimeClient>(realtime);
@@ -866,6 +912,103 @@ void main() {
     expect(find.text('Hoàn thành chuyến'), findsNothing);
     expect(trips.transitionCalls, 0);
     expect(trips.confirmCalls, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Booking addresses require authorized Quote and fresh resume',
+      (tester) async {
+    trips.value = tracking('DRIVER_ARRIVED');
+    final customer = CustomerStub()..quote = addressQuote();
+    final geocoder = AddressGeocoder()
+      ..reply = (point) async => PlaceSearchResult(
+          label: point.latitude == 21.0287 ? 'Hồ Hoàn Kiếm' : 'Bến xe Mỹ Đình',
+          coordinates: point);
+    registerScreenServices(customer: customer);
+    sl.registerSingleton<GeocodingRepository>(geocoder);
+    await tester.pumpWidget(MaterialApp(
+        home: BookingStatusScreen(
+            booking: booking(),
+            trackingMapBuilder: (_, __, ___) =>
+                const Text('Bản đồ thử nghiệm'))));
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+    await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('booking-address-card')), 150,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Điểm đón: Hồ Hoàn Kiếm'), findsOneWidget);
+    expect(find.text('Điểm đến: Bến xe Mỹ Đình'), findsOneWidget);
+    expect(geocoder.calls, 2);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    expect(find.text('Điểm đón: Hồ Hoàn Kiếm'), findsNothing);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    customer.quote = null;
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Điểm đón: Hồ Hoàn Kiếm'), findsNothing);
+    expect(geocoder.calls, 2);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    customer.quote = addressQuote();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+    await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('booking-address-card')), 150,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Điểm đón: Hồ Hoàn Kiếm'), findsOneWidget);
+    expect(geocoder.calls, 4);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Booking address rejects mismatched coordinates and new session',
+      (tester) async {
+    trips.value = tracking('IN_PROGRESS');
+    final customer = CustomerStub()..quote = addressQuote();
+    final geocoder = AddressGeocoder()
+      ..reply = (point) async => const PlaceSearchResult(
+          label: 'Sai tọa độ', coordinates: Coordinates(21.0, 105.0));
+    registerScreenServices(customer: customer);
+    sl.registerSingleton<GeocodingRepository>(geocoder);
+    var current = true;
+    when(() => session.isCurrentSession(any()))
+        .thenAnswer((_) async => current);
+    await tester.pumpWidget(MaterialApp(
+        home: BookingStatusScreen(
+            booking: booking(),
+            trackingMapBuilder: (_, __, ___) =>
+                const Text('Bản đồ thử nghiệm'))));
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+    await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('booking-address-card')), 150,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Sai tọa độ'), findsNothing);
+    expect(find.textContaining('Địa chỉ chưa khả dụng'), findsNWidgets(2));
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    current = false;
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const ValueKey('booking-address-card')), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 

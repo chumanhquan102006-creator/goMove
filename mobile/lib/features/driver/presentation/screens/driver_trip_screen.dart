@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../../../core/config/app_config.dart';
 import '../../../../core/di/injection.dart';
 import '../../../../core/storage/secure_storage_service.dart';
 import '../../../../core/theme/app_motion.dart';
 import '../../../customer/presentation/formatters.dart';
 import '../../../customer/domain/models/quote.dart';
+import '../../../customer/domain/repositories/geocoding_repository.dart';
 import '../../../customer/presentation/widgets/customer_map_source.dart';
 import '../../../trip/data/trip_realtime_client.dart';
 import '../../../trip/domain/models/trip_models.dart';
@@ -24,6 +26,8 @@ class DriverAcceptedBookingScreen extends StatefulWidget {
   final DriverOffer offer;
   final DriverCubit? driverCubit;
   final DriverTripCubit? tripCubit;
+  final GeocodingRepository? geocodingRepository;
+  final SecureStorageService? addressSession;
 
   /// Test seam; production renders exactly one native [DriverTripMap].
   final DriverTripMapBuilder? mapBuilder;
@@ -33,6 +37,8 @@ class DriverAcceptedBookingScreen extends StatefulWidget {
       required this.offer,
       this.driverCubit,
       this.tripCubit,
+      this.geocodingRepository,
+      this.addressSession,
       this.mapBuilder});
 
   @override
@@ -43,6 +49,13 @@ class DriverAcceptedBookingScreen extends StatefulWidget {
 class _DriverAcceptedBookingScreenState
     extends State<DriverAcceptedBookingScreen> with WidgetsBindingObserver {
   late final DriverTripCubit _cubit;
+  StreamSubscription<DriverTripState>? _tripStates;
+  TrackingSnapshot? _lastTracking;
+  String? _pickupAddress;
+  String? _dropoffAddress;
+  int _addressRequest = 0;
+  bool _addressesRequested = false;
+  bool _awaitingFreshTracking = false;
 
   @override
   void initState() {
@@ -58,7 +71,100 @@ class _DriverAcceptedBookingScreenState
           onCompleted: widget.driverCubit?.markTripCompleted,
           onSettled: widget.driverCubit?.finishSettledBooking,
         );
+    _tripStates = _cubit.stream.listen(_onTripState);
     unawaited(_cubit.initialize());
+  }
+
+  void _clearAddresses() {
+    _addressRequest++;
+    _addressesRequested = false;
+    if (mounted && (_pickupAddress != null || _dropoffAddress != null)) {
+      setState(() {
+        _pickupAddress = null;
+        _dropoffAddress = null;
+      });
+    }
+  }
+
+  void _onTripState(DriverTripState state) {
+    final freshTracking = !identical(_lastTracking, state.tracking);
+    _lastTracking = state.tracking;
+    if (!state.foreground || state.sessionEnded || !_verifiedBooking(state)) {
+      _clearAddresses();
+      return;
+    }
+    if (_awaitingFreshTracking && !freshTracking) return;
+    if (!freshTracking ||
+        _addressesRequested ||
+        !DriverTripMap.hasValidPoints(widget.offer)) {
+      return;
+    }
+    _awaitingFreshTracking = false;
+    _addressesRequested = true;
+    unawaited(_loadAddresses());
+  }
+
+  Future<void> _loadAddresses() async {
+    if (widget.geocodingRepository == null &&
+        sl.isRegistered<AppConfig>() &&
+        sl<AppConfig>().isMock) {
+      return;
+    }
+    final repository = widget.geocodingRepository ??
+        (sl.isRegistered<GeocodingRepository>()
+            ? sl<GeocodingRepository>()
+            : null);
+    final session = widget.addressSession ??
+        (sl.isRegistered<SecureStorageService>()
+            ? sl<SecureStorageService>()
+            : null);
+    if (repository == null || session == null) return;
+    final request = ++_addressRequest;
+    try {
+      final snapshot = await session.getSession();
+      if (!mounted ||
+          request != _addressRequest ||
+          snapshot.accessToken == null ||
+          snapshot.generation != _cubit.authorizedSessionGeneration ||
+          !_cubit.state.foreground ||
+          !_verifiedBooking(_cubit.state)) {
+        return;
+      }
+      Future<String?> reverse(Coordinates point) async {
+        try {
+          final place = await repository.reverse(point,
+              sessionGeneration: snapshot.generation);
+          if (place == null ||
+              place.coordinates.latitude != point.latitude ||
+              place.coordinates.longitude != point.longitude) {
+            return null;
+          }
+          final label = place.label.trim();
+          return label.isEmpty ? null : label;
+        } catch (_) {
+          return null;
+        }
+      }
+
+      final pickup = await reverse(Coordinates(
+          widget.offer.pickupLatitude, widget.offer.pickupLongitude));
+      final dropoff = await reverse(Coordinates(
+          widget.offer.dropoffLatitude, widget.offer.dropoffLongitude));
+      if (!mounted ||
+          request != _addressRequest ||
+          snapshot.generation != _cubit.authorizedSessionGeneration ||
+          !_cubit.state.foreground ||
+          !_verifiedBooking(_cubit.state) ||
+          !await session.isCurrentSession(snapshot.generation)) {
+        return;
+      }
+      setState(() {
+        _pickupAddress = pickup;
+        _dropoffAddress = dropoff;
+      });
+    } catch (_) {
+      // Provider failure must not block trip controls, GPS or CASH.
+    }
   }
 
   @override
@@ -66,6 +172,8 @@ class _DriverAcceptedBookingScreenState
     if (state == AppLifecycleState.resumed) {
       unawaited(_cubit.resume());
     } else {
+      _awaitingFreshTracking = true;
+      _clearAddresses();
       widget.driverCubit?.setTripChannelActive(false);
       unawaited(_cubit.pause());
     }
@@ -74,6 +182,8 @@ class _DriverAcceptedBookingScreenState
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _addressRequest++;
+    unawaited(_tripStates?.cancel());
     widget.driverCubit?.setTripChannelActive(false);
     unawaited(_cubit.close());
     super.dispose();
@@ -472,11 +582,31 @@ class _DriverAcceptedBookingScreenState
                   subtitle:
                       const Text('Tọa độ từ đề nghị chuyến đã được xác minh'),
                   children: [
-                    _routeLine(context, Icons.trip_origin,
-                        'Điểm đón: ${widget.offer.pickupLatitude}, ${widget.offer.pickupLongitude}'),
+                    _routeLine(
+                        context,
+                        Icons.trip_origin,
+                        'Điểm đón',
+                        state.foreground && !_awaitingFreshTracking
+                            ? _pickupAddress
+                            : null,
+                        '${widget.offer.pickupLatitude}, ${widget.offer.pickupLongitude}'),
                     const SizedBox(height: 10),
-                    _routeLine(context, Icons.location_on_outlined,
-                        'Điểm đến: ${widget.offer.dropoffLatitude}, ${widget.offer.dropoffLongitude}'),
+                    _routeLine(
+                        context,
+                        Icons.location_on_outlined,
+                        'Điểm đến',
+                        state.foreground && !_awaitingFreshTracking
+                            ? _dropoffAddress
+                            : null,
+                        '${widget.offer.dropoffLatitude}, ${widget.offer.dropoffLongitude}'),
+                    if (state.foreground &&
+                        !_awaitingFreshTracking &&
+                        (_pickupAddress != null || _dropoffAddress != null))
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text('© OpenStreetMap contributors',
+                            style: Theme.of(context).textTheme.bodySmall),
+                      ),
                   ],
                 ),
               ] else
@@ -512,12 +642,17 @@ class _DriverAcceptedBookingScreenState
         ),
       );
 
-  Widget _routeLine(BuildContext context, IconData icon, String label) => Row(
+  Widget _routeLine(BuildContext context, IconData icon, String title,
+          String? address, String coordinates) =>
+      Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Icon(icon, size: 20, color: Theme.of(context).colorScheme.primary),
           const SizedBox(width: 10),
-          Expanded(child: Text(label)),
+          Expanded(
+              child: Text(address == null
+                  ? '$title: $coordinates · Địa chỉ chưa khả dụng'
+                  : '$title: $address')),
         ],
       );
 

@@ -1,4 +1,7 @@
 import 'package:bloc_test/bloc_test.dart';
+import 'package:gomove_mobile/core/storage/secure_storage_service.dart';
+import 'package:gomove_mobile/features/customer/domain/models/place_search_result.dart';
+import 'package:gomove_mobile/features/customer/domain/repositories/geocoding_repository.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -14,6 +17,25 @@ const _quoteId = '550e8400-e29b-41d4-a716-446655440001';
 
 class _MockBookingCubit extends MockCubit<BookingState>
     implements BookingCubit {}
+
+class _Session extends Mock implements SecureStorageService {}
+
+class _Geocoder implements GeocodingRepository {
+  Future<PlaceSearchResult?> Function(Coordinates point)? reply;
+  int reverseCalls = 0;
+
+  @override
+  Future<List<PlaceSearchResult>> search(String query,
+          {int? sessionGeneration}) async =>
+      const [];
+
+  @override
+  Future<PlaceSearchResult?> reverse(Coordinates point,
+      {int? sessionGeneration}) {
+    reverseCalls++;
+    return reply?.call(point) ?? Future.value(null);
+  }
+}
 
 Quote _quote(DateTime expiresAt) => Quote(
       publicId: _quoteId,
@@ -36,6 +58,10 @@ Quote _quote(DateTime expiresAt) => Quote(
       expiresAt: expiresAt,
     );
 
+Future<void> _showText(WidgetTester tester, String value) =>
+    tester.scrollUntilVisible(find.text(value), 120,
+        scrollable: find.byType(Scrollable).first);
+
 void main() {
   late _MockBookingCubit cubit;
 
@@ -48,7 +74,11 @@ void main() {
   });
 
   Widget screen(Quote quote, DateTime Function() now,
-          {bool reducedMotion = false}) =>
+          {bool reducedMotion = false,
+          GeocodingRepository? geocodingRepository,
+          SecureStorageService? addressSession,
+          String? pickupLabel,
+          String? dropoffLabel}) =>
       MaterialApp(
         builder: (context, child) => reducedMotion
             ? MediaQuery(
@@ -57,8 +87,88 @@ void main() {
               )
             : child!,
         home: BlocProvider<BookingCubit>.value(
-            value: cubit, child: QuoteReviewScreen(quote: quote, now: now)),
+            value: cubit,
+            child: QuoteReviewScreen(
+                quote: quote,
+                now: now,
+                geocodingRepository: geocodingRepository,
+                routeSession: addressSession,
+                pickupLabel: pickupLabel,
+                dropoffLabel: dropoffLabel)),
       );
+
+  testWidgets('Quote shows selected address labels without changing fare',
+      (tester) async {
+    final now = DateTime.utc(2026, 10, 22, 12);
+    final session = _Session();
+    final geocoder = _Geocoder();
+    when(() => session.getSession()).thenAnswer(
+        (_) async => const AuthSessionSnapshot(1, 'access', 'refresh'));
+    await tester.pumpWidget(screen(
+        _quote(now.add(const Duration(seconds: 60))), () => now,
+        geocodingRepository: geocoder,
+        addressSession: session,
+        pickupLabel: 'Hồ Hoàn Kiếm',
+        dropoffLabel: 'Bến xe Mỹ Đình'));
+    expect(find.text('Hồ Hoàn Kiếm'), findsOneWidget);
+    expect(find.text('Bến xe Mỹ Đình'), findsOneWidget);
+    expect(find.text('16.500 VND'), findsOneWidget);
+    expect(geocoder.reverseCalls, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Quote ignores reverse results for different coordinates',
+      (tester) async {
+    final now = DateTime.utc(2026, 10, 22, 12);
+    final session = _Session();
+    final geocoder = _Geocoder();
+    when(() => session.getSession()).thenAnswer(
+        (_) async => const AuthSessionSnapshot(1, 'access', 'refresh'));
+    when(() => session.isCurrentSession(1)).thenAnswer((_) async => true);
+    geocoder.reply = (point) async => PlaceSearchResult(
+        label: point.latitude == 21.0287 ? 'Sai tọa độ' : 'Điểm đến thật',
+        coordinates:
+            point.latitude == 21.0287 ? const Coordinates(21.0, 105.0) : point);
+    await tester.pumpWidget(screen(
+        _quote(now.add(const Duration(seconds: 60))), () => now,
+        geocodingRepository: geocoder, addressSession: session));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Sai tọa độ'), findsNothing);
+    expect(find.text('Điểm đến thật'), findsOneWidget);
+    expect(find.text('Địa chỉ chưa khả dụng'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Quote hides old address after background and session change',
+      (tester) async {
+    final now = DateTime.utc(2026, 10, 22, 12);
+    final session = _Session();
+    final geocoder = _Geocoder();
+    var generation = 1;
+    when(() => session.getSession()).thenAnswer(
+        (_) async => AuthSessionSnapshot(generation, 'access', 'refresh'));
+    when(() => session.isCurrentSession(any())).thenAnswer((_) async => true);
+    await tester.pumpWidget(screen(
+        _quote(now.add(const Duration(seconds: 60))), () => now,
+        geocodingRepository: geocoder,
+        addressSession: session,
+        pickupLabel: 'Điểm đón A'));
+    await tester.pump();
+    expect(find.text('Điểm đón A'), findsOneWidget);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    expect(find.text('Điểm đón A'), findsNothing);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    generation = 2;
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(find.text('Điểm đón A'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 
   test('VND groups whole totals and preserves server fractional precision', () {
     expect(vnd('18520.00'), '18.520 VND');
@@ -78,14 +188,18 @@ void main() {
     expect(find.text('1.00 km'), findsOneWidget);
     expect(find.text('5 phút'), findsOneWidget);
     expect(find.text('16.500 VND'), findsOneWidget);
+    await _showText(tester, 'Còn 60 giây để xác nhận');
     expect(find.text('Còn 60 giây để xác nhận'), findsOneWidget);
+    await _showText(tester, 'Xác nhận đặt xe');
     expect(find.text('Xác nhận đặt xe'), findsOneWidget);
 
+    await _showText(tester, 'Chi tiết giá');
     await tester.tap(find.text('Chi tiết giá'));
     await tester.pumpAndSettle();
     expect(find.text('4.500,50 VND'), findsOneWidget);
     expect(find.text('-500 VND'), findsOneWidget);
     expect(find.text('-0,50 VND'), findsOneWidget);
+    await _showText(tester, 'Xác nhận đặt xe');
     await tester.tap(find.text('Xác nhận đặt xe'));
     verify(() => cubit.submit(_quoteId)).called(1);
     await tester.pumpWidget(const SizedBox.shrink());
@@ -96,11 +210,13 @@ void main() {
     var now = DateTime.utc(2026, 10, 22, 12);
     final quote = _quote(now.add(const Duration(seconds: 2)));
     await tester.pumpWidget(screen(quote, () => now));
+    await _showText(tester, 'Còn 2 giây để xác nhận');
     expect(find.text('Còn 2 giây để xác nhận'), findsOneWidget);
 
     now = quote.expiresAt;
     await tester.pump(const Duration(seconds: 1));
     expect(find.text('Báo giá đã hết hạn'), findsOneWidget);
+    await _showText(tester, 'Lấy báo giá mới');
     expect(find.text('Lấy báo giá mới'), findsOneWidget);
     expect(tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
         isNull);
@@ -130,11 +246,13 @@ void main() {
     var now = DateTime.utc(2026, 10, 22, 12);
     final quote = _quote(now.add(const Duration(milliseconds: 250)));
     await tester.pumpWidget(screen(quote, () => now));
+    await _showText(tester, 'Còn 1 giây để xác nhận');
     expect(find.text('Còn 1 giây để xác nhận'), findsOneWidget);
 
     now = quote.expiresAt;
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('Báo giá đã hết hạn'), findsOneWidget);
+    await _showText(tester, 'Lấy báo giá mới');
     expect(tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
         isNull);
     verifyNever(() => cubit.submit(any()));
@@ -146,12 +264,14 @@ void main() {
     var now = DateTime.utc(2026, 10, 22, 12);
     final quote = _quote(now.add(const Duration(milliseconds: 500)));
     await tester.pumpWidget(screen(quote, () => now));
+    await _showText(tester, 'Xác nhận đặt xe');
     expect(tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
         isNotNull);
 
     now = quote.expiresAt;
     await tester.tap(find.text('Xác nhận đặt xe'));
     await tester.pump();
+    await _showText(tester, 'Báo giá đã hết hạn');
     expect(find.text('Báo giá đã hết hạn'), findsOneWidget);
     verifyNever(() => cubit.submit(any()));
     await tester.pumpWidget(const SizedBox.shrink());
@@ -182,7 +302,9 @@ void main() {
     await tester.pumpWidget(
         screen(_quote(now.subtract(const Duration(seconds: 1))), () => now));
 
+    await _showText(tester, 'Báo giá đã hết hạn');
     expect(find.text('Báo giá đã hết hạn'), findsOneWidget);
+    await _showText(tester, 'Kiểm tra lại yêu cầu đặt xe');
     expect(find.text('Kiểm tra lại yêu cầu đặt xe'), findsOneWidget);
     await tester.tap(find.text('Kiểm tra lại yêu cầu đặt xe'));
     verify(() => cubit.submit(_quoteId)).called(1);
@@ -200,8 +322,12 @@ void main() {
     await tester.pumpWidget(
         screen(_quote(now.add(const Duration(seconds: 60))), () => now));
 
+    await tester.scrollUntilVisible(
+        find.textContaining('yêu cầu đặt xe khác đang chờ xác minh'), 120,
+        scrollable: find.byType(Scrollable).first);
     expect(find.textContaining('yêu cầu đặt xe khác đang chờ xác minh'),
         findsOneWidget);
+    await _showText(tester, 'Xác nhận đặt xe');
     expect(tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
         isNull);
     verifyNever(() => cubit.submit(any()));
@@ -220,6 +346,7 @@ void main() {
     await tester.pumpWidget(
         screen(_quote(now.add(const Duration(seconds: 60))), () => now));
     expect(tester.takeException(), isNull);
+    await _showText(tester, 'Xác nhận đặt xe');
     expect(find.text('Xác nhận đặt xe'), findsOneWidget);
     await tester.scrollUntilVisible(find.text('Chi tiết giá'), 180,
         scrollable: find.byType(Scrollable).first);

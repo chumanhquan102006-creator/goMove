@@ -37,6 +37,14 @@ gomove:
       base-url: ${OSRM_BASE_URL:http://localhost:5000}
       connect-timeout: 2s
       read-timeout: 5s
+  geocoding:
+    # Photon public demo is for light academic use; replace this URL for larger traffic.
+    base-url: ${GEOCODING_BASE_URL:https://photon.komoot.io}
+    connect-timeout: 2s
+    read-timeout: 4s
+    # In-memory per authenticated account, shared by search and reverse lookup.
+    max-requests: ${GEOCODING_MAX_REQUESTS:30}
+    rate-window: ${GEOCODING_RATE_WINDOW:60s}
   pricing:
     engine-version: MVP_V1
     # Academic demonstration tariffs in VND; not commercial ride-hailing prices.

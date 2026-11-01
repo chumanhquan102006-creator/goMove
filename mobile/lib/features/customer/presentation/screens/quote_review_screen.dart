@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../../../core/config/app_config.dart';
 
 import '../../../../core/di/injection.dart';
 import '../../../../core/storage/secure_storage_service.dart';
@@ -9,6 +10,7 @@ import '../../../../core/theme/app_motion.dart';
 import '../../../trip/domain/repositories/road_route_repository.dart';
 import '../../../trip/presentation/widgets/authorized_road_route.dart';
 import '../../domain/models/quote.dart';
+import '../../domain/repositories/geocoding_repository.dart';
 import '../bloc/booking_cubit.dart';
 import '../formatters.dart';
 import 'booking_status_screen.dart';
@@ -19,25 +21,41 @@ class QuoteReviewScreen extends StatefulWidget {
   final DateTime Function()? now;
   final RoadRouteRepository? routeRepository;
   final SecureStorageService? routeSession;
+  final GeocodingRepository? geocodingRepository;
+  final String? pickupLabel;
+  final String? dropoffLabel;
   const QuoteReviewScreen(
       {super.key,
       required this.quote,
       this.now,
       this.routeRepository,
-      this.routeSession});
+      this.routeSession,
+      this.geocodingRepository,
+      this.pickupLabel,
+      this.dropoffLabel});
 
   @override
   State<QuoteReviewScreen> createState() => _QuoteReviewScreenState();
 }
 
-class _QuoteReviewScreenState extends State<QuoteReviewScreen> {
+class _QuoteReviewScreenState extends State<QuoteReviewScreen>
+    with WidgetsBindingObserver {
   Timer? _timer;
   Timer? _expiryTimer;
   bool _fareVisible = false;
+  String? _pickupAddress;
+  String? _dropoffAddress;
+  int _addressRequest = 0;
+  int? _sessionGeneration;
+  bool _foreground = true;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _pickupAddress = _cleanLabel(widget.pickupLabel);
+    _dropoffAddress = _cleanLabel(widget.dropoffLabel);
+    unawaited(_loadAddresses());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) setState(() => _fareVisible = true);
     });
@@ -57,10 +75,137 @@ class _QuoteReviewScreenState extends State<QuoteReviewScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _addressRequest++;
     _timer?.cancel();
     _expiryTimer?.cancel();
     super.dispose();
   }
+
+  @override
+  void didUpdateWidget(covariant QuoteReviewScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.quote.publicId != widget.quote.publicId ||
+        oldWidget.quote.pickup.latitude != widget.quote.pickup.latitude ||
+        oldWidget.quote.pickup.longitude != widget.quote.pickup.longitude ||
+        oldWidget.quote.dropoff.latitude != widget.quote.dropoff.latitude ||
+        oldWidget.quote.dropoff.longitude != widget.quote.dropoff.longitude) {
+      _addressRequest++;
+      _pickupAddress = _cleanLabel(widget.pickupLabel);
+      _dropoffAddress = _cleanLabel(widget.dropoffLabel);
+      unawaited(_loadAddresses());
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _foreground = true;
+      unawaited(_loadAddresses());
+    } else {
+      _foreground = false;
+      _addressRequest++;
+      setState(() {
+        _pickupAddress = null;
+        _dropoffAddress = null;
+      });
+    }
+  }
+
+  String? _cleanLabel(String? value) {
+    final label = value?.trim();
+    return label == null || label.isEmpty ? null : label;
+  }
+
+  Future<void> _loadAddresses() async {
+    if (widget.geocodingRepository == null &&
+        sl.isRegistered<AppConfig>() &&
+        sl<AppConfig>().isMock) {
+      return;
+    }
+    final repository = widget.geocodingRepository ??
+        (sl.isRegistered<GeocodingRepository>()
+            ? sl<GeocodingRepository>()
+            : null);
+    final session = widget.routeSession ??
+        (sl.isRegistered<SecureStorageService>()
+            ? sl<SecureStorageService>()
+            : null);
+    if (!_foreground || session == null) return;
+    final request = ++_addressRequest;
+    final quote = widget.quote;
+    try {
+      final snapshot = await session.getSession();
+      if (!mounted ||
+          !_foreground ||
+          request != _addressRequest ||
+          snapshot.accessToken == null) {
+        return;
+      }
+      if (_sessionGeneration != null &&
+          _sessionGeneration != snapshot.generation) {
+        setState(() {
+          _pickupAddress = null;
+          _dropoffAddress = null;
+        });
+        return;
+      }
+      _sessionGeneration ??= snapshot.generation;
+      if (repository == null ||
+          (_pickupAddress != null && _dropoffAddress != null)) {
+        return;
+      }
+      Future<String?> reverse(Coordinates point) async {
+        try {
+          final place = await repository.reverse(point,
+              sessionGeneration: snapshot.generation);
+          if (place == null ||
+              place.coordinates.latitude != point.latitude ||
+              place.coordinates.longitude != point.longitude) {
+            return null;
+          }
+          return _cleanLabel(place.label);
+        } catch (_) {
+          return null;
+        }
+      }
+
+      final pickup = _pickupAddress ?? await reverse(quote.pickup);
+      final dropoff = _dropoffAddress ?? await reverse(quote.dropoff);
+      if (!mounted ||
+          !_foreground ||
+          request != _addressRequest ||
+          !await session.isCurrentSession(snapshot.generation)) {
+        return;
+      }
+      setState(() {
+        _pickupAddress = pickup;
+        _dropoffAddress = dropoff;
+      });
+    } catch (_) {
+      // An unavailable address must never block an accepted fare or route.
+    }
+  }
+
+  Widget _addressLine(BuildContext context, IconData icon, String title,
+          String? address, Coordinates point) =>
+      Padding(
+        padding: const EdgeInsets.symmetric(vertical: 5),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Icon(icon, size: 20, color: Theme.of(context).colorScheme.primary),
+          const SizedBox(width: 10),
+          Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                Text(title, style: Theme.of(context).textTheme.labelLarge),
+                Text(address ?? 'Địa chỉ chưa khả dụng'),
+                if (address == null)
+                  Text('${point.latitude}, ${point.longitude}',
+                      style: Theme.of(context).textTheme.bodySmall),
+              ])),
+        ]),
+      );
 
   Widget _fareLine(BuildContext context, String label, String amount) {
     final textTheme = Theme.of(context).textTheme;
@@ -146,6 +291,24 @@ class _QuoteReviewScreenState extends State<QuoteReviewScreen> {
                   style: textTheme.bodySmall),
               const SizedBox(height: 12),
             ],
+            Card(
+              key: const ValueKey('quote-address-card'),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _addressLine(context, Icons.trip_origin, 'Điểm đón',
+                          _pickupAddress, quote.pickup),
+                      _addressLine(context, Icons.location_on_outlined,
+                          'Điểm đến', _dropoffAddress, quote.dropoff),
+                      if (_pickupAddress != null || _dropoffAddress != null)
+                        Text('© OpenStreetMap contributors',
+                            style: textTheme.bodySmall),
+                    ]),
+              ),
+            ),
+            const SizedBox(height: 12),
             AnimatedOpacity(
               key: const ValueKey('quote-fare-reveal'),
               opacity: revealFare ? 1 : 0,

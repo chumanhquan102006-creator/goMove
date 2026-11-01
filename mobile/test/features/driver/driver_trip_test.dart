@@ -4,6 +4,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gomove_mobile/core/error/exceptions.dart';
 import 'package:gomove_mobile/core/storage/secure_storage_service.dart';
 import 'package:gomove_mobile/core/theme/app_motion.dart';
+import 'package:gomove_mobile/features/customer/domain/models/place_search_result.dart';
+import 'package:gomove_mobile/features/customer/domain/models/quote.dart';
+import 'package:gomove_mobile/features/customer/domain/repositories/geocoding_repository.dart';
 import 'package:gomove_mobile/features/driver/data/location/driver_location_source.dart';
 import 'package:gomove_mobile/features/driver/domain/models/driver_models.dart';
 import 'package:gomove_mobile/features/driver/presentation/bloc/driver_trip_cubit.dart';
@@ -15,6 +18,27 @@ import 'package:gomove_mobile/features/trip/domain/repositories/trip_repository.
 import 'package:mocktail/mocktail.dart';
 
 class _Session extends Mock implements SecureStorageService {}
+
+class _Geocoder implements GeocodingRepository {
+  int calls = 0;
+  Future<PlaceSearchResult?> Function(Coordinates point)? reply;
+
+  @override
+  Future<List<PlaceSearchResult>> search(String query,
+          {int? sessionGeneration}) async =>
+      const [];
+
+  @override
+  Future<PlaceSearchResult?> reverse(Coordinates point,
+      {int? sessionGeneration}) {
+    calls++;
+    return reply?.call(point) ??
+        Future.value(PlaceSearchResult(
+            label:
+                point.latitude == 21.0287 ? 'Hồ Hoàn Kiếm' : 'Bến xe Mỹ Đình',
+            coordinates: point));
+  }
+}
 
 class _Repository implements TripRepository {
   String status = 'DRIVER_ACCEPTED';
@@ -578,6 +602,147 @@ void main() {
     await tester.pump();
     expect(find.byKey(const ValueKey('driver-customer-card')), findsNothing);
     expect(screenCubit.state.sessionEnded, isTrue);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Driver addresses require assigned tracking and fresh resume',
+      (tester) async {
+    final geocoder = _Geocoder();
+    final screenCubit = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        pollInterval: const Duration(hours: 1),
+        gpsInterval: const Duration(hours: 1));
+    await tester.pumpWidget(MaterialApp(
+        home: DriverAcceptedBookingScreen(
+            offer: _offer(),
+            tripCubit: screenCubit,
+            geocodingRepository: geocoder,
+            addressSession: session,
+            mapBuilder: _fakeMap)));
+    await tester.pump();
+    await tester.pump();
+    await tester.drag(find.byKey(const ValueKey('driver-trip-sheet-scroll')),
+        const Offset(0, -350));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Điểm đón và điểm đến'), 80,
+        scrollable: find.byType(Scrollable).first);
+    await tester.tap(find.text('Điểm đón và điểm đến'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Điểm đón: Hồ Hoàn Kiếm'), findsOneWidget);
+    expect(find.textContaining('Điểm đến: Bến xe Mỹ Đình'), findsOneWidget);
+    expect(geocoder.calls, 2);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    expect(find.textContaining('Điểm đón: Hồ Hoàn Kiếm'), findsNothing);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    await tester.pump();
+    expect(find.textContaining('Điểm đón: Hồ Hoàn Kiếm'), findsOneWidget);
+    expect(geocoder.calls, 4);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Unassigned Driver never resolves private Booking addresses',
+      (tester) async {
+    repository.trackingReply = (_) async => const TrackingSnapshot(
+        bookingPublicId: 'booking-1', status: 'DRIVER_ACCEPTED');
+    final geocoder = _Geocoder();
+    final screenCubit = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        pollInterval: const Duration(hours: 1));
+    await tester.pumpWidget(MaterialApp(
+        home: DriverAcceptedBookingScreen(
+            offer: _offer(),
+            tripCubit: screenCubit,
+            geocodingRepository: geocoder,
+            addressSession: session,
+            mapBuilder: _fakeMap)));
+    await tester.pump();
+    await tester.pump();
+    expect(geocoder.calls, 0);
+    expect(find.text('Đang xác minh thông tin chuyến với máy chủ.'),
+        findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Late Driver address cannot survive background account switch',
+      (tester) async {
+    final pending = Completer<PlaceSearchResult?>();
+    final geocoder = _Geocoder()..reply = (_) => pending.future;
+    final screenCubit = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        pollInterval: const Duration(hours: 1));
+    await tester.pumpWidget(MaterialApp(
+        home: DriverAcceptedBookingScreen(
+            offer: _offer(),
+            tripCubit: screenCubit,
+            geocodingRepository: geocoder,
+            addressSession: session,
+            mapBuilder: _fakeMap)));
+    await tester.pump();
+    await tester.pump();
+    expect(geocoder.calls, 1);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    generation = 2;
+    pending.complete(const PlaceSearchResult(
+        label: 'Địa chỉ của phiên cũ',
+        coordinates: Coordinates(21.0287, 105.8524)));
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    await tester.pump();
+    expect(find.textContaining('Địa chỉ của phiên cũ'), findsNothing);
+    expect(screenCubit.state.sessionEnded, isTrue);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Driver address request stays on tracking session generation',
+      (tester) async {
+    var sessionReads = 0;
+    when(() => session.getSession()).thenAnswer(
+        (_) async => AuthSessionSnapshot(++sessionReads, 'access', 'refresh'));
+    final geocoder = _Geocoder();
+    final screenCubit = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        pollInterval: const Duration(hours: 1));
+    await tester.pumpWidget(MaterialApp(
+        home: DriverAcceptedBookingScreen(
+            offer: _offer(),
+            tripCubit: screenCubit,
+            geocodingRepository: geocoder,
+            addressSession: session,
+            mapBuilder: _fakeMap)));
+    await tester.pump();
+    await tester.pump();
+    expect(screenCubit.authorizedSessionGeneration, 1);
+    expect(sessionReads, greaterThanOrEqualTo(2));
+    expect(geocoder.calls, 0);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 

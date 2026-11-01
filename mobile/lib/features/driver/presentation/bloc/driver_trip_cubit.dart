@@ -102,6 +102,10 @@ class DriverTripCubit extends Cubit<DriverTripState> {
   final Duration pollInterval;
   final Duration gpsInterval;
   int? _generation;
+
+  /// The session that authorized the current tracking read. Address metadata
+  /// must never be resolved using a newer account's session.
+  int? get authorizedSessionGeneration => _generation;
   int _revision = 0;
   int _participantRevision = 0;
   int _connectionRevision = 0;

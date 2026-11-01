@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../../../core/config/app_config.dart';
 
 import '../../../../core/di/injection.dart';
 import '../../../../core/storage/secure_storage_service.dart';
@@ -10,6 +11,7 @@ import '../../../trip/domain/repositories/trip_repository.dart';
 import '../../../trip/presentation/widgets/authorized_road_route.dart';
 import '../../domain/models/booking.dart';
 import '../../domain/models/quote.dart';
+import '../../domain/repositories/geocoding_repository.dart';
 import '../../domain/usecases/customer_usecases.dart';
 import '../bloc/booking_status_cubit.dart';
 import '../formatters.dart';
@@ -100,6 +102,8 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
   late final BookingStatusCubit _cubit;
   Coordinates? _pickup;
   Coordinates? _dropoff;
+  String? _pickupAddress;
+  String? _dropoffAddress;
   int _pointsRequest = 0;
 
   @override
@@ -142,6 +146,40 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
       setState(() {
         _pickup = quote.pickup;
         _dropoff = quote.dropoff;
+        _pickupAddress = null;
+        _dropoffAddress = null;
+      });
+      if (!sl.isRegistered<GeocodingRepository>() ||
+          sl.isRegistered<AppConfig>() && sl<AppConfig>().isMock) {
+        return;
+      }
+      final repository = sl<GeocodingRepository>();
+      Future<String?> reverse(Coordinates point) async {
+        try {
+          final place = await repository.reverse(point,
+              sessionGeneration: snapshot.generation);
+          if (place == null ||
+              place.coordinates.latitude != point.latitude ||
+              place.coordinates.longitude != point.longitude) {
+            return null;
+          }
+          final label = place.label.trim();
+          return label.isEmpty ? null : label;
+        } catch (_) {
+          return null;
+        }
+      }
+
+      final pickupAddress = await reverse(quote.pickup);
+      final dropoffAddress = await reverse(quote.dropoff);
+      if (!mounted ||
+          request != _pointsRequest ||
+          !await session.isCurrentSession(snapshot.generation)) {
+        return;
+      }
+      setState(() {
+        _pickupAddress = pickupAddress;
+        _dropoffAddress = dropoffAddress;
       });
     } catch (_) {
       // A failed authorized Quote read cannot block Booking or CASH details.
@@ -155,10 +193,19 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
       setState(() {
         _pickup = null;
         _dropoff = null;
+        _pickupAddress = null;
+        _dropoffAddress = null;
       });
       _loadPoints();
     } else {
       _cubit.stop();
+      _pointsRequest++;
+      setState(() {
+        _pickup = null;
+        _dropoff = null;
+        _pickupAddress = null;
+        _dropoffAddress = null;
+      });
     }
   }
 
@@ -457,6 +504,9 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                               state.status != 'COMPLETED' &&
                               state.tracking?.assignedDriver != null)
                             _assignedDriverCard(context, state.tracking!),
+                          if (_pickup != null && _dropoff != null)
+                            _bookingAddressCard(context, _pickup!, _dropoff!,
+                                _pickupAddress, _dropoffAddress),
                           const SizedBox(height: 14),
                           Card(
                             child: Column(children: [
@@ -671,3 +721,29 @@ Widget _assignedDriverCard(BuildContext context, TrackingSnapshot tracking) {
     ),
   );
 }
+
+Widget _bookingAddressCard(BuildContext context, Coordinates pickup,
+        Coordinates dropoff, String? pickupAddress, String? dropoffAddress) =>
+    Card(
+      key: const ValueKey('booking-address-card'),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Điểm đón và điểm đến',
+              style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 6),
+          Text('Điểm đón: ${pickupAddress ?? 'Địa chỉ chưa khả dụng'}'),
+          if (pickupAddress == null)
+            Text('${pickup.latitude}, ${pickup.longitude}',
+                style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 4),
+          Text('Điểm đến: ${dropoffAddress ?? 'Địa chỉ chưa khả dụng'}'),
+          if (dropoffAddress == null)
+            Text('${dropoff.latitude}, ${dropoff.longitude}',
+                style: Theme.of(context).textTheme.bodySmall),
+          if (pickupAddress != null || dropoffAddress != null)
+            Text('© OpenStreetMap contributors',
+                style: Theme.of(context).textTheme.bodySmall),
+        ]),
+      ),
+    );

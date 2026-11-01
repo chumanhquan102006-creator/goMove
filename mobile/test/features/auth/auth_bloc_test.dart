@@ -225,5 +225,25 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       expect(bloc.state, const AuthenticatedState(tUser));
     });
+
+    test('Expired A Admin event cannot log out a newer B session', () async {
+      const admin = User(publicId: 'admin-a', phoneNumber: '0900000001',
+          fullName: 'Admin A', role: UserRole.admin);
+      fakeRepository.loginResult = const Success(admin);
+      final bloc = buildBloc();
+      addTearDown(bloc.close);
+      bloc.add(const AuthLoginSubmitted(identifier: 'A', password: 'password'));
+      await bloc.stream.firstWhere((state) => state is AuthenticatedState);
+      fakeRepository.loginResult = const Success(tUser);
+      bloc.add(const AuthLoginSubmitted(identifier: 'B', password: 'password'));
+      await bloc.stream.firstWhere((state) => state is AuthenticatedState &&
+          state.user.publicId == tUser.publicId);
+      bloc.add(AuthForceUnauthenticated(admin.publicId));
+      await Future<void>.delayed(Duration.zero);
+      expect(bloc.state, const AuthenticatedState(tUser));
+      bloc.add(AuthForceUnauthenticated(tUser.publicId));
+      await bloc.stream.firstWhere((state) => state is UnauthenticatedState);
+      expect(bloc.state, const UnauthenticatedState());
+    });
   });
 }

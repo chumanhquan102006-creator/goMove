@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../../core/theme/app_motion.dart';
 import '../../../../features/customer/presentation/screens/customer_home_screen.dart';
+import '../../../../features/admin/presentation/admin_home_screen.dart';
 import '../../../../features/driver/presentation/screens/driver_home_screen.dart';
 import '../../domain/entities/user.dart';
 import '../bloc/auth_bloc.dart';
@@ -29,6 +30,7 @@ class RoleHome extends StatelessWidget {
 Widget homeForRole(User user) => switch (user.role) {
       UserRole.customer => CustomerHomeScreen(user: user),
       UserRole.driver => DriverHomeScreen(user: user),
+      UserRole.admin => AdminHomeScreen(adminPublicId: user.publicId),
       _ => _PlaceholderHome(
           user: user,
           title: 'Không hỗ trợ vai trò',

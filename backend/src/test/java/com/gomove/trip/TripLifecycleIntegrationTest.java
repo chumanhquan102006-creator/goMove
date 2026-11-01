@@ -109,7 +109,7 @@ class TripLifecycleIntegrationTest extends BaseIntegrationTest {
         assertThatThrownBy(() -> driverService.setOwnOperatingStatus(ride.driver().getUser().getPublicId(),
                 UserRole.DRIVER, DriverOperatingStatus.ONLINE)).isInstanceOf(DomainException.class)
                 .extracting(ex -> ((DomainException) ex).getCode()).isEqualTo("DRIVER_HAS_UNRELEASED_BOOKING");
-        assertThatThrownBy(() -> driverService.updateApprovalStatusAsAdmin(UserRole.ADMIN,
+        assertThatThrownBy(() -> driverService.updateApprovalStatusAsAdmin(UUID.randomUUID(), UserRole.ADMIN,
                 ride.driver().getPublicId(), DriverApprovalStatus.SUSPENDED))
                 .isInstanceOf(DomainException.class)
                 .extracting(ex -> ((DomainException) ex).getCode()).isEqualTo("DRIVER_HAS_UNRELEASED_BOOKING");

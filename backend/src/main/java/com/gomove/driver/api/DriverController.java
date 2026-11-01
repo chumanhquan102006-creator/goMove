@@ -37,7 +37,8 @@ public class DriverController {
             @Valid @RequestBody UpdateApprovalStatusRequest request
     ) {
         return ApiResponse.success("DRIVER_APPROVAL_UPDATED", "Driver approval status updated",
-                DriverResponse.from(service.updateApprovalStatusAsAdmin(principal.role(), driverPublicId, request.status())));
+                DriverResponse.from(service.updateApprovalStatusAsAdmin(principal.publicId(), principal.role(),
+                        driverPublicId, request.status())));
     }
 
     @PatchMapping("/me/operating-status")

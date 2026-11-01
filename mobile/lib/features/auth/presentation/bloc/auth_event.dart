@@ -65,5 +65,10 @@ typedef LogoutRequestedEvent = AuthLogoutRequested;
 
 /// Sự kiện cưỡng chế chuyển về trạng thái Unauthenticated khi refresh token thất bại
 class AuthForceUnauthenticated extends AuthEvent {
-  const AuthForceUnauthenticated();
+  final String expectedUserPublicId;
+
+  const AuthForceUnauthenticated(this.expectedUserPublicId);
+
+  @override
+  List<Object?> get props => [expectedUserPublicId];
 }

@@ -159,7 +159,7 @@ class DispatchIntegrationTest extends BaseIntegrationTest {
                 String.class, offerId)).isEqualTo("CANCELLED");
         assertThat(active(offered)).isEmpty();
         assertThat(jdbc.queryForObject("SELECT status FROM cash_payments WHERE booking_id=?",
-                String.class, created.booking().getId())).isEqualTo("PENDING");
+                String.class, created.booking().getId())).isEqualTo("VOID");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM driver_commission_ledger WHERE booking_id=?",
                 Integer.class, created.booking().getId())).isZero();
         assertThat(cancelled.getFinalFare()).isEqualByComparingTo(created.quote().getFinalFare());
@@ -208,7 +208,7 @@ class DispatchIntegrationTest extends BaseIntegrationTest {
         assertThat(drivers.findById(firstDriver.getId()).orElseThrow().getOperatingStatus())
                 .isEqualTo(DriverOperatingStatus.ONLINE);
         assertThat(jdbc.queryForObject("SELECT status FROM cash_payments WHERE booking_id=?",
-                String.class, first.booking().getId())).isEqualTo("PENDING");
+                String.class, first.booking().getId())).isEqualTo("VOID");
         String tracking = "/api/v1/bookings/" + first.booking().getPublicId() + "/tracking";
         mvc.perform(get(tracking).header("Authorization", bearer(first.customer())))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CANCELLED"))
@@ -282,7 +282,7 @@ class DispatchIntegrationTest extends BaseIntegrationTest {
                 .isInstanceOf(DomainException.class)
                 .extracting(ex -> ((DomainException) ex).getCode()).isEqualTo("CANCELLATION_NOT_ALLOWED");
         assertThat(jdbc.queryForObject("SELECT status FROM cash_payments WHERE booking_id=?",
-                String.class, empty.booking().getId())).isEqualTo("PENDING");
+                String.class, empty.booking().getId())).isEqualTo("VOID");
 
         clock.set(NOW);
         Created pending = booking(VehicleType.MOTORBIKE);

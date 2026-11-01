@@ -114,6 +114,11 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     AuthForceUnauthenticated event,
     Emitter<AuthState> emit,
   ) {
+    final current = state;
+    if (current is! AuthenticatedState ||
+        current.user.publicId != event.expectedUserPublicId) {
+      return;
+    }
     _authRevision++;
     emit(const UnauthenticatedState());
   }

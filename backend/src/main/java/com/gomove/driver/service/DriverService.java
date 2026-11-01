@@ -3,6 +3,7 @@ package com.gomove.driver.service;
 import com.gomove.auth.domain.User;
 import com.gomove.auth.domain.UserRepository;
 import com.gomove.auth.domain.UserRole;
+import com.gomove.admin.infrastructure.AdminAuditStore;
 import com.gomove.common.exception.DomainException;
 import com.gomove.driver.domain.Driver;
 import com.gomove.driver.domain.DriverApprovalStatus;
@@ -20,11 +21,14 @@ public class DriverService {
     private final DriverRepository drivers;
     private final UserRepository users;
     private final VehicleRepository vehicles;
+    private final AdminAuditStore audit;
 
-    public DriverService(DriverRepository drivers, UserRepository users, VehicleRepository vehicles) {
+    public DriverService(DriverRepository drivers, UserRepository users, VehicleRepository vehicles,
+                         AdminAuditStore audit) {
         this.drivers = drivers;
         this.users = users;
         this.vehicles = vehicles;
+        this.audit = audit;
     }
 
     @Transactional
@@ -50,9 +54,14 @@ public class DriverService {
     }
 
     @Transactional
-    public Driver updateApprovalStatusAsAdmin(UserRole authenticatedRole, UUID driverPublicId, DriverApprovalStatus newStatus) {
+    public Driver updateApprovalStatusAsAdmin(UUID adminPublicId, UserRole authenticatedRole,
+                                               UUID driverPublicId, DriverApprovalStatus newStatus) {
         requireRole(authenticatedRole, UserRole.ADMIN);
-        Driver driver = findDriver(driverPublicId);
+        // Acceptance locks Booking -> Driver. Locking only Driver here serializes both
+        // paths without taking a Booking lock in the opposite order.
+        Driver driver = drivers.lockByPublicId(driverPublicId)
+                .orElseThrow(() -> new DomainException(HttpStatus.NOT_FOUND, "DRIVER_NOT_FOUND", "Driver not found"));
+        DriverApprovalStatus previous = driver.getApprovalStatus();
         if ((newStatus == DriverApprovalStatus.SUSPENDED || newStatus == DriverApprovalStatus.REJECTED)
                 && drivers.hasUnreleasedBooking(driver.getId())) {
             throw new DomainException(HttpStatus.CONFLICT, "DRIVER_HAS_UNRELEASED_BOOKING",
@@ -62,6 +71,8 @@ public class DriverService {
         if (newStatus == DriverApprovalStatus.SUSPENDED || newStatus == DriverApprovalStatus.REJECTED) {
             driver.setOperatingStatus(DriverOperatingStatus.OFFLINE);
         }
+        audit.recordDriverApproval(adminPublicId, driverPublicId, previous.name(), newStatus.name());
+        driver.getUser().getPublicId(); // Response mapping happens after this transaction closes.
         return driver;
     }
 

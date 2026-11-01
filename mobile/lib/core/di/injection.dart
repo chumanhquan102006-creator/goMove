@@ -1,4 +1,7 @@
 import 'package:get_it/get_it.dart';
+import '../../features/admin/data/admin_repository_impl.dart';
+import '../../features/admin/domain/admin_repository.dart';
+import '../../features/admin/presentation/admin_cubit.dart';
 import '../../features/auth/data/datasources/auth_local_datasource.dart';
 import '../../features/auth/data/datasources/auth_mock_datasource.dart';
 import '../../features/auth/data/datasources/auth_remote_datasource.dart';
@@ -158,6 +161,12 @@ Future<void> setupServiceLocator({required AppConfig config}) async {
       checkAuthStatusUseCase: sl<CheckAuthStatusUseCase>(),
     ),
   );
+
+  sl.registerLazySingleton<AdminRepository>(
+      () => AdminRepositoryImpl(sl<ApiClient>()));
+  sl.registerFactoryParam<AdminCubit, String, void>((adminPublicId, _) =>
+      AdminCubit(
+          sl<AdminRepository>(), sl<SecureStorageService>(), adminPublicId));
 
   sl.registerLazySingleton<CustomerRepository>(
       () => CustomerRepositoryImpl(sl<ApiClient>()));

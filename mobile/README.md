@@ -21,7 +21,21 @@ To enter Vietnamese names on the Android emulator, enable Vietnamese in Gboard: 
 
 Run real mode with the command above. Use a separate Customer and Driver account. A Customer can open **Đăng ký làm tài xế**, submit a real license number to `POST /api/v1/drivers/onboarding`, then must sign out and sign in again to obtain a DRIVER JWT. The resulting profile is PENDING/OFFLINE; the app never self-approves it.
 
-Approval requires an already legitimately provisioned ADMIN account. With that account's own JWT, an authorized operator may call `PATCH /api/v1/drivers/{driverPublicId}/approval-status` with `{"status":"APPROVED"}` using a trusted API client. The `driverPublicId` comes from the onboarding response. Do not put Admin credentials into the Flutter app, share JWTs, or alter PostgreSQL rows manually. There is no public Admin registration or approval UI; if no Admin account is provisioned, the real Driver dispatch demo is blocked at approval.
+Approval requires an already legitimately provisioned ADMIN account. In real mode, that account opens the Admin dashboard and Driver queue, inspects the registered vehicle, and confirms approval or rejection. The existing `PATCH /api/v1/drivers/{driverPublicId}/approval-status` remains the Backend action. There is no public Admin registration or default Admin password. For isolated local development, the project lead must deliberately provision an existing account as ADMIN using a trusted local database administration procedure, then sign out and sign in again to obtain a fresh ADMIN JWT. Never run that procedure against a shared demo or production database; do not put credentials or JWTs in source, scripts, dart-defines or screenshots. Without a provisioned Admin account, the real approval E2E remains blocked.
+
+For a **separate local development database only**, the project lead may create a fresh Customer account through normal registration with a personally chosen strong password, record its public UUID from the authorized response, verify the target database host/name, then run this one-time statement in an interactive `psql` session. Replace the UUID through `\set`; the statement changes exactly one unused, active Customer account and must return one row. Run `COMMIT;` only after checking that one row was returned; otherwise run `ROLLBACK;` and investigate. Log out and log back in so the JWT carries `ADMIN`.
+
+```sql
+\set admin_public_id 'replace-with-new-account-public-uuid'
+BEGIN;
+UPDATE users SET role = 'ADMIN', updated_at = CURRENT_TIMESTAMP, version = version + 1
+WHERE public_id = :'admin_public_id'::uuid AND role = 'CUSTOMER' AND status = 'ACTIVE'
+  AND NOT EXISTS (SELECT 1 FROM drivers d WHERE d.user_id = users.id)
+  AND NOT EXISTS (SELECT 1 FROM bookings b WHERE b.customer_id = users.id)
+RETURNING public_id, role;
+```
+
+Do not use this procedure on a shared demo or production database. It is intentionally not an application endpoint, automatic startup seed or hardcoded credential.
 
 After approval, sign in as DRIVER, add a matching vehicle, activate it, and press ONLINE. The app uses Android foreground location only: grant location permission, enable device location, and for emulator GPS set a position near the Customer pickup (within the backend's 5 km dispatch radius) in Android Studio **Extended Controls → Location**. The app does not hardcode its GPS position. Approximate permission may reduce eligibility. GPS is uploaded immediately and every 9 seconds while foreground/ONLINE or BUSY; active offers are polled every 2 seconds while foreground/ONLINE with a fresh GPS upload (<30 seconds). On the active M3 trip screen, authorized ride-channel GPS replaces the BUSY profile heartbeat while realtime is connected; the profile heartbeat is a disconnected fallback. Backgrounding stops both loops and does not force BUSY to OFFLINE. Foreground resumption revalidates ONLINE with the server.
 

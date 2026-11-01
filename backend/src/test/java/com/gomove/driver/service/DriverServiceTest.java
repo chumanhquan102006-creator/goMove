@@ -1,6 +1,7 @@
 package com.gomove.driver.service;
 
 import com.gomove.auth.domain.*;
+import com.gomove.admin.infrastructure.AdminAuditStore;
 import com.gomove.common.exception.DomainException;
 import com.gomove.driver.domain.*;
 import com.gomove.vehicle.domain.VehicleRepository;
@@ -22,9 +23,10 @@ class DriverServiceTest {
     @Mock DriverRepository drivers;
     @Mock UserRepository users;
     @Mock VehicleRepository vehicles;
+    @Mock AdminAuditStore audit;
     DriverService service;
 
-    @BeforeEach void setUp() { service = new DriverService(drivers, users, vehicles); }
+    @BeforeEach void setUp() { service = new DriverService(drivers, users, vehicles, audit); }
 
     @Test void customerCanOnboardAndBecomesDriver() {
         User user = user(10L, UserRole.CUSTOMER);
@@ -46,7 +48,7 @@ class DriverServiceTest {
     }
 
     @Test void onlyAdminCanUpdateApproval() {
-        assertThatThrownBy(() -> service.updateApprovalStatusAsAdmin(UserRole.CUSTOMER, UUID.randomUUID(), DriverApprovalStatus.APPROVED))
+        assertThatThrownBy(() -> service.updateApprovalStatusAsAdmin(UUID.randomUUID(), UserRole.CUSTOMER, UUID.randomUUID(), DriverApprovalStatus.APPROVED))
                 .isInstanceOf(DomainException.class);
     }
 
@@ -56,9 +58,9 @@ class DriverServiceTest {
         driver.setApprovalStatus(DriverApprovalStatus.APPROVED);
         driver.setOperatingStatus(DriverOperatingStatus.ONLINE);
         ReflectionTestUtils.setField(driver, "publicId", UUID.randomUUID());
-        when(drivers.findByPublicId(driver.getPublicId())).thenReturn(Optional.of(driver));
+        when(drivers.lockByPublicId(driver.getPublicId())).thenReturn(Optional.of(driver));
 
-        Driver updated = service.updateApprovalStatusAsAdmin(UserRole.ADMIN, driver.getPublicId(), DriverApprovalStatus.REJECTED);
+        Driver updated = service.updateApprovalStatusAsAdmin(UUID.randomUUID(), UserRole.ADMIN, driver.getPublicId(), DriverApprovalStatus.REJECTED);
 
         assertThat(updated.getOperatingStatus()).isEqualTo(DriverOperatingStatus.OFFLINE);
     }

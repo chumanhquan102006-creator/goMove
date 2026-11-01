@@ -4,6 +4,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.Lock;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -16,6 +18,10 @@ public interface DriverRepository extends JpaRepository<Driver, Long> {
 
     @EntityGraph(attributePaths = "user")
     Optional<Driver> findByUserPublicId(UUID userPublicId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select d from Driver d where d.publicId = :publicId")
+    Optional<Driver> lockByPublicId(@Param("publicId") UUID publicId);
 
     boolean existsByLicenseNumber(String licenseNumber);
 

@@ -18,6 +18,7 @@ import 'package:gomove_mobile/features/auth/data/models/user_model.dart';
 import 'package:gomove_mobile/features/auth/domain/entities/user.dart';
 import 'package:gomove_mobile/features/auth/presentation/bloc/auth_bloc.dart';
 import 'package:gomove_mobile/features/auth/presentation/screens/role_home.dart';
+import 'package:gomove_mobile/features/admin/presentation/admin_home_screen.dart';
 import 'package:gomove_mobile/features/customer/data/repositories/customer_repository_impl.dart';
 import 'package:gomove_mobile/features/customer/domain/models/quote.dart';
 import 'package:gomove_mobile/features/customer/presentation/screens/customer_home_screen.dart';
@@ -492,7 +493,7 @@ void main() {
     expect(homeForRole(parse('ADMIN')), isNot(isA<CustomerHomeScreen>()));
   });
 
-  testWidgets('Driver and unsupported roles render separate destinations',
+  testWidgets('Driver and Admin roles route to separate destinations',
       (tester) async {
     AppConfig.reset();
     final config = AppConfig.initialize(forceMock: true);
@@ -514,7 +515,6 @@ void main() {
         phoneNumber: '0901234567',
         fullName: 'Admin',
         role: UserRole.admin);
-    await tester.pumpWidget(MaterialApp(home: homeForRole(admin)));
-    expect(find.text('Không hỗ trợ vai trò'), findsOneWidget);
+    expect(homeForRole(admin), isA<AdminHomeScreen>());
   });
 }

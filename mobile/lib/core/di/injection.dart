@@ -15,12 +15,16 @@ import '../../features/customer/data/active_booking_store.dart';
 import '../../features/customer/data/booking_intent_store.dart';
 import '../../features/customer/data/repositories/customer_repository_impl.dart';
 import '../../features/customer/data/repositories/geocoding_repository_impl.dart';
+import '../../features/customer/data/repositories/trip_history_repository_impl.dart';
 import '../../features/customer/domain/repositories/customer_repository.dart';
 import '../../features/customer/domain/repositories/geocoding_repository.dart';
+import '../../features/customer/domain/repositories/trip_history_repository.dart';
 import '../../features/customer/domain/usecases/customer_usecases.dart';
 import '../../features/customer/presentation/bloc/booking_cubit.dart';
 import '../../features/customer/presentation/bloc/customer_active_booking_cubit.dart';
 import '../../features/customer/presentation/bloc/quote_cubit.dart';
+import '../../features/customer/presentation/bloc/trip_history_cubit.dart';
+import '../../features/customer/presentation/bloc/trip_history_detail_cubit.dart';
 import '../../features/driver/data/accepted_booking_store.dart';
 import '../../features/driver/data/location/driver_location_source.dart';
 import '../../features/driver/data/repositories/driver_repository_impl.dart';
@@ -159,6 +163,22 @@ Future<void> setupServiceLocator({required AppConfig config}) async {
       () => CustomerRepositoryImpl(sl<ApiClient>()));
   sl.registerLazySingleton<GeocodingRepository>(
       () => GeocodingRepositoryImpl(sl<ApiClient>()));
+  sl.registerLazySingleton<TripHistoryRepository>(
+      () => TripHistoryRepositoryImpl(sl<ApiClient>()));
+  sl.registerFactoryParam<TripHistoryCubit, String, void>(
+      (customerPublicId, _) => TripHistoryCubit(
+          sl<TripHistoryRepository>(),
+          sl<GeocodingRepository>(),
+          sl<SecureStorageService>(),
+          customerPublicId));
+  sl.registerFactoryParam<TripHistoryDetailCubit, String, String>(
+      (bookingPublicId, customerPublicId) => TripHistoryDetailCubit(
+          sl<TripHistoryRepository>(),
+          sl<TripRepository>(),
+          sl<GeocodingRepository>(),
+          sl<SecureStorageService>(),
+          customerPublicId,
+          bookingPublicId));
   sl.registerLazySingleton<BookingIntentStore>(
       () => SecureBookingIntentStore());
   sl.registerLazySingleton<ActiveBookingStore>(

@@ -22,6 +22,7 @@ import '../bloc/quote_cubit.dart';
 import 'booking_status_screen.dart';
 import 'customer_map_canvas.dart';
 import 'quote_review_screen.dart';
+import 'trip_history_screen.dart';
 
 class CustomerHomeScreen extends StatelessWidget {
   final User user;
@@ -189,6 +190,12 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
         await recovery.refresh();
       }
     }
+  }
+
+  void _openHistory() {
+    if (!_isCurrentAccount || AppConfig.instance.isMock) return;
+    Navigator.of(context).push(AppMotion.immediateRoute<void>(
+        TripHistoryScreen(customerPublicId: widget.user.publicId)));
   }
 
   Future<void> _recoverExistingBooking() async {
@@ -760,6 +767,13 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
       child: Scaffold(
         appBar: AppBar(title: const Text('Đặt xe GoMove'), actions: [
           IconButton(
+            tooltip: 'Lịch sử chuyến đi',
+            icon: const Icon(Icons.history),
+            onPressed: AppConfig.instance.isMock || !_isCurrentAccount
+                ? null
+                : _openHistory,
+          ),
+          IconButton(
             tooltip: 'Đăng xuất',
             icon: const Icon(Icons.logout),
             onPressed: () =>
@@ -1182,6 +1196,17 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                                           ])),
                                 ],
                               ),
+                            ),
+                          ),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: TextButton.icon(
+                              onPressed: AppConfig.instance.isMock ||
+                                      !_isCurrentAccount
+                                  ? null
+                                  : _openHistory,
+                              icon: const Icon(Icons.history),
+                              label: const Text('Lịch sử chuyến đi'),
                             ),
                           ),
                         ],

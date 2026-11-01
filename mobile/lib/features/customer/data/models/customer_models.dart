@@ -47,5 +47,19 @@ class CustomerModels {
         createdAt: DateTime.parse(json['createdAt'] as String),
         driverPublicId: json['driverPublicId'] as String?,
         vehiclePublicId: json['vehiclePublicId'] as String?,
+        pickup: json['pickupLatitude'] is num && json['pickupLongitude'] is num
+            ? Coordinates((json['pickupLatitude'] as num).toDouble(),
+                (json['pickupLongitude'] as num).toDouble())
+            : null,
+        dropoff:
+            json['dropoffLatitude'] is num && json['dropoffLongitude'] is num
+                ? Coordinates((json['dropoffLatitude'] as num).toDouble(),
+                    (json['dropoffLongitude'] as num).toDouble())
+                : null,
+        distanceMeters: json['distanceMeters']?.toString(),
+        durationSeconds: json['durationSeconds']?.toString(),
+        tripCompletedAt: json['tripCompletedAt'] == null
+            ? null
+            : DateTime.parse(json['tripCompletedAt'] as String),
       );
 }

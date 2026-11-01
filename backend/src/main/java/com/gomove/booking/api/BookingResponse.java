@@ -24,7 +24,13 @@ public record BookingResponse(
         Instant driverArrivedAt,
         Instant passengerOnboardAt,
         Instant tripStartedAt,
-        Instant tripCompletedAt
+        Instant tripCompletedAt,
+        double pickupLatitude,
+        double pickupLongitude,
+        double dropoffLatitude,
+        double dropoffLongitude,
+        BigDecimal distanceMeters,
+        BigDecimal durationSeconds
 ) {
     public static BookingResponse from(Booking booking) {
         return new BookingResponse(booking.getPublicId(), booking.getQuote().getPublicId(),
@@ -33,6 +39,9 @@ public record BookingResponse(
                 booking.getAssignedDriver() == null ? null : booking.getAssignedDriver().getPublicId(),
                 booking.getAssignedVehicle() == null ? null : booking.getAssignedVehicle().getPublicId(),
                 booking.getDriverAcceptedAt(), booking.getDriverArrivedAt(),
-                booking.getPassengerOnboardAt(), booking.getTripStartedAt(), booking.getTripCompletedAt());
+                booking.getPassengerOnboardAt(), booking.getTripStartedAt(), booking.getTripCompletedAt(),
+                booking.getPickupLocation().getY(), booking.getPickupLocation().getX(),
+                booking.getDropoffLocation().getY(), booking.getDropoffLocation().getX(),
+                booking.getDistanceMeters(), booking.getDurationSeconds());
     }
 }

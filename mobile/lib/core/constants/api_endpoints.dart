@@ -17,6 +17,7 @@ class ApiEndpoints {
   static String quote(String publicId) => '/quotes/$publicId';
   static String quoteRoute(String publicId) => '/quotes/$publicId/route';
   static const String bookings = '/bookings';
+  static const String bookingHistory = '/bookings/history';
   static String booking(String publicId) => '/bookings/$publicId';
   static String bookingRoute(String publicId) => '/bookings/$publicId/route';
   static String bookingTracking(String publicId) =>

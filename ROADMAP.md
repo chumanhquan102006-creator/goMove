@@ -6,8 +6,8 @@ Core Booking → Dispatch → Trip → CASH remains the priority before a broad 
 | --- | --- | --- |
 | M4.6 | Demo readiness, GPS stability and team local setup | Completed |
 | M5-Participant | Authorized Customer, Driver and vehicle information | Completed (`46ace8f`) |
-| M5.1 | Real place/address search and display | Current milestone |
-| M5.2 | Trip history, trip details and Customer receipts | Planned |
+| M5.1 | Real place/address search and display | Completed (`cec41f9`) |
+| M5.2 | Trip history, trip details and Customer receipts | Current milestone |
 | M5.3 | Cancellation, notifications, connection failures and abnormal states | Planned |
 | M5.4 | Admin approval and account/activity management | Planned |
 

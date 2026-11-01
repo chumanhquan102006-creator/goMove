@@ -1,6 +1,7 @@
 package com.gomove.booking.api;
 
 import com.gomove.booking.service.BookingApplicationService;
+import com.gomove.booking.service.BookingHistoryService;
 import com.gomove.booking.service.BookingResult;
 import com.gomove.common.api.ApiResponse;
 import com.gomove.common.security.CustomUserPrincipal;
@@ -18,6 +19,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
@@ -28,9 +30,20 @@ import java.util.UUID;
 @SecurityRequirement(name = "BearerAuth")
 public class BookingController {
     private final BookingApplicationService service;
+    private final BookingHistoryService history;
 
-    public BookingController(BookingApplicationService service) {
+    public BookingController(BookingApplicationService service, BookingHistoryService history) {
         this.service = service;
+        this.history = history;
+    }
+
+    @GetMapping("/history")
+    @Operation(summary = "List completed Bookings owned by the current Customer")
+    public ApiResponse<BookingHistoryPageResponse> history(@AuthenticationPrincipal CustomUserPrincipal principal,
+                                                           @RequestParam(defaultValue = "0") int page,
+                                                           @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.success("BOOKING_HISTORY_FETCHED", "Completed Bookings fetched",
+                history.completed(principal.publicId(), principal.role(), page, size));
     }
 
     @PostMapping

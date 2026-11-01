@@ -10,6 +10,11 @@ class Booking {
   final DateTime createdAt;
   final String? driverPublicId;
   final String? vehiclePublicId;
+  final Coordinates? pickup;
+  final Coordinates? dropoff;
+  final String? distanceMeters;
+  final String? durationSeconds;
+  final DateTime? tripCompletedAt;
 
   const Booking(
       {required this.publicId,
@@ -20,7 +25,12 @@ class Booking {
       required this.finalFare,
       required this.createdAt,
       this.driverPublicId,
-      this.vehiclePublicId});
+      this.vehiclePublicId,
+      this.pickup,
+      this.dropoff,
+      this.distanceMeters,
+      this.durationSeconds,
+      this.tripCompletedAt});
 
   bool get isCompleted => status == 'COMPLETED';
 }

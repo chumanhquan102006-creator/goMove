@@ -96,9 +96,9 @@ class CashBackfillMigrationIntegrationTest extends BaseIntegrationTest {
             Flyway.configure().dataSource(source).defaultSchema(schema).schemas(schema, "public")
                     .locations("classpath:db/migration").load().migrate();
             assertThat(jdbc.queryForObject("""
-                    SELECT version FROM flyway_schema_history WHERE success=TRUE
-                    ORDER BY installed_rank DESC LIMIT 1
-                    """, String.class)).isEqualTo("14");
+                    SELECT COUNT(*) FROM flyway_schema_history
+                    WHERE version='13' AND success=TRUE
+                    """, Integer.class)).isEqualTo(1);
             assertThat(jdbc.queryForObject("SELECT status FROM cash_payments", String.class))
                     .isEqualTo("PENDING");
             assertThat(jdbc.queryForObject("SELECT amount FROM cash_payments", BigDecimal.class))

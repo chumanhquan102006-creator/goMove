@@ -25,6 +25,8 @@ class CustomerActiveBookingState {
   /// A completed trip still needs recovery while CASH is not verified PAID.
   bool get isActive =>
       booking != null &&
+      booking!.status != 'CANCELLED' &&
+      booking!.status != 'NO_DRIVER_AVAILABLE' &&
       !(booking!.status == 'COMPLETED' && payment?.isPaid == true);
 }
 
@@ -188,7 +190,10 @@ class CustomerActiveBookingCubit extends Cubit<CustomerActiveBookingState> {
     }
     // A PAID historical lookup may be displayed but cannot replace the
     // durable hint for an ongoing (or still-unpaid) Booking.
-    if (persist && !(booking.status == 'COMPLETED' && payment?.isPaid == true)) {
+    if (persist &&
+        booking.status != 'CANCELLED' &&
+        booking.status != 'NO_DRIVER_AVAILABLE' &&
+        !(booking.status == 'COMPLETED' && payment?.isPaid == true)) {
       await store.write(
           customerPublicId,
           ActiveBookingRecord(

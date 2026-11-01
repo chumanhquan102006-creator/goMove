@@ -10,6 +10,7 @@ import com.gomove.booking.domain.Booking;
 import com.gomove.booking.domain.BookingRepository;
 import com.gomove.booking.domain.BookingStatus;
 import com.gomove.booking.service.BookingApplicationService;
+import com.gomove.booking.service.BookingCancellationService;
 import com.gomove.common.BaseIntegrationTest;
 import com.gomove.common.exception.DomainException;
 import com.gomove.dispatch.api.DriverOfferResponse;
@@ -28,6 +29,9 @@ import com.gomove.pricing.domain.Quote;
 import com.gomove.pricing.domain.QuoteRepository;
 import com.gomove.pricing.domain.RouteEstimate;
 import com.gomove.pricing.engine.PricingEngine;
+import com.gomove.trip.service.TripAction;
+import com.gomove.trip.service.TripApplicationService;
+import com.gomove.trip.realtime.TripStatusEvent;
 import com.gomove.vehicle.domain.Vehicle;
 import com.gomove.vehicle.domain.VehicleRepository;
 import com.gomove.vehicle.domain.VehicleType;
@@ -43,6 +47,10 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.sql.DataSource;
 import java.math.BigDecimal;
@@ -63,6 +71,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.locks.LockSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -85,6 +94,8 @@ class DispatchIntegrationTest extends BaseIntegrationTest {
     @Autowired QuoteRepository quotes;
     @Autowired BookingRepository bookings;
     @Autowired BookingApplicationService bookingService;
+    @Autowired BookingCancellationService cancellations;
+    @Autowired TripApplicationService trips;
     @Autowired PricingEngine pricing;
     @Autowired DispatchStore store;
     @Autowired DispatchTransactionService transactions;
@@ -97,11 +108,14 @@ class DispatchIntegrationTest extends BaseIntegrationTest {
     @Autowired JwtTokenProvider jwt;
     @Autowired ObjectMapper mapper;
     @Autowired MutableClock clock;
+    @Autowired PlatformTransactionManager transactionManager;
+    @Autowired StatusCapture statusCapture;
     private final List<Long> testDriverIds = new ArrayList<>();
 
     @BeforeEach
     void resetClock() {
         clock.set(NOW);
+        statusCapture.events.clear();
     }
 
     @AfterEach
@@ -110,6 +124,221 @@ class DispatchIntegrationTest extends BaseIntegrationTest {
             jdbc.update("UPDATE driver_locations SET updated_at=? WHERE driver_id=?",
                     Timestamp.from(Instant.EPOCH), driverId);
         }
+    }
+
+    @Test
+    void customerCancellationClosesPendingOfferAndReplaysOriginalResult() throws Exception {
+        Created created = booking(VehicleType.MOTORBIKE);
+        User other = user(UserRole.CUSTOMER);
+        Driver offered = driver(DriverApprovalStatus.APPROVED, DriverOperatingStatus.ONLINE,
+                VehicleType.MOTORBIKE, true, NOW, 0.0001);
+        transactions.advance(created.booking().getId());
+        UUID offerId = active(offered).getFirst().offerPublicId();
+        String path = "/api/v1/bookings/" + created.booking().getPublicId() + "/cancel";
+
+        mvc.perform(post(path)).andExpect(status().isUnauthorized());
+        mvc.perform(post(path).header("Authorization", bearer(offered.getUser())))
+                .andExpect(status().isForbidden());
+        mvc.perform(post(path).header("Authorization", bearer(other)))
+                .andExpect(status().isNotFound());
+        String first = mvc.perform(post(path).header("Authorization", bearer(created.customer())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CANCELLED"))
+                .andReturn().getResponse().getContentAsString();
+        String retry = mvc.perform(post(path).header("Authorization", bearer(created.customer())))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertThat(mapper.readTree(retry).path("data"))
+                .isEqualTo(mapper.readTree(first).path("data"));
+
+        Booking cancelled = bookings.findById(created.booking().getId()).orElseThrow();
+        assertThat(cancelled.getStatus()).isEqualTo(BookingStatus.CANCELLED);
+        assertThat(cancelled.getCancelledBy()).isEqualTo("CUSTOMER");
+        assertThat(cancelled.getCancelledAt()).isNotNull();
+        assertThat(cancelled.getAssignedDriver()).isNull();
+        assertThat(jdbc.queryForObject("SELECT status FROM booking_driver_offers WHERE public_id=?",
+                String.class, offerId)).isEqualTo("CANCELLED");
+        assertThat(active(offered)).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT status FROM cash_payments WHERE booking_id=?",
+                String.class, created.booking().getId())).isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM driver_commission_ledger WHERE booking_id=?",
+                Integer.class, created.booking().getId())).isZero();
+        assertThat(cancelled.getFinalFare()).isEqualByComparingTo(created.quote().getFinalFare());
+        assertThat(bookings.countByQuoteId(created.quote().getId())).isEqualTo(1);
+        mvc.perform(get("/api/v1/bookings/" + created.booking().getPublicId() + "/tracking")
+                        .header("Authorization", bearer(created.customer())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.data.assignedDriver").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.data.latitude").value(org.hamcrest.Matchers.nullValue()));
+        mvc.perform(get("/api/v1/bookings/history").header("Authorization", bearer(created.customer())))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(0));
+    }
+
+    @Test
+    void cancellationStatusEventIsDeliveredOnlyAfterCommit() {
+        Created created = booking(VehicleType.MOTORBIKE);
+        UUID bookingPublicId = created.booking().getPublicId();
+        new TransactionTemplate(transactionManager).executeWithoutResult(transaction -> {
+            cancellations.cancel(bookingPublicId, created.customer().getPublicId(), UserRole.CUSTOMER);
+            assertThat(statusCapture.forBooking(bookingPublicId)).isEmpty();
+            transaction.setRollbackOnly();
+        });
+        assertThat(bookings.findById(created.booking().getId()).orElseThrow().getStatus())
+                .isEqualTo(BookingStatus.REQUESTED);
+        assertThat(statusCapture.forBooking(bookingPublicId)).isEmpty();
+
+        cancellations.cancel(bookingPublicId, created.customer().getPublicId(), UserRole.CUSTOMER);
+        assertThat(statusCapture.forBooking(bookingPublicId))
+                .extracting(TripStatusEvent::status).containsExactly(BookingStatus.CANCELLED);
+    }
+
+    @Test
+    void assignedCustomerAndArrivedDriverCanCancelWithoutCashOrGpsLeak() throws Exception {
+        Created first = booking(VehicleType.MOTORBIKE);
+        Driver firstDriver = driver(DriverApprovalStatus.APPROVED, DriverOperatingStatus.ONLINE,
+                VehicleType.MOTORBIKE, true, NOW, 0.0001);
+        transactions.advance(first.booking().getId());
+        offers.accept(firstDriver.getUser().getPublicId(), UserRole.DRIVER,
+                active(firstDriver).getFirst().offerPublicId());
+        cancellations.cancel(first.booking().getPublicId(), first.customer().getPublicId(), UserRole.CUSTOMER);
+        Booking cancelled = bookings.findById(first.booking().getId()).orElseThrow();
+        assertThat(cancelled.getAssignedDriver().getId()).isEqualTo(firstDriver.getId());
+        assertThat(cancelled.getDriverReleasedAt()).isNotNull();
+        assertThat(cancelled.getCancelledBy()).isEqualTo("CUSTOMER");
+        assertThat(drivers.findById(firstDriver.getId()).orElseThrow().getOperatingStatus())
+                .isEqualTo(DriverOperatingStatus.ONLINE);
+        assertThat(jdbc.queryForObject("SELECT status FROM cash_payments WHERE booking_id=?",
+                String.class, first.booking().getId())).isEqualTo("PENDING");
+        String tracking = "/api/v1/bookings/" + first.booking().getPublicId() + "/tracking";
+        mvc.perform(get(tracking).header("Authorization", bearer(first.customer())))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.data.assignedDriver").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.data.latitude").value(org.hamcrest.Matchers.nullValue()));
+        mvc.perform(get(tracking).header("Authorization", bearer(firstDriver.getUser())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.customer").value(org.hamcrest.Matchers.nullValue()));
+        assertThat(cancellations.cancel(first.booking().getPublicId(), firstDriver.getUser().getPublicId(),
+                UserRole.DRIVER).transitionedAt()).isEqualTo(cancelled.getCancelledAt());
+
+        jdbc.update("UPDATE driver_locations SET updated_at=? WHERE driver_id=?",
+                Timestamp.from(Instant.EPOCH), firstDriver.getId());
+
+        Created second = booking(VehicleType.MOTORBIKE);
+        Driver secondDriver = driver(DriverApprovalStatus.APPROVED, DriverOperatingStatus.ONLINE,
+                VehicleType.MOTORBIKE, true, NOW, 0.0001);
+        transactions.advance(second.booking().getId());
+        offers.accept(secondDriver.getUser().getPublicId(), UserRole.DRIVER,
+                active(secondDriver).getFirst().offerPublicId());
+        trips.transition(second.booking().getPublicId(), secondDriver.getUser().getPublicId(),
+                UserRole.DRIVER, TripAction.ARRIVE);
+        mvc.perform(post("/api/v1/drivers/me/trips/" + second.booking().getPublicId() + "/cancel")
+                        .header("Authorization", bearer(firstDriver.getUser())))
+                .andExpect(status().isNotFound());
+        mvc.perform(post("/api/v1/drivers/me/trips/" + second.booking().getPublicId() + "/cancel")
+                        .header("Authorization", bearer(secondDriver.getUser())))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CANCELLED"));
+        assertThat(bookings.findById(second.booking().getId()).orElseThrow().getDriverArrivedAt()).isNotNull();
+        assertThat(drivers.findById(secondDriver.getId()).orElseThrow().getOperatingStatus())
+                .isEqualTo(DriverOperatingStatus.ONLINE);
+    }
+
+    @Test
+    void pickupStartAndCompletionForbidCancellation() throws Exception {
+        Created created = booking(VehicleType.MOTORBIKE);
+        Driver selected = driver(DriverApprovalStatus.APPROVED, DriverOperatingStatus.ONLINE,
+                VehicleType.MOTORBIKE, true, NOW, 0.0001);
+        transactions.advance(created.booking().getId());
+        offers.accept(selected.getUser().getPublicId(), UserRole.DRIVER,
+                active(selected).getFirst().offerPublicId());
+        trips.transition(created.booking().getPublicId(), selected.getUser().getPublicId(),
+                UserRole.DRIVER, TripAction.ARRIVE);
+        trips.transition(created.booking().getPublicId(), selected.getUser().getPublicId(),
+                UserRole.DRIVER, TripAction.ONBOARD);
+        assertCancellationConflict(created, selected);
+        trips.transition(created.booking().getPublicId(), selected.getUser().getPublicId(),
+                UserRole.DRIVER, TripAction.START);
+        assertCancellationConflict(created, selected);
+        trips.transition(created.booking().getPublicId(), selected.getUser().getPublicId(),
+                UserRole.DRIVER, TripAction.COMPLETE);
+        assertCancellationConflict(created, selected);
+        assertThat(drivers.findById(selected.getId()).orElseThrow().getOperatingStatus())
+                .isEqualTo(DriverOperatingStatus.BUSY);
+        assertThat(jdbc.queryForObject("SELECT status FROM cash_payments WHERE booking_id=?",
+                String.class, created.booking().getId())).isEqualTo("PENDING");
+    }
+
+    @Test
+    void searchDeadlineEndsNoCandidateAndHonorsExistingValidLease() throws Exception {
+        Created empty = booking(VehicleType.MOTORBIKE);
+        transactions.advance(empty.booking().getId());
+        clock.set(NOW.plusSeconds(properties.getSearchTimeoutSeconds()));
+        transactions.advance(empty.booking().getId());
+        assertThat(bookings.findById(empty.booking().getId()).orElseThrow().getStatus())
+                .isEqualTo(BookingStatus.NO_DRIVER_AVAILABLE);
+        assertThat(jdbc.queryForObject("SELECT dispatch_failed_at FROM bookings WHERE id=?",
+                Timestamp.class, empty.booking().getId())).isNotNull();
+        assertThatThrownBy(() -> cancellations.cancel(empty.booking().getPublicId(),
+                empty.customer().getPublicId(), UserRole.CUSTOMER))
+                .isInstanceOf(DomainException.class)
+                .extracting(ex -> ((DomainException) ex).getCode()).isEqualTo("CANCELLATION_NOT_ALLOWED");
+        assertThat(jdbc.queryForObject("SELECT status FROM cash_payments WHERE booking_id=?",
+                String.class, empty.booking().getId())).isEqualTo("PENDING");
+
+        clock.set(NOW);
+        Created pending = booking(VehicleType.MOTORBIKE);
+        transactions.advance(pending.booking().getId());
+        clock.set(NOW.plusSeconds(properties.getSearchTimeoutSeconds() - 1));
+        Driver driver = driver(DriverApprovalStatus.APPROVED, DriverOperatingStatus.ONLINE,
+                VehicleType.MOTORBIKE, true, clock.instant(), 0.0001);
+        transactions.advance(pending.booking().getId());
+        UUID offerId = active(driver).getFirst().offerPublicId();
+        clock.set(NOW.plusSeconds(properties.getSearchTimeoutSeconds()));
+        transactions.advance(pending.booking().getId());
+        assertThat(bookings.findById(pending.booking().getId()).orElseThrow().getStatus())
+                .isEqualTo(BookingStatus.SEARCHING_DRIVER);
+        offers.accept(driver.getUser().getPublicId(), UserRole.DRIVER, offerId);
+        assertThat(bookings.findById(pending.booking().getId()).orElseThrow().getStatus())
+                .isEqualTo(BookingStatus.DRIVER_ACCEPTED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history WHERE version='16' AND success=TRUE",
+                Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void racingAcceptanceRejectionAndCancellationLeaveNoPendingOfferOrBusyDriver() throws Exception {
+        Created created = booking(VehicleType.MOTORBIKE);
+        Driver candidate = driver(DriverApprovalStatus.APPROVED, DriverOperatingStatus.ONLINE,
+                VehicleType.MOTORBIKE, true, NOW, 0.0001);
+        transactions.advance(created.booking().getId());
+        UUID offerId = active(candidate).getFirst().offerPublicId();
+        race(() -> decision(() -> cancellations.cancel(created.booking().getPublicId(),
+                        created.customer().getPublicId(), UserRole.CUSTOMER)),
+                () -> decision(() -> offers.accept(candidate.getUser().getPublicId(), UserRole.DRIVER, offerId)));
+        assertThat(bookings.findById(created.booking().getId()).orElseThrow().getStatus())
+                .isEqualTo(BookingStatus.CANCELLED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM booking_driver_offers WHERE booking_id=? AND status='PENDING'",
+                Integer.class, created.booking().getId())).isZero();
+        assertThat(drivers.findById(candidate.getId()).orElseThrow().getOperatingStatus())
+                .isEqualTo(DriverOperatingStatus.ONLINE);
+
+        Created second = booking(VehicleType.MOTORBIKE);
+        transactions.advance(second.booking().getId());
+        UUID nextOffer = active(candidate).getFirst().offerPublicId();
+        race(() -> decision(() -> cancellations.cancel(second.booking().getPublicId(),
+                        second.customer().getPublicId(), UserRole.CUSTOMER)),
+                () -> decision(() -> offers.reject(candidate.getUser().getPublicId(), UserRole.DRIVER, nextOffer)));
+        assertThat(bookings.findById(second.booking().getId()).orElseThrow().getStatus())
+                .isEqualTo(BookingStatus.CANCELLED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM booking_driver_offers WHERE booking_id=? AND status='PENDING'",
+                Integer.class, second.booking().getId())).isZero();
+    }
+
+    private void assertCancellationConflict(Created created, Driver driver) throws Exception {
+        mvc.perform(post("/api/v1/bookings/" + created.booking().getPublicId() + "/cancel")
+                        .header("Authorization", bearer(created.customer())))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("CANCELLATION_NOT_ALLOWED"));
+        mvc.perform(post("/api/v1/drivers/me/trips/" + created.booking().getPublicId() + "/cancel")
+                        .header("Authorization", bearer(driver.getUser())))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("CANCELLATION_NOT_ALLOWED"));
     }
 
     @Test
@@ -596,8 +825,20 @@ class DispatchIntegrationTest extends BaseIntegrationTest {
         @Override public Instant instant() { return now.get(); }
     }
 
+    static class StatusCapture {
+        final ConcurrentLinkedQueue<TripStatusEvent> events = new ConcurrentLinkedQueue<>();
+
+        @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+        public void onStatus(TripStatusEvent event) { events.add(event); }
+
+        List<TripStatusEvent> forBooking(UUID bookingPublicId) {
+            return events.stream().filter(event -> event.bookingPublicId().equals(bookingPublicId)).toList();
+        }
+    }
+
     @TestConfiguration
     static class ClockConfiguration {
         @Bean @Primary MutableClock dispatchTestClock() { return new MutableClock(); }
+        @Bean StatusCapture dispatchStatusCapture() { return new StatusCapture(); }
     }
 }

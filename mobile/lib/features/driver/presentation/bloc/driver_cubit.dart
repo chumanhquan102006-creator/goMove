@@ -236,6 +236,10 @@ class DriverCubit extends Cubit<DriverState> {
         }
       } else if (tracking.status == 'CANCELLED') {
         await _acceptedStore.clear(userPublicId);
+        if (!await _current(revision)) return;
+        emit(state.copy(
+            notice: 'Máy chủ xác nhận chuyến đã lưu bị hủy. '
+                'Bật trực tuyến lại để nhận đề nghị mới.'));
       } else {
         emit(state.copy(
             notice:
@@ -454,6 +458,53 @@ class DriverCubit extends Cubit<DriverState> {
     }
   }
 
+  /// Called only after authorized REST tracking confirms terminal cancellation.
+  Future<void> finishCancelledBooking(String bookingPublicId) async {
+    final revision = _revision;
+    if (state.acceptedOffer?.bookingPublicId != bookingPublicId ||
+        _generation == null ||
+        !await _current(revision)) {
+      return;
+    }
+    var localStoreWarning = false;
+    try {
+      final saved = await _acceptedStore.read(userPublicId);
+      if (!await _current(revision)) return;
+      if (saved != null && saved.offer.bookingPublicId != bookingPublicId) {
+        return;
+      }
+      if (saved == null) {
+        localStoreWarning = true;
+      } else {
+        await _acceptedStore.clear(userPublicId);
+      }
+    } catch (_) {
+      localStoreWarning = true;
+    }
+    if (!await _current(revision)) return;
+    _tripChannelActive = false;
+    _stopForeground();
+    emit(state.copy(
+        acceptedOffer: null,
+        operatingStatus: null,
+        completedAwaitingSettlement: false,
+        notice: localStoreWarning
+            ? 'Máy chủ đã hủy chuyến, nhưng chưa cập nhật được bàn giao lưu trên thiết bị.'
+            : 'Máy chủ đã xác nhận hủy chuyến. Đang kiểm tra trạng thái nhận cuốc.'));
+    if (state.foreground) {
+      // The former approval value may be unknown after a restart or stale after
+      // an admin change. The existing idempotent endpoint returns server truth.
+      await goOnline();
+      if (!await _current(revision)) return;
+      emit(state.copy(
+          notice: localStoreWarning
+              ? 'Chuyến đã hủy; chưa cập nhật được bàn giao lưu trên thiết bị.'
+              : state.operatingStatus == 'ONLINE'
+                  ? 'Máy chủ đã hủy chuyến; tài xế đã trực tuyến trở lại.'
+                  : 'Máy chủ đã hủy chuyến. Bật trực tuyến lại khi có kết nối.'));
+    }
+  }
+
   void _stopForeground() {
     _activityRevision++;
     _pollTimer?.cancel();
@@ -585,7 +636,12 @@ class DriverCubit extends Cubit<DriverState> {
         return;
       }
       final fresh = offers.where((offer) => _now().isBefore(offer.expiresAt));
-      emit(state.copy(offer: fresh.isEmpty ? null : fresh.first, error: null));
+      emit(state.copy(
+          offer: fresh.isEmpty ? null : fresh.first,
+          error: null,
+          notice: fresh.isEmpty && state.offer != null
+              ? 'Đề nghị không còn khả dụng hoặc đã hết hạn.'
+              : state.notice));
     } catch (error) {
       if (await _current(revision)) {
         emit(state.copy(

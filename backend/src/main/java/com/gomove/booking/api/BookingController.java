@@ -1,10 +1,12 @@
 package com.gomove.booking.api;
 
 import com.gomove.booking.service.BookingApplicationService;
+import com.gomove.booking.service.BookingCancellationService;
 import com.gomove.booking.service.BookingHistoryService;
 import com.gomove.booking.service.BookingResult;
 import com.gomove.common.api.ApiResponse;
 import com.gomove.common.security.CustomUserPrincipal;
+import com.gomove.trip.api.TripTransitionResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -31,10 +33,13 @@ import java.util.UUID;
 public class BookingController {
     private final BookingApplicationService service;
     private final BookingHistoryService history;
+    private final BookingCancellationService cancellations;
 
-    public BookingController(BookingApplicationService service, BookingHistoryService history) {
+    public BookingController(BookingApplicationService service, BookingHistoryService history,
+                             BookingCancellationService cancellations) {
         this.service = service;
         this.history = history;
+        this.cancellations = cancellations;
     }
 
     @GetMapping("/history")
@@ -81,5 +86,15 @@ public class BookingController {
                                                  @PathVariable UUID bookingPublicId) {
         return ApiResponse.success("BOOKING_FETCHED", "Booking fetched",
                 service.getOwned(bookingPublicId, principal.publicId(), principal.role()));
+    }
+
+    @PostMapping("/{bookingPublicId}/cancel")
+    @Operation(summary = "Cancel an owned Booking before passenger pickup",
+            description = "An identical retry returns the original cancellation timestamp. "
+                    + "After pickup or a terminal dispatch failure, cancellation returns 409.")
+    public ApiResponse<TripTransitionResponse> cancel(@AuthenticationPrincipal CustomUserPrincipal principal,
+                                                       @PathVariable UUID bookingPublicId) {
+        return ApiResponse.success("BOOKING_CANCELLED", "Booking cancelled",
+                cancellations.cancel(bookingPublicId, principal.publicId(), principal.role()));
     }
 }

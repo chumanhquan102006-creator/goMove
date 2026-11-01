@@ -7,6 +7,8 @@ import com.gomove.dispatch.infrastructure.DispatchStore;
 import com.gomove.dispatch.domain.DriverOfferStatus;
 import com.gomove.driver.domain.DriverApprovalStatus;
 import com.gomove.driver.domain.DriverOperatingStatus;
+import com.gomove.trip.realtime.TripStatusEvent;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,10 +21,12 @@ import java.util.UUID;
 public class OfferTransactionService {
     private final DispatchStore store;
     private final Clock clock;
+    private final ApplicationEventPublisher events;
 
-    public OfferTransactionService(DispatchStore store, Clock clock) {
+    public OfferTransactionService(DispatchStore store, Clock clock, ApplicationEventPublisher events) {
         this.store = store;
         this.clock = clock;
+        this.events = events;
     }
 
     @Transactional
@@ -63,6 +67,7 @@ public class OfferTransactionService {
         requireUpdated(store.finishValidOffer(offer.id(), DriverOfferStatus.ACCEPTED, clock.instant()));
         requireUpdated(store.assignBooking(booking.id(), offer.driverId(), offer.vehicleId(), now));
         requireUpdated(store.makeDriverBusy(offer.driverId(), now));
+        events.publishEvent(new TripStatusEvent(booking.publicId(), BookingStatus.DRIVER_ACCEPTED, now));
         return new OfferDecisionResponse(offerPublicId, DriverOfferStatus.ACCEPTED, now);
     }
 

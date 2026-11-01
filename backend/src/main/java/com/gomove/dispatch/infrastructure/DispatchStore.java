@@ -35,26 +35,52 @@ public class DispatchStore {
 
     public Optional<DispatchBooking> lockBooking(Long id) {
         return jdbc.query("""
-                SELECT id, status, vehicle_type, assigned_driver_id, assigned_vehicle_id
+                SELECT id, public_id, status, vehicle_type, assigned_driver_id, assigned_vehicle_id,
+                       dispatch_deadline_at
                 FROM bookings WHERE id = ? FOR UPDATE SKIP LOCKED
-                """, (rs, row) -> new DispatchBooking(rs.getLong("id"),
+                """, (rs, row) -> new DispatchBooking(rs.getLong("id"), rs.getObject("public_id", UUID.class),
                         BookingStatus.valueOf(rs.getString("status")),
                         VehicleType.valueOf(rs.getString("vehicle_type")),
                         rs.getObject("assigned_driver_id", Long.class),
-                        rs.getObject("assigned_vehicle_id", Long.class)), id)
+                        rs.getObject("assigned_vehicle_id", Long.class),
+                        instantNullable(rs, "dispatch_deadline_at")), id)
                 .stream().findFirst();
     }
 
     public Optional<DispatchBooking> lockBookingForAcceptance(Long id) {
         return jdbc.query("""
-                SELECT id, status, vehicle_type, assigned_driver_id, assigned_vehicle_id
+                SELECT id, public_id, status, vehicle_type, assigned_driver_id, assigned_vehicle_id,
+                       dispatch_deadline_at
                 FROM bookings WHERE id = ? FOR UPDATE
-                """, (rs, row) -> new DispatchBooking(rs.getLong("id"),
+                """, (rs, row) -> new DispatchBooking(rs.getLong("id"), rs.getObject("public_id", UUID.class),
                         BookingStatus.valueOf(rs.getString("status")),
                         VehicleType.valueOf(rs.getString("vehicle_type")),
                         rs.getObject("assigned_driver_id", Long.class),
-                        rs.getObject("assigned_vehicle_id", Long.class)), id)
+                        rs.getObject("assigned_vehicle_id", Long.class),
+                        instantNullable(rs, "dispatch_deadline_at")), id)
                 .stream().findFirst();
+    }
+
+    public int initializeDeadline(long bookingId, Instant deadline, Instant now) {
+        return jdbc.update("""
+                UPDATE bookings SET dispatch_deadline_at = ?, updated_at = ?, version = version + 1
+                WHERE id = ? AND dispatch_deadline_at IS NULL
+                  AND status IN ('REQUESTED', 'SEARCHING_DRIVER')
+                """, ts(deadline), ts(now), bookingId);
+    }
+
+    public Instant failNoDriver(long bookingId, Instant now) {
+        return jdbc.query("""
+                UPDATE bookings SET status = 'NO_DRIVER_AVAILABLE',
+                    dispatch_failed_at = GREATEST(?, created_at), updated_at = ?,
+                    version = version + 1
+                WHERE id = ? AND status IN ('REQUESTED', 'SEARCHING_DRIVER')
+                  AND assigned_driver_id IS NULL AND assigned_vehicle_id IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM booking_driver_offers o
+                                  WHERE o.booking_id = bookings.id AND o.status = 'PENDING')
+                RETURNING dispatch_failed_at
+                """, (rs, row) -> rs.getTimestamp(1).toInstant(), ts(now), ts(now), bookingId)
+                .stream().findFirst().orElse(null);
     }
 
     public Optional<Offer> pendingForBooking(Long bookingId) {
@@ -235,10 +261,15 @@ public class DispatchStore {
         return rs.getTimestamp(column).toInstant();
     }
 
+    private Instant instantNullable(ResultSet rs, String column) throws SQLException {
+        Timestamp value = rs.getTimestamp(column);
+        return value == null ? null : value.toInstant();
+    }
+
     private Timestamp ts(Instant instant) { return Timestamp.from(instant); }
 
-    public record DispatchBooking(Long id, BookingStatus status, VehicleType vehicleType,
-                                  Long assignedDriverId, Long assignedVehicleId) {}
+    public record DispatchBooking(Long id, UUID publicId, BookingStatus status, VehicleType vehicleType,
+                                  Long assignedDriverId, Long assignedVehicleId, Instant deadlineAt) {}
     public record Candidate(Long driverId, Long vehicleId) {}
     public record Offer(Long id, Long bookingId, Long driverId, Long vehicleId,
                         DriverOfferStatus status, Instant offeredAt, Instant expiresAt) {}

@@ -15,6 +15,9 @@ public class DispatchProperties {
     private int batchSize = 25;
     @Min(1)
     private long retrySeconds = 5;
+    @Min(15)
+    @Max(3600)
+    private long searchTimeoutSeconds = 120;
 
     public double getRadiusMeters() { return radiusMeters; }
     public void setRadiusMeters(double radiusMeters) { this.radiusMeters = radiusMeters; }
@@ -22,4 +25,6 @@ public class DispatchProperties {
     public void setBatchSize(int batchSize) { this.batchSize = batchSize; }
     public long getRetrySeconds() { return retrySeconds; }
     public void setRetrySeconds(long retrySeconds) { this.retrySeconds = retrySeconds; }
+    public long getSearchTimeoutSeconds() { return searchTimeoutSeconds; }
+    public void setSearchTimeoutSeconds(long searchTimeoutSeconds) { this.searchTimeoutSeconds = searchTimeoutSeconds; }
 }

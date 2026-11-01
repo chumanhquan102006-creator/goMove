@@ -944,6 +944,17 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                                                           child: const Text(
                                                               'Xem lại chuyến')),
                                                     ])))),
+                                  if (!state.loading &&
+                                      booking != null &&
+                                      const {'CANCELLED', 'NO_DRIVER_AVAILABLE'}
+                                          .contains(booking.status))
+                                    Card(
+                                        child: Padding(
+                                            padding: const EdgeInsets.all(12),
+                                            child: Text(booking.status ==
+                                                    'CANCELLED'
+                                                ? 'Chuyến trước đã được hủy. Bạn có thể đặt chuyến mới.'
+                                                : 'Không tìm được tài xế cho chuyến trước. Bạn có thể thử đặt chuyến mới.'))),
                                   if (state.error != null)
                                     Card(
                                         color: Theme.of(context)

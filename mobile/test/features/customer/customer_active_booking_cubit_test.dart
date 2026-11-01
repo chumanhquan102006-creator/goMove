@@ -98,6 +98,12 @@ class CustomerServer implements CustomerRepository {
 }
 
 class PaymentServer implements TripRepository {
+  @override
+  Future<TripTransition> cancelCustomer(String id, int generation) =>
+      throw UnimplementedError();
+  @override
+  Future<TripTransition> cancelDriver(String id, int generation) =>
+      throw UnimplementedError();
   final payments = <String, CashPayment>{};
   final calls = <(String, int)>[];
   Object? error;
@@ -370,6 +376,21 @@ void main() {
     expect(cubit.state.isActive, isFalse);
     expect(store.writes, 0);
     await cubit.close();
+  });
+
+  test('Cancelled and no-driver Bookings never remain active recovery trips',
+      () async {
+    for (final terminal in ['CANCELLED', 'NO_DRIVER_AVAILABLE']) {
+      customerServer.bookings[bookingA] = serverBooking(bookingA, terminal);
+      store.records[customerA] = const ActiveBookingRecord(
+          customerPublicId: customerA, bookingPublicId: bookingA);
+      final cubit = newCubit();
+      await cubit.restore();
+      expect(cubit.state.booking?.status, terminal);
+      expect(cubit.state.isActive, isFalse);
+      expect(paymentServer.calls, isEmpty);
+      await cubit.close();
+    }
   });
 
   test('Manual PAID history does not replace an active saved Booking',

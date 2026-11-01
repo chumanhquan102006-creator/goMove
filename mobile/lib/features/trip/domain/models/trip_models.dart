@@ -1,5 +1,8 @@
 enum TripAction { arrive, onboard, start, complete }
 
+bool isTerminalTripStatus(String status) =>
+    const {'COMPLETED', 'CANCELLED', 'NO_DRIVER_AVAILABLE'}.contains(status);
+
 extension TripActionContract on TripAction {
   String get path => name;
 
@@ -109,6 +112,9 @@ class TrackingSnapshot {
   final DateTime? passengerOnboardAt;
   final DateTime? tripStartedAt;
   final DateTime? tripCompletedAt;
+  final DateTime? cancelledAt;
+  final String? cancelledBy;
+  final DateTime? dispatchFailedAt;
   final double? latitude;
   final double? longitude;
   final double? accuracy;
@@ -127,6 +133,9 @@ class TrackingSnapshot {
       this.passengerOnboardAt,
       this.tripStartedAt,
       this.tripCompletedAt,
+      this.cancelledAt,
+      this.cancelledBy,
+      this.dispatchFailedAt,
       this.latitude,
       this.longitude,
       this.accuracy,
@@ -152,11 +161,28 @@ class TrackingSnapshot {
         passengerOnboardAt: passengerOnboardAt,
         tripStartedAt: tripStartedAt,
         tripCompletedAt: tripCompletedAt,
+        cancelledAt: cancelledAt,
+        cancelledBy: cancelledBy,
+        dispatchFailedAt: dispatchFailedAt,
         latitude: latitude,
         longitude: longitude,
         accuracy: accuracy,
         bearing: bearing,
         locationUpdatedAt: locationUpdatedAt,
+      );
+
+  TrackingSnapshot withoutPrivateLiveData() => TrackingSnapshot(
+        bookingPublicId: bookingPublicId,
+        status: status,
+        driverPublicId: driverPublicId,
+        driverAcceptedAt: driverAcceptedAt,
+        driverArrivedAt: driverArrivedAt,
+        passengerOnboardAt: passengerOnboardAt,
+        tripStartedAt: tripStartedAt,
+        tripCompletedAt: tripCompletedAt,
+        cancelledAt: cancelledAt,
+        cancelledBy: cancelledBy,
+        dispatchFailedAt: dispatchFailedAt,
       );
 
   factory TrackingSnapshot.fromJson(Map<String, dynamic> json) {
@@ -176,6 +202,9 @@ class TrackingSnapshot {
       passengerOnboardAt: _date(json['passengerOnboardAt']),
       tripStartedAt: _date(json['tripStartedAt']),
       tripCompletedAt: _date(json['tripCompletedAt']),
+      cancelledAt: _date(json['cancelledAt']),
+      cancelledBy: json['cancelledBy'] as String?,
+      dispatchFailedAt: _date(json['dispatchFailedAt']),
       // Defense in depth: a terminal Booking never exposes a cached/live fix.
       latitude: live ? _coordinate(json['latitude']) : null,
       longitude: live ? _coordinate(json['longitude']) : null,

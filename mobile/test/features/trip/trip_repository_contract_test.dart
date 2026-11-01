@@ -79,6 +79,7 @@ class _TripAdapter implements HttpClientAdapter {
         'onboard': 'PASSENGER_ONBOARD',
         'start': 'IN_PROGRESS',
         'complete': 'COMPLETED',
+        'cancel': 'CANCELLED',
       }[action];
       data = {
         'bookingPublicId': 'booking-1',
@@ -169,6 +170,15 @@ void main() {
           '/drivers/me/trips/booking-1/${action.path}');
       expect(adapter.requests.last.data, isNull);
     }
+    final customerCancel = await repo.cancelCustomer('booking-1', 12);
+    expect(customerCancel.status, 'CANCELLED');
+    expect(adapter.requests.last.path, '/bookings/booking-1/cancel');
+    expect(adapter.requests.last.method, 'POST');
+    expect(adapter.requests.last.data, isNull);
+    final driverCancel = await repo.cancelDriver('booking-1', 12);
+    expect(driverCancel.status, 'CANCELLED');
+    expect(adapter.requests.last.path, '/drivers/me/trips/booking-1/cancel');
+    expect(adapter.requests.last.data, isNull);
     final tracking = await repo.tracking('booking-1', 12);
     expect(tracking.status, 'DRIVER_ACCEPTED');
     expect(tracking.latitude, 21.0287);

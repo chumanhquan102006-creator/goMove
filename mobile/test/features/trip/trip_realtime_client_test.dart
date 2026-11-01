@@ -420,6 +420,33 @@ void main() {
     await second.dispose();
   });
 
+  test('Cancellation and no-driver frames are terminal and suppress GPS',
+      () async {
+    for (final terminal in ['CANCELLED', 'NO_DRIVER_AVAILABLE']) {
+      final h = _Harness();
+      final subscription = h.client.listen(
+          bookingPublicId: bookingA,
+          sessionGeneration: 1,
+          driver: true,
+          reconcileBeforeEvents: () async {});
+      await _settle();
+      h.transports.single.connect();
+      await _settle();
+      final events = <TripRealtimeEvent>[];
+      subscription.events.listen(events.add);
+      h.transports.single.message(_status(bookingA, terminal));
+      h.transports.single.message(_location(bookingA));
+      await _settle();
+      expect(events, hasLength(1));
+      expect((events.single as TripStatusChangedEvent).status, terminal);
+      expect(
+          await subscription.sendLocation(const DriverCoordinates(21, 105),
+              sampledAt: h.now),
+          isFalse);
+      await subscription.dispose();
+    }
+  });
+
   test('parser rejects malformed coordinates, timestamps, types and status',
       () {
     expect(parseTripRealtimeEvent(_location(bookingA), bookingA),

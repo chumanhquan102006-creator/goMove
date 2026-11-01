@@ -6,6 +6,7 @@ import 'package:stomp_dart_client/stomp_dart_client.dart';
 import '../../../core/config/app_config.dart';
 import '../../../core/storage/secure_storage_service.dart';
 import '../../driver/domain/models/driver_models.dart';
+import '../domain/models/trip_models.dart';
 
 enum TripRealtimeConnectionState {
   connecting,
@@ -65,6 +66,8 @@ TripRealtimeEvent? parseTripRealtimeEvent(
             'PASSENGER_ONBOARD',
             'IN_PROGRESS',
             'COMPLETED',
+            'CANCELLED',
+            'NO_DRIVER_AVAILABLE',
           }.contains(status) ||
           timestamp is! String) {
         return null;
@@ -467,7 +470,8 @@ class _TripRealtimeSubscription implements TripRealtimeSubscription {
       if (!_currentEpoch(epoch)) return;
       final event = parseTripRealtimeEvent(body, bookingPublicId);
       if (event == null || _completed) return;
-      if (event is TripStatusChangedEvent && event.status == 'COMPLETED') {
+      if (event is TripStatusChangedEvent &&
+          isTerminalTripStatus(event.status)) {
         _completed = true;
       }
       if (!_events.isClosed) _events.add(event);

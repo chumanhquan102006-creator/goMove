@@ -2,6 +2,7 @@ package com.gomove.trip.api;
 
 import com.gomove.common.api.ApiResponse;
 import com.gomove.common.security.CustomUserPrincipal;
+import com.gomove.booking.service.BookingCancellationService;
 import com.gomove.trip.service.TripAction;
 import com.gomove.trip.service.TripApplicationService;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -18,8 +19,19 @@ import java.util.UUID;
 @PreAuthorize("hasRole('DRIVER')")
 public class DriverTripController {
     private final TripApplicationService trips;
+    private final BookingCancellationService cancellations;
 
-    public DriverTripController(TripApplicationService trips) { this.trips = trips; }
+    public DriverTripController(TripApplicationService trips, BookingCancellationService cancellations) {
+        this.trips = trips;
+        this.cancellations = cancellations;
+    }
+
+    @PostMapping("/cancel")
+    public ApiResponse<TripTransitionResponse> cancel(@AuthenticationPrincipal CustomUserPrincipal user,
+                                                       @PathVariable UUID bookingPublicId) {
+        return ApiResponse.success("BOOKING_CANCELLED", "Booking cancelled",
+                cancellations.cancel(bookingPublicId, user.publicId(), user.role()));
+    }
 
     @PostMapping("/arrive")
     public ApiResponse<TripTransitionResponse> arrive(@AuthenticationPrincipal CustomUserPrincipal user,

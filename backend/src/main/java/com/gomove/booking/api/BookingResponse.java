@@ -25,6 +25,9 @@ public record BookingResponse(
         Instant passengerOnboardAt,
         Instant tripStartedAt,
         Instant tripCompletedAt,
+        Instant cancelledAt,
+        String cancelledBy,
+        Instant dispatchFailedAt,
         double pickupLatitude,
         double pickupLongitude,
         double dropoffLatitude,
@@ -40,6 +43,7 @@ public record BookingResponse(
                 booking.getAssignedVehicle() == null ? null : booking.getAssignedVehicle().getPublicId(),
                 booking.getDriverAcceptedAt(), booking.getDriverArrivedAt(),
                 booking.getPassengerOnboardAt(), booking.getTripStartedAt(), booking.getTripCompletedAt(),
+                booking.getCancelledAt(), booking.getCancelledBy(), booking.getDispatchFailedAt(),
                 booking.getPickupLocation().getY(), booking.getPickupLocation().getX(),
                 booking.getDropoffLocation().getY(), booking.getDropoffLocation().getX(),
                 booking.getDistanceMeters(), booking.getDurationSeconds());

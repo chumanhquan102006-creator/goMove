@@ -38,6 +38,8 @@ String customerTripStatusLabel(String status) => switch (status) {
       'PASSENGER_ONBOARD' => 'Đã đón khách.',
       'IN_PROGRESS' => 'Chuyến đi đang diễn ra.',
       'COMPLETED' => 'Chuyến đi đã hoàn thành.',
+      'CANCELLED' => 'Chuyến đi đã được hủy.',
+      'NO_DRIVER_AVAILABLE' => 'Không tìm được tài xế trong thời gian chờ.',
       _ => 'Đang xác minh trạng thái chuyến.',
     };
 
@@ -217,6 +219,28 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
     super.dispose();
   }
 
+  Future<void> _confirmCancel() async {
+    if (!_cubit.state.canCancel) return;
+    final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialog) => AlertDialog(
+              title: const Text('Hủy chuyến này?'),
+              content: const Text(
+                  'Chỉ có thể hủy trước khi đón khách. Chúng tôi sẽ xác nhận trạng thái với máy chủ.'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(dialog, false),
+                    child: const Text('Giữ chuyến')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(dialog, true),
+                    child: const Text('Xác nhận hủy')),
+              ],
+            ));
+    if (confirmed == true && mounted && _cubit.state.canCancel) {
+      await _cubit.cancel();
+    }
+  }
+
   @override
   Widget build(BuildContext context) => BlocProvider(
         create: (_) => _cubit,
@@ -280,7 +304,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
                                         Icon(
-                                          state.status == 'COMPLETED'
+                                          isTerminalTripStatus(state.status)
                                               ? Icons.flag_circle_outlined
                                               : Icons.location_searching,
                                           size: 42,
@@ -288,8 +312,10 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                         ),
                                         const SizedBox(height: 8),
                                         Text(
-                                          state.status == 'COMPLETED'
-                                              ? 'Chuyến đã hoàn thành; vị trí tài xế được ẩn.'
+                                          isTerminalTripStatus(state.status)
+                                              ? state.status == 'COMPLETED'
+                                                  ? 'Chuyến đã hoàn thành; vị trí tài xế được ẩn.'
+                                                  : 'Chuyến đã kết thúc; vị trí tài xế được ẩn.'
                                               : 'Bản đồ vị trí tài xế sẽ hiện khi có GPS được phép hiển thị.',
                                           textAlign: TextAlign.center,
                                         ),
@@ -378,7 +404,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                             .textTheme
                                             .headlineSmall),
                                   ),
-                                  if (hasRenderableLocation) ...[
+                                  if (!isTerminalTripStatus(state.status)) ...[
                                     const SizedBox(height: 6),
                                     Text(
                                         customerRealtimeLabel(
@@ -387,29 +413,45 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                             .textTheme
                                             .bodySmall),
                                   ],
-                                  const SizedBox(height: 14),
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.circular(8),
-                                    child: TweenAnimationBuilder<double>(
-                                      key: const ValueKey(
-                                          'customer-trip-progress'),
-                                      tween: Tween<double>(
-                                        begin:
-                                            (_progress(widget.booking.status) +
-                                                    1) /
-                                                _timeline.length,
-                                        end: (progress + 1) / _timeline.length,
-                                      ),
-                                      duration: motionDuration,
-                                      curve: AppMotion.standardCurve,
-                                      builder: (context, value, child) =>
-                                          LinearProgressIndicator(
-                                        value: value,
-                                        minHeight: 7,
-                                        semanticsLabel: 'Tiến độ chuyến đi',
+                                  if (!isTerminalTripStatus(state.status)) ...[
+                                    const SizedBox(height: 14),
+                                    ClipRRect(
+                                      borderRadius: BorderRadius.circular(8),
+                                      child: TweenAnimationBuilder<double>(
+                                        key: const ValueKey(
+                                            'customer-trip-progress'),
+                                        tween: Tween<double>(
+                                          begin: (_progress(
+                                                      widget.booking.status) +
+                                                  1) /
+                                              _timeline.length,
+                                          end:
+                                              (progress + 1) / _timeline.length,
+                                        ),
+                                        duration: motionDuration,
+                                        curve: AppMotion.standardCurve,
+                                        builder: (context, value, child) =>
+                                            LinearProgressIndicator(
+                                          value: value,
+                                          minHeight: 7,
+                                          semanticsLabel: 'Tiến độ chuyến đi',
+                                        ),
                                       ),
                                     ),
-                                  ),
+                                  ],
+                                  if (state.status == 'PASSENGER_ONBOARD' ||
+                                      state.status == 'IN_PROGRESS' ||
+                                      state.status == 'COMPLETED')
+                                    const Padding(
+                                        padding: EdgeInsets.only(top: 8),
+                                        child: Text(
+                                            'Không thể tự hủy sau khi khách đã lên xe.')),
+                                  if (state.status == 'CANCELLED')
+                                    Text(
+                                        'Đã hủy lúc: ${_time(state.tracking?.cancelledAt ?? booking.cancelledAt)}'),
+                                  if (state.status == 'NO_DRIVER_AVAILABLE')
+                                    Text(
+                                        'Đã dừng tìm lúc: ${_time(state.tracking?.dispatchFailedAt ?? booking.dispatchFailedAt)}'),
                                 ],
                               ),
                             ),
@@ -419,6 +461,24 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                             bookingPublicId: booking.publicId,
                             status: state.status,
                           ),
+                          if (state.canCancel) ...[
+                            const SizedBox(height: 8),
+                            OutlinedButton.icon(
+                              key: const ValueKey('customer-cancel-booking'),
+                              onPressed: state.loading ||
+                                      state.cancellationBusy ||
+                                      state.cancellationUnresolved
+                                  ? null
+                                  : _confirmCancel,
+                              icon: const Icon(Icons.cancel_outlined),
+                              label: const Text('Hủy chuyến'),
+                            ),
+                          ],
+                          if (state.cancellationBusy)
+                            const Padding(
+                                padding: EdgeInsets.all(8),
+                                child: Text(
+                                    'Đang chờ máy chủ xác nhận hủy chuyến…')),
                           // Keep later sliver children at stable indices while polling so
                           // the native map is not torn down and rebuilt every refresh.
                           Column(children: [
@@ -501,51 +561,55 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                           if (state.tracking?.bookingPublicId ==
                                   booking.publicId &&
                               state.tracking?.allowsLiveLocation == true &&
-                              state.status != 'COMPLETED' &&
+                              !isTerminalTripStatus(state.status) &&
                               state.tracking?.assignedDriver != null)
                             _assignedDriverCard(context, state.tracking!),
                           if (_pickup != null && _dropoff != null)
                             _bookingAddressCard(context, _pickup!, _dropoff!,
                                 _pickupAddress, _dropoffAddress),
-                          const SizedBox(height: 14),
-                          Card(
-                            child: Column(children: [
-                              Padding(
-                                padding:
-                                    const EdgeInsets.fromLTRB(16, 16, 16, 4),
-                                child: Row(children: [
-                                  Icon(Icons.route_outlined,
-                                      color: colors.primary),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text('Tiến trình chuyến đi',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .titleMedium),
-                                  ),
-                                ]),
-                              ),
-                              ...List.generate(_timeline.length, (index) {
-                                final step = _timeline[index];
-                                final time = _stepTime(state.tracking, step.$1);
-                                final reached = index <= progress;
-                                return ListTile(
-                                  dense: true,
-                                  leading: Icon(index == progress
-                                      ? Icons.radio_button_checked
-                                      : reached
-                                          ? Icons.check_circle
-                                          : Icons.radio_button_unchecked),
-                                  iconColor:
-                                      reached ? colors.primary : colors.outline,
-                                  title: Text(step.$2),
-                                  subtitle:
-                                      time == null ? null : Text(_time(time)),
-                                  enabled: reached,
-                                );
-                              }),
-                            ]),
-                          ),
+                          if (!isTerminalTripStatus(state.status)) ...[
+                            const SizedBox(height: 14),
+                            Card(
+                              child: Column(children: [
+                                Padding(
+                                  padding:
+                                      const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                                  child: Row(children: [
+                                    Icon(Icons.route_outlined,
+                                        color: colors.primary),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text('Tiến trình chuyến đi',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .titleMedium),
+                                    ),
+                                  ]),
+                                ),
+                                ...List.generate(_timeline.length, (index) {
+                                  final step = _timeline[index];
+                                  final time =
+                                      _stepTime(state.tracking, step.$1);
+                                  final reached = index <= progress;
+                                  return ListTile(
+                                    dense: true,
+                                    leading: Icon(index == progress
+                                        ? Icons.radio_button_checked
+                                        : reached
+                                            ? Icons.check_circle
+                                            : Icons.radio_button_unchecked),
+                                    iconColor: reached
+                                        ? colors.primary
+                                        : colors.outline,
+                                    title: Text(step.$2),
+                                    subtitle:
+                                        time == null ? null : Text(_time(time)),
+                                    enabled: reached,
+                                  );
+                                }),
+                              ]),
+                            ),
+                          ],
                           const SizedBox(height: 10),
                           Card(
                             key: const ValueKey('customer-live-tracking-card'),
@@ -567,8 +631,10 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                     ]),
                                     const SizedBox(height: 6),
                                     Text(
-                                        state.status == 'COMPLETED'
-                                            ? 'Chuyến đã hoàn thành; vị trí hiện tại của tài xế được ẩn.'
+                                        isTerminalTripStatus(state.status)
+                                            ? state.status == 'COMPLETED'
+                                                ? 'Chuyến đã hoàn thành; vị trí hiện tại của tài xế được ẩn.'
+                                                : 'Chuyến đã kết thúc; vị trí hiện tại của tài xế được ẩn.'
                                             : customerRealtimeLabel(
                                                 state.realtimeState),
                                         style: Theme.of(context)
@@ -576,7 +642,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                             .bodySmall),
                                     const Text(
                                         'Nếu chưa có dữ liệu tuyến đường, bản đồ chỉ hiển thị các điểm đã được xác minh; không nối thẳng thành đường đi.'),
-                                    if (state.status != 'COMPLETED' &&
+                                    if (!isTerminalTripStatus(state.status) &&
                                         !hasRenderableLocation)
                                       const Text(
                                           'Chưa có vị trí GPS được phép hiển thị.'),
@@ -597,7 +663,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                               .textTheme
                                               .bodySmall),
                                     ],
-                                    if (state.status != 'COMPLETED')
+                                    if (!isTerminalTripStatus(state.status))
                                       Text(
                                           'REST là nguồn trạng thái bền vững khi mất realtime.',
                                           style: Theme.of(context)
@@ -607,77 +673,81 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                             ),
                           ),
                           const SizedBox(height: 10),
-                          Card(
-                            child: Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Row(children: [
-                                        AnimatedSwitcher(
-                                          key: const ValueKey(
-                                              'customer-cash-switcher'),
-                                          duration: cashDuration,
-                                          switchInCurve: AppMotion.enterCurve,
-                                          switchOutCurve: AppMotion.exitCurve,
-                                          transitionBuilder:
-                                              (child, animation) => reduceMotion
-                                                  ? child
-                                                  : FadeTransition(
-                                                      opacity: animation,
-                                                      child: child),
-                                          child: Icon(
-                                            payment?.isPaid == true
-                                                ? Icons.check_circle_outline
-                                                : Icons.payments_outlined,
-                                            key: ValueKey(
-                                                payment?.isPaid == true),
-                                            color: payment?.isPaid == true
-                                                ? colors.tertiary
-                                                : colors.primary,
+                          if (state.status != 'CANCELLED' &&
+                              state.status != 'NO_DRIVER_AVAILABLE')
+                            Card(
+                              child: Padding(
+                                  padding: const EdgeInsets.all(12),
+                                  child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(children: [
+                                          AnimatedSwitcher(
+                                            key: const ValueKey(
+                                                'customer-cash-switcher'),
+                                            duration: cashDuration,
+                                            switchInCurve: AppMotion.enterCurve,
+                                            switchOutCurve: AppMotion.exitCurve,
+                                            transitionBuilder: (child,
+                                                    animation) =>
+                                                reduceMotion
+                                                    ? child
+                                                    : FadeTransition(
+                                                        opacity: animation,
+                                                        child: child),
+                                            child: Icon(
+                                              payment?.isPaid == true
+                                                  ? Icons.check_circle_outline
+                                                  : Icons.payments_outlined,
+                                              key: ValueKey(
+                                                  payment?.isPaid == true),
+                                              color: payment?.isPaid == true
+                                                  ? colors.tertiary
+                                                  : colors.primary,
+                                            ),
                                           ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Expanded(
-                                          child: Text('Thanh toán tiền mặt',
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text('Thanh toán tiền mặt',
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .titleMedium),
+                                          ),
+                                        ]),
+                                        const SizedBox(height: 8),
+                                        if (payment == null)
+                                          const Text(
+                                              'Đang chờ xác minh thanh toán từ máy chủ.')
+                                        else ...[
+                                          Text(
+                                              payment.isPaid
+                                                  ? 'Đã thanh toán (PAID)'
+                                                  : 'Chưa thanh toán (PENDING)',
+                                              style: TextStyle(
+                                                  color: payment.isPaid
+                                                      ? colors.tertiary
+                                                      : colors.primary,
+                                                  fontWeight: FontWeight.w700)),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                              'Số tiền: ${vnd(payment.amount)}',
                                               style: Theme.of(context)
                                                   .textTheme
                                                   .titleMedium),
-                                        ),
-                                      ]),
-                                      const SizedBox(height: 8),
-                                      if (payment == null)
-                                        const Text(
-                                            'Đang chờ xác minh thanh toán từ máy chủ.')
-                                      else ...[
-                                        Text(
-                                            payment.isPaid
-                                                ? 'Đã thanh toán (PAID)'
-                                                : 'Chưa thanh toán (PENDING)',
-                                            style: TextStyle(
-                                                color: payment.isPaid
-                                                    ? colors.tertiary
-                                                    : colors.primary,
-                                                fontWeight: FontWeight.w700)),
-                                        const SizedBox(height: 4),
-                                        Text('Số tiền: ${vnd(payment.amount)}',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .titleMedium),
-                                        if (payment.paidAt != null)
-                                          Text(
-                                              'Đã trả lúc: ${_time(payment.paidAt)}'),
-                                      ],
-                                    ])),
-                          ),
+                                          if (payment.paidAt != null)
+                                            Text(
+                                                'Đã trả lúc: ${_time(payment.paidAt)}'),
+                                        ],
+                                      ])),
+                            ),
                           const SizedBox(height: 16),
                           OutlinedButton.icon(
                             onPressed: state.loading
                                 ? null
                                 : () => context
                                     .read<BookingStatusCubit>()
-                                    .refresh(),
+                                    .refresh(resolveCancellation: true),
                             icon: const Icon(Icons.refresh),
                             label: const Text('Cập nhật từ máy chủ'),
                           ),

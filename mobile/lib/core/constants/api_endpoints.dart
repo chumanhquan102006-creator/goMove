@@ -19,6 +19,8 @@ class ApiEndpoints {
   static const String bookings = '/bookings';
   static const String bookingHistory = '/bookings/history';
   static String booking(String publicId) => '/bookings/$publicId';
+  static String cancelCustomerBooking(String publicId) =>
+      '/bookings/$publicId/cancel';
   static String bookingRoute(String publicId) => '/bookings/$publicId/route';
   static String bookingTracking(String publicId) =>
       '/bookings/$publicId/tracking';
@@ -27,6 +29,8 @@ class ApiEndpoints {
       '/bookings/$publicId/payment';
   static String driverTripAction(String bookingPublicId, String action) =>
       '/drivers/me/trips/$bookingPublicId/$action';
+  static String cancelDriverTrip(String bookingPublicId) =>
+      '/drivers/me/trips/$bookingPublicId/cancel';
   static String confirmTripCash(String bookingPublicId) =>
       '/drivers/me/trips/$bookingPublicId/cash/confirm';
 

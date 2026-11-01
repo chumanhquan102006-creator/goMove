@@ -91,4 +91,28 @@ class TripRepositoryImpl implements TripRepository {
     }
     return value;
   }
+
+  Future<TripTransition> _cancel(
+      String path, String bookingPublicId, int sessionGeneration) async {
+    final response = await _client.post<Map<String, dynamic>>(path,
+        options: _session(sessionGeneration));
+    final value = TripTransition.fromJson(_data(response.data));
+    if (value.bookingPublicId != bookingPublicId ||
+        value.status != 'CANCELLED') {
+      throw const FormatException('Phản hồi hủy chuyến không khớp Booking');
+    }
+    return value;
+  }
+
+  @override
+  Future<TripTransition> cancelCustomer(
+          String bookingPublicId, int sessionGeneration) =>
+      _cancel(ApiEndpoints.cancelCustomerBooking(bookingPublicId),
+          bookingPublicId, sessionGeneration);
+
+  @override
+  Future<TripTransition> cancelDriver(
+          String bookingPublicId, int sessionGeneration) =>
+      _cancel(ApiEndpoints.cancelDriverTrip(bookingPublicId), bookingPublicId,
+          sessionGeneration);
 }

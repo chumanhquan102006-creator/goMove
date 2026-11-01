@@ -70,6 +70,7 @@ class _DriverAcceptedBookingScreenState
           location: sl<DriverLocationSource>(),
           onCompleted: widget.driverCubit?.markTripCompleted,
           onSettled: widget.driverCubit?.finishSettledBooking,
+          onCancelled: widget.driverCubit?.finishCancelledBooking,
         );
     _tripStates = _cubit.stream.listen(_onTripState);
     unawaited(_cubit.initialize());
@@ -212,6 +213,28 @@ class _DriverAcceptedBookingScreenState
     if (confirmed == true && mounted) await _cubit.confirmCash();
   }
 
+  Future<void> _confirmCancel() async {
+    if (!_cubit.state.canCancel) return;
+    final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialog) => AlertDialog(
+              title: const Text('Hủy chuyến đã nhận?'),
+              content: const Text(
+                  'Chỉ có thể hủy trước khi đón khách. Máy chủ sẽ kết thúc chuyến và giải phóng tài xế.'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(dialog, false),
+                    child: const Text('Giữ chuyến')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(dialog, true),
+                    child: const Text('Xác nhận hủy')),
+              ],
+            ));
+    if (confirmed == true && mounted && _cubit.state.canCancel) {
+      await _cubit.cancel();
+    }
+  }
+
   @override
   Widget build(BuildContext context) => BlocProvider.value(
         value: _cubit,
@@ -317,6 +340,20 @@ class _DriverAcceptedBookingScreenState
                                         label: Text(_actionLabel(
                                             state.availableAction!)),
                                       ),
+                                    if (const {
+                                      'DRIVER_ACCEPTED',
+                                      'DRIVER_ARRIVED'
+                                    }.contains(state.status))
+                                      OutlinedButton.icon(
+                                        key: const ValueKey(
+                                            'driver-cancel-trip'),
+                                        onPressed: state.canCancel &&
+                                                _verifiedBooking(state)
+                                            ? _confirmCancel
+                                            : null,
+                                        icon: const Icon(Icons.cancel_outlined),
+                                        label: const Text('Hủy chuyến'),
+                                      ),
                                     if (state.canConfirmCash)
                                       FilledButton.icon(
                                         onPressed: state.foreground &&
@@ -367,7 +404,8 @@ class _DriverAcceptedBookingScreenState
                                     const SizedBox(height: 8),
                                     _gpsCard(context, state),
                                     const SizedBox(height: 8),
-                                    if (state.payment != null)
+                                    if (state.payment != null &&
+                                        state.status != 'CANCELLED')
                                       _paymentCard(context, state.payment!),
                                     if (state.receipt != null)
                                       TweenAnimationBuilder<double>(
@@ -455,6 +493,7 @@ class _DriverAcceptedBookingScreenState
     final tracking = state.tracking;
     final driverState = widget.driverCubit?.state;
     return !state.sessionEnded &&
+        state.status != 'CANCELLED' &&
         tracking != null &&
         tracking.bookingPublicId == widget.offer.bookingPublicId &&
         tracking.driverPublicId != null &&
@@ -511,6 +550,7 @@ class _DriverAcceptedBookingScreenState
   Widget _statusCard(BuildContext context, DriverTripState state) {
     final scheme = Theme.of(context).colorScheme;
     final completed = state.status == 'COMPLETED';
+    final cancelled = state.status == 'CANCELLED';
     return Card(
       key: ValueKey('driver-trip-status-${state.status ?? 'loading'}'),
       color: completed ? scheme.secondaryContainer : scheme.primaryContainer,
@@ -535,6 +575,11 @@ class _DriverAcceptedBookingScreenState
             const SizedBox(height: 8),
             const Text('Chuyến đã hoàn thành nhưng tài xế vẫn BUSY '
                 'cho đến khi tiền mặt được xác nhận.'),
+          ],
+          if (cancelled) ...[
+            const SizedBox(height: 8),
+            Text('Đã hủy lúc: ${_time(state.tracking?.cancelledAt)}. '
+                'Không tiếp tục gửi GPS chuyến đi.'),
           ],
         ]),
       ),
@@ -754,6 +799,7 @@ String _statusLabel(String? status) => switch (status) {
       'PASSENGER_ONBOARD' => 'Đã đón khách',
       'IN_PROGRESS' => 'Chuyến đi đang diễn ra',
       'COMPLETED' => 'Chuyến đi đã hoàn thành',
+      'CANCELLED' => 'Chuyến đi đã được hủy',
       _ => 'Đang tải chuyến đi',
     };
 

@@ -8,4 +8,8 @@ abstract class TripRepository {
       String bookingPublicId, TripAction action, int sessionGeneration);
   Future<CashReceipt> confirmCash(
       String bookingPublicId, int sessionGeneration);
+  Future<TripTransition> cancelCustomer(
+      String bookingPublicId, int sessionGeneration);
+  Future<TripTransition> cancelDriver(
+      String bookingPublicId, int sessionGeneration);
 }

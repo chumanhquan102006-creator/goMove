@@ -15,6 +15,9 @@ class Booking {
   final String? distanceMeters;
   final String? durationSeconds;
   final DateTime? tripCompletedAt;
+  final DateTime? cancelledAt;
+  final String? cancelledBy;
+  final DateTime? dispatchFailedAt;
 
   const Booking(
       {required this.publicId,
@@ -30,7 +33,10 @@ class Booking {
       this.dropoff,
       this.distanceMeters,
       this.durationSeconds,
-      this.tripCompletedAt});
+      this.tripCompletedAt,
+      this.cancelledAt,
+      this.cancelledBy,
+      this.dispatchFailedAt});
 
   bool get isCompleted => status == 'COMPLETED';
 }

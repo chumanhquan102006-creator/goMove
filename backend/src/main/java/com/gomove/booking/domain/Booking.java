@@ -64,6 +64,15 @@ public class Booking extends BaseEntity {
     @Column(name = "driver_released_at")
     private Instant driverReleasedAt;
 
+    @Column(name = "cancelled_at")
+    private Instant cancelledAt;
+
+    @Column(name = "cancelled_by", length = 16)
+    private String cancelledBy;
+
+    @Column(name = "dispatch_failed_at")
+    private Instant dispatchFailedAt;
+
     @Column(name = "pickup_location", nullable = false, updatable = false, columnDefinition = "geography(Point,4326)")
     private Point pickupLocation;
 
@@ -129,6 +138,9 @@ public class Booking extends BaseEntity {
     public Instant getTripStartedAt() { return tripStartedAt; }
     public Instant getTripCompletedAt() { return tripCompletedAt; }
     public Instant getDriverReleasedAt() { return driverReleasedAt; }
+    public Instant getCancelledAt() { return cancelledAt; }
+    public String getCancelledBy() { return cancelledBy; }
+    public Instant getDispatchFailedAt() { return dispatchFailedAt; }
     public Point getPickupLocation() { return pickupLocation; }
     public Point getDropoffLocation() { return dropoffLocation; }
     public BigDecimal getDistanceMeters() { return distanceMeters; }

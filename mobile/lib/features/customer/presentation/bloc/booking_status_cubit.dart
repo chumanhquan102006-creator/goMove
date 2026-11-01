@@ -19,6 +19,8 @@ const _tripStages = <String>[
   'PASSENGER_ONBOARD',
   'IN_PROGRESS',
   'COMPLETED',
+  'CANCELLED',
+  'NO_DRIVER_AVAILABLE',
 ];
 int _stage(String status) => _tripStages.indexOf(status);
 
@@ -77,6 +79,8 @@ class BookingStatusState {
   final String? eventStatus;
   final TripRealtimeConnectionState realtimeState;
   final bool loading;
+  final bool cancellationBusy;
+  final bool cancellationUnresolved;
   final bool sessionEnded;
   final String? error;
 
@@ -87,6 +91,8 @@ class BookingStatusState {
       this.eventStatus,
       this.realtimeState = TripRealtimeConnectionState.disconnected,
       this.loading = false,
+      this.cancellationBusy = false,
+      this.cancellationUnresolved = false,
       this.sessionEnded = false,
       this.error});
 
@@ -106,6 +112,17 @@ class BookingStatusState {
       }.contains(status) &&
       liveLocation != null;
 
+  bool get canCancel =>
+      !sessionEnded &&
+      !cancellationBusy &&
+      !cancellationUnresolved &&
+      const {
+        'REQUESTED',
+        'SEARCHING_DRIVER',
+        'DRIVER_ACCEPTED',
+        'DRIVER_ARRIVED'
+      }.contains(status);
+
   BookingStatusState copyWith(
           {Booking? booking,
           Object? tracking = _unchanged,
@@ -114,6 +131,8 @@ class BookingStatusState {
           Object? eventStatus = _unchanged,
           TripRealtimeConnectionState? realtimeState,
           bool? loading,
+          bool? cancellationBusy,
+          bool? cancellationUnresolved,
           bool? sessionEnded,
           Object? error = _unchanged}) =>
       BookingStatusState(booking ?? this.booking,
@@ -131,6 +150,9 @@ class BookingStatusState {
               : eventStatus as String?,
           realtimeState: realtimeState ?? this.realtimeState,
           loading: loading ?? this.loading,
+          cancellationBusy: cancellationBusy ?? this.cancellationBusy,
+          cancellationUnresolved:
+              cancellationUnresolved ?? this.cancellationUnresolved,
           sessionEnded: sessionEnded ?? this.sessionEnded,
           error: identical(error, _unchanged) ? this.error : error as String?);
 }
@@ -157,6 +179,7 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
   int _epoch = 0;
   int? _generation;
   int _trackingSyncRevision = 0;
+  int _terminalEventRevision = 0;
 
   BookingStatusCubit(this.getBooking, Booking initial,
       {this.tripRepository,
@@ -172,8 +195,10 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
     if (_active || isClosed || state.sessionEnded) {
       return;
     }
-    if (state.status == 'COMPLETED' &&
-        (!_hasTrip || state.payment?.isPaid == true)) {
+    if (state.status == 'CANCELLED' ||
+        state.status == 'NO_DRIVER_AVAILABLE' ||
+        (state.status == 'COMPLETED' &&
+            (!_hasTrip || state.payment?.isPaid == true))) {
       return;
     }
     _active = true;
@@ -229,6 +254,8 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
           eventStatus: null,
           sessionEnded: true,
           loading: false,
+          cancellationBusy: false,
+          cancellationUnresolved: false,
           error: message ??
               'Phiên đăng nhập đã thay đổi. Hãy mở lại chuyến từ tài khoản hiện tại.'));
     }
@@ -239,7 +266,7 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
         !_active ||
         isClosed ||
         epoch != _epoch ||
-        state.status == 'COMPLETED' ||
+        isTerminalTripStatus(state.status) ||
         _tripSubscription != null) {
       return;
     }
@@ -284,16 +311,25 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
       return;
     }
     if (event is TripStatusChangedEvent) {
+      if (isTerminalTripStatus(event.status)) {
+        if (isTerminalTripStatus(state.status)) return;
+        _terminalEventRevision++;
+        emit(state.copyWith(
+            tracking: state.tracking?.withoutPrivateLiveData(),
+            payment: null,
+            eventStatus: event.status,
+            liveLocation: null,
+            cancellationBusy: false,
+            cancellationUnresolved: false));
+        _disconnectRealtime();
+        unawaited(refresh());
+        return;
+      }
       if (_stage(event.status) <= _stage(state.status)) {
         return;
       }
       emit(state.copyWith(
-          eventStatus: event.status,
-          liveLocation:
-              event.status == 'COMPLETED' ? null : state.liveLocation));
-      if (event.status == 'COMPLETED') {
-        _disconnectRealtime();
-      }
+          eventStatus: event.status, liveLocation: state.liveLocation));
       unawaited(refresh());
     } else if (event is TripDriverLocationEvent &&
         const {
@@ -343,18 +379,21 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
     _timer = null;
     // A foreground return must revalidate contact details and the last GPS fix.
     final tracking = state.tracking;
-    if (!isClosed &&
-        (state.liveLocation != null ||
-            tracking?.assignedDriver != null ||
-            tracking?.assignedVehicle != null ||
-            tracking?.customer != null)) {
+    if (!isClosed) {
       emit(state.copyWith(
           tracking: tracking?.withoutParticipantDetails(), liveLocation: null));
+      if (state.cancellationBusy) {
+        emit(state.copyWith(
+            cancellationBusy: false,
+            cancellationUnresolved: true,
+            error:
+                'Chưa rõ kết quả hủy chuyến. Kết nối lại để kiểm tra với máy chủ.'));
+      }
     }
     _disconnectRealtime();
   }
 
-  Future<void> refresh() async {
+  Future<void> refresh({bool resolveCancellation = false}) async {
     if (isClosed || !_active || state.sessionEnded) {
       return;
     }
@@ -364,10 +403,13 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
       return;
     }
     final epoch = _epoch;
+    final terminalAtStart = _terminalEventRevision;
     _busy = true;
     final done = Completer<void>();
     _refreshDone = done;
-    emit(state.copyWith(loading: true, error: null));
+    emit(state.copyWith(
+        loading: true,
+        error: state.cancellationUnresolved ? state.error : null));
     try {
       if (!_hasTrip) {
         final booking = await getBooking(state.booking.publicId);
@@ -375,7 +417,7 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
           return;
         }
         emit(state.copyWith(booking: booking, loading: false));
-        if (booking.isCompleted) {
+        if (isTerminalTripStatus(booking.status)) {
           stop();
         }
         return;
@@ -388,18 +430,31 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
       if (!await _current(epoch)) {
         return;
       }
+      if (terminalAtStart != _terminalEventRevision) {
+        return;
+      }
       if (tracking.bookingPublicId != state.booking.publicId) {
         throw const FormatException('Tracking không khớp Booking');
+      }
+      if (isTerminalTripStatus(state.status) &&
+          !isTerminalTripStatus(tracking.status)) {
+        emit(state.copyWith(
+            tracking: state.tracking?.withoutPrivateLiveData(),
+            payment: null,
+            liveLocation: null,
+            loading: false));
+        return;
       }
       _trackingSyncRevision++;
       // A stale REST response must not resurrect a completed trip or its GPS.
       final previousStatus = state.status;
-      final newerPreviousStatus =
+      final newerPreviousStatus = !isTerminalTripStatus(tracking.status) &&
           _stage(previousStatus) > _stage(tracking.status);
       final effectiveStatus =
           newerPreviousStatus ? previousStatus : tracking.status;
       final previousTracking = state.tracking;
-      final displayTracking = previousTracking != null &&
+      final displayTracking = !isTerminalTripStatus(tracking.status) &&
+              previousTracking != null &&
               _stage(previousTracking.status) > _stage(tracking.status)
           ? previousTracking
           : tracking;
@@ -412,13 +467,30 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
               ? currentLocation
               : freshLocation;
       emit(state.copyWith(
-          tracking: displayTracking,
+          tracking: isTerminalTripStatus(effectiveStatus)
+              ? displayTracking.withoutPrivateLiveData()
+              : displayTracking,
           eventStatus: newerPreviousStatus ? previousStatus : null,
           liveLocation:
-              effectiveStatus == 'COMPLETED' ? null : preferredLocation,
+              isTerminalTripStatus(effectiveStatus) ? null : preferredLocation,
+          payment: isTerminalTripStatus(effectiveStatus) &&
+                  effectiveStatus != 'COMPLETED'
+              ? null
+              : state.payment,
+          cancellationUnresolved: isTerminalTripStatus(effectiveStatus)
+              ? false
+              : resolveCancellation
+                  ? false
+                  : state.cancellationUnresolved,
           loading: false));
-      if (effectiveStatus == 'COMPLETED') {
+      if (isTerminalTripStatus(effectiveStatus)) {
         _disconnectRealtime();
+      }
+
+      if (effectiveStatus == 'CANCELLED' ||
+          effectiveStatus == 'NO_DRIVER_AVAILABLE') {
+        stop();
+        return;
       }
 
       try {
@@ -427,10 +499,15 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
         if (!await _current(epoch)) {
           return;
         }
+        if (terminalAtStart != _terminalEventRevision) {
+          return;
+        }
         if (payment.bookingPublicId != state.booking.publicId) {
           throw const FormatException('Thanh toán không khớp Booking');
         }
-        emit(state.copyWith(payment: payment, error: null));
+        emit(state.copyWith(
+            payment: payment,
+            error: state.cancellationUnresolved ? state.error : null));
         if (effectiveStatus == 'COMPLETED' && payment.isPaid) {
           stop();
         }
@@ -469,6 +546,54 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
       if (_queued && _active && !isClosed) {
         _queued = false;
         unawaited(refresh());
+      }
+    }
+  }
+
+  Future<void> cancel() async {
+    if (!_active || !_hasTrip || !state.canCancel || _generation == null) {
+      return;
+    }
+    final epoch = _epoch;
+    if (!await _current(epoch)) return;
+    emit(state.copyWith(cancellationBusy: true, error: null));
+    try {
+      final result = await tripRepository!
+          .cancelCustomer(state.booking.publicId, _generation!);
+      if (!await _current(epoch)) return;
+      if (result.bookingPublicId != state.booking.publicId ||
+          result.status != 'CANCELLED') {
+        throw const FormatException('Phản hồi hủy chuyến không khớp Booking');
+      }
+      _terminalEventRevision++;
+      emit(state.copyWith(
+          tracking: state.tracking?.withoutPrivateLiveData(),
+          payment: null,
+          liveLocation: null,
+          eventStatus: 'CANCELLED',
+          cancellationBusy: false,
+          cancellationUnresolved: false,
+          error: null));
+      _disconnectRealtime();
+      await refresh();
+    } catch (error) {
+      if (!await _current(epoch)) return;
+      if ((error is ServerException &&
+              const {401, 403, 404}.contains(error.statusCode)) ||
+          error is UnauthorizedException) {
+        _endSession(message: customerError(error));
+        return;
+      }
+      final uncertain = error is NetworkException ||
+          error is ServerException && error.statusCode == 503;
+      emit(state.copyWith(
+          cancellationBusy: false,
+          cancellationUnresolved: uncertain,
+          error: uncertain
+              ? 'Chưa rõ kết quả hủy chuyến. Đang đối chiếu với máy chủ.'
+              : customerError(error)));
+      if (uncertain || error is ServerException && error.statusCode == 409) {
+        await refresh(resolveCancellation: !uncertain);
       }
     }
   }

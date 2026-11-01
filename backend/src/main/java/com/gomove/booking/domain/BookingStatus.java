@@ -7,5 +7,7 @@ public enum BookingStatus {
     DRIVER_ARRIVED,
     PASSENGER_ONBOARD,
     IN_PROGRESS,
-    COMPLETED
+    COMPLETED,
+    CANCELLED,
+    NO_DRIVER_AVAILABLE
 }

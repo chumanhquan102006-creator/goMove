@@ -151,6 +151,12 @@ class _IntentStore implements BookingIntentStore {
 }
 
 class _TripRepository implements TripRepository {
+  @override
+  Future<TripTransition> cancelCustomer(String id, int generation) =>
+      throw UnimplementedError();
+  @override
+  Future<TripTransition> cancelDriver(String id, int generation) =>
+      throw UnimplementedError();
   String paymentStatus = 'PENDING';
   @override
   Future<CashPayment> payment(String bookingPublicId, int generation) async =>

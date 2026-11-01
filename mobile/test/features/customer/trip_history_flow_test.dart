@@ -136,6 +136,12 @@ class _Geocoding implements GeocodingRepository {
 }
 
 class _TripRepository implements TripRepository {
+  @override
+  Future<TripTransition> cancelCustomer(String id, int generation) =>
+      throw UnimplementedError();
+  @override
+  Future<TripTransition> cancelDriver(String id, int generation) =>
+      throw UnimplementedError();
   CashPayment value = _payment(_bookingA, 'PENDING');
   Completer<CashPayment>? pending;
   Object? error;

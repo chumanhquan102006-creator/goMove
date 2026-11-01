@@ -55,6 +55,12 @@ class DriverTripState {
       receipt == null &&
       !sessionEnded &&
       !operationBusy;
+  bool get canCancel =>
+      const {'DRIVER_ACCEPTED', 'DRIVER_ARRIVED'}.contains(status) &&
+      !sessionEnded &&
+      !operationBusy &&
+      !unresolved &&
+      foreground;
 
   DriverTripState copy(
           {Object? tracking = _same,
@@ -99,6 +105,7 @@ class DriverTripCubit extends Cubit<DriverTripState> {
   final DriverLocationSource _location;
   final void Function(String bookingPublicId)? onCompleted;
   final Future<void> Function(CashReceipt receipt)? onSettled;
+  final Future<void> Function(String bookingPublicId)? onCancelled;
   final Duration pollInterval;
   final Duration gpsInterval;
   int? _generation;
@@ -113,6 +120,8 @@ class DriverTripCubit extends Cubit<DriverTripState> {
   Completer<void>? _queuedRefresh;
   bool _queuedRefreshManual = false;
   int _confirmedOperationRevision = 0;
+  bool _cancelledCleanupComplete = false;
+  bool _completedNotified = false;
   bool _sendingGps = false;
   Timer? _pollTimer;
   Timer? _gpsTimer;
@@ -128,6 +137,7 @@ class DriverTripCubit extends Cubit<DriverTripState> {
       required DriverLocationSource location,
       this.onCompleted,
       this.onSettled,
+      this.onCancelled,
       this.pollInterval = const Duration(seconds: 10),
       this.gpsInterval = const Duration(seconds: 9)})
       : _repository = repository,
@@ -208,12 +218,24 @@ class DriverTripCubit extends Cubit<DriverTripState> {
       final tracking =
           await _repository.tracking(bookingPublicId, _generation!);
       if (!await _current(revision)) return;
-      final payment = await _repository.payment(bookingPublicId, _generation!);
+      if (confirmedAtStart != _confirmedOperationRevision) return;
+      // A terminal event is delivered after the Backend commits. A REST read
+      // started earlier (or a delayed response) cannot reopen that trip.
+      if (isTerminalTripStatus(state.status ?? '') &&
+          !isTerminalTripStatus(tracking.status)) {
+        emit(state.copy(
+            tracking: state.tracking?.withoutPrivateLiveData(),
+            payment: null,
+            loading: false));
+        return;
+      }
+      final payment = tracking.status == 'CANCELLED'
+          ? null
+          : await _repository.payment(bookingPublicId, _generation!);
       if (!await _current(revision)) return;
       // A poll started before a confirmed POST must not overwrite its newer
       // transition or PAID receipt with the poll's older REST snapshot.
       if (confirmedAtStart != _confirmedOperationRevision) return;
-      final previous = state.tracking;
       final status = tracking.status;
       emit(state.copy(
           tracking:
@@ -223,14 +245,23 @@ class DriverTripCubit extends Cubit<DriverTripState> {
           payment: payment,
           transition: null,
           loading: false,
-          unresolved: manual ? false : state.unresolved,
+          unresolved:
+              status == 'CANCELLED' || manual ? false : state.unresolved,
           error: state.unresolved && !manual ? state.error : null));
       if (status == 'COMPLETED') {
         _stopGps();
-        if (previous?.status != 'COMPLETED') {
+        if (!_completedNotified) {
+          _completedNotified = true;
           onCompleted?.call(bookingPublicId);
         }
         await _disconnect();
+      } else if (status == 'CANCELLED') {
+        _stopGps();
+        await _disconnect();
+        if (!_cancelledCleanupComplete && onCancelled != null) {
+          await onCancelled!(bookingPublicId);
+          _cancelledCleanupComplete = true;
+        }
       } else if (tracking.allowsLiveLocation &&
           state.foreground &&
           _subscription == null) {
@@ -258,6 +289,58 @@ class DriverTripCubit extends Cubit<DriverTripState> {
     }
   }
 
+  Future<void> cancel() async {
+    if (!state.canCancel || _generation == null) return;
+    final revision = _revision;
+    final confirmedAtStart = _confirmedOperationRevision;
+    emit(state.copy(operationBusy: true, error: null, notice: null));
+    try {
+      final result =
+          await _repository.cancelDriver(bookingPublicId, _generation!);
+      if (!await _current(revision)) return;
+      if (confirmedAtStart != _confirmedOperationRevision &&
+          isTerminalTripStatus(state.status ?? '')) {
+        return;
+      }
+      if (result.bookingPublicId != bookingPublicId ||
+          result.status != 'CANCELLED') {
+        throw const FormatException('Phản hồi hủy chuyến không khớp');
+      }
+      _confirmedOperationRevision++;
+      _stopGps();
+      emit(state.copy(
+          transition: result,
+          tracking: state.tracking?.withoutPrivateLiveData(),
+          payment: null,
+          operationBusy: false,
+          unresolved: false,
+          notice: 'Máy chủ đã xác nhận hủy chuyến và giải phóng tài xế.'));
+      await _disconnect();
+      await refresh(manual: true);
+    } catch (error) {
+      if (!await _current(revision)) return;
+      if (confirmedAtStart != _confirmedOperationRevision &&
+          isTerminalTripStatus(state.status ?? '')) {
+        return;
+      }
+      if (_accessError(error)) {
+        _endAccess(error);
+        return;
+      }
+      final uncertain = error is NetworkException ||
+          error is ServerException && error.statusCode == 503;
+      emit(state.copy(
+          operationBusy: false,
+          unresolved: uncertain,
+          error: uncertain
+              ? 'Chưa rõ kết quả hủy chuyến. Đang đối chiếu với máy chủ.'
+              : _message(error)));
+      if (uncertain || error is ServerException && error.statusCode == 409) {
+        await refresh(manual: !uncertain);
+      }
+    }
+  }
+
   Future<void> perform(TripAction action) async {
     if (state.operationBusy ||
         state.unresolved ||
@@ -266,11 +349,16 @@ class DriverTripCubit extends Cubit<DriverTripState> {
       return;
     }
     final revision = _revision;
+    final confirmedAtStart = _confirmedOperationRevision;
     emit(state.copy(operationBusy: true, error: null, notice: null));
     try {
       final response =
           await _repository.transition(bookingPublicId, action, _generation!);
       if (!await _current(revision)) return;
+      if (confirmedAtStart != _confirmedOperationRevision &&
+          isTerminalTripStatus(state.status ?? '')) {
+        return;
+      }
       _confirmedOperationRevision++;
       emit(state.copy(
           transition: response,
@@ -279,12 +367,19 @@ class DriverTripCubit extends Cubit<DriverTripState> {
           notice: 'Máy chủ đã xác nhận ${response.status}.'));
       if (response.status == 'COMPLETED') {
         _stopGps();
-        onCompleted?.call(bookingPublicId);
+        if (!_completedNotified) {
+          _completedNotified = true;
+          onCompleted?.call(bookingPublicId);
+        }
         await _disconnect();
       }
       await refresh();
     } catch (error) {
       if (!await _current(revision)) return;
+      if (confirmedAtStart != _confirmedOperationRevision &&
+          isTerminalTripStatus(state.status ?? '')) {
+        return;
+      }
       if (_accessError(error)) {
         _endAccess(error);
         return;
@@ -375,6 +470,7 @@ class DriverTripCubit extends Cubit<DriverTripState> {
     final revision = _revision;
     if (_subscription != null ||
         !state.foreground ||
+        isTerminalTripStatus(state.status ?? '') ||
         state.tracking?.allowsLiveLocation != true ||
         _generation == null ||
         !await _current(revision)) {
@@ -403,7 +499,8 @@ class DriverTripCubit extends Cubit<DriverTripState> {
   Future<void> _handleConnection(TripRealtimeConnectionState connection,
       int revision, int connectionRevision) async {
     if (connectionRevision != _connectionRevision ||
-        !await _current(revision)) {
+        !await _current(revision) ||
+        connectionRevision != _connectionRevision) {
       return;
     }
     emit(state.copy(realtime: connection));
@@ -412,6 +509,7 @@ class DriverTripCubit extends Cubit<DriverTripState> {
           'trackingStatus=${state.tracking?.status}');
     }
     if (connection == TripRealtimeConnectionState.connected &&
+        !isTerminalTripStatus(state.status ?? '') &&
         state.tracking?.allowsLiveLocation == true) {
       _startGps();
     } else {
@@ -423,13 +521,30 @@ class DriverTripCubit extends Cubit<DriverTripState> {
       TripRealtimeEvent event, int revision, int connectionRevision) async {
     if (connectionRevision != _connectionRevision ||
         event.bookingPublicId != bookingPublicId ||
-        !await _current(revision)) {
+        !await _current(revision) ||
+        connectionRevision != _connectionRevision) {
       return;
     }
     if (event is TripStatusChangedEvent) {
-      if (event.status == 'COMPLETED') {
-        _stopGps();
-        onCompleted?.call(bookingPublicId);
+      if (isTerminalTripStatus(event.status)) {
+        if (!isTerminalTripStatus(state.status ?? '')) {
+          _confirmedOperationRevision++;
+          _stopGps();
+          emit(state.copy(
+              tracking: state.tracking?.withoutPrivateLiveData(),
+              transition: TripTransition(
+                  bookingPublicId, event.status, event.occurredAt),
+              // Even CASH PENDING is re-read only after terminal REST tracking.
+              payment: null,
+              operationBusy: false,
+              unresolved: false,
+              error: null));
+          if (event.status == 'COMPLETED' && !_completedNotified) {
+            _completedNotified = true;
+            onCompleted?.call(bookingPublicId);
+          }
+        }
+        await _disconnect();
       }
       await refresh();
     }
@@ -459,6 +574,7 @@ class DriverTripCubit extends Cubit<DriverTripState> {
         subscription == null ||
         subscription.state != TripRealtimeConnectionState.connected ||
         !state.foreground ||
+        isTerminalTripStatus(state.status ?? '') ||
         state.tracking?.allowsLiveLocation != true ||
         !await _current(revision)) {
       return;
@@ -469,6 +585,7 @@ class DriverTripCubit extends Cubit<DriverTripState> {
       if (!await _current(revision) ||
           connectionRevision != _connectionRevision ||
           !state.foreground ||
+          isTerminalTripStatus(state.status ?? '') ||
           state.tracking?.allowsLiveLocation != true ||
           point.sampledAt == null) {
         if (kDebugMode) {

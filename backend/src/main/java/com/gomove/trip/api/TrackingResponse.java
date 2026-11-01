@@ -8,13 +8,15 @@ import java.util.UUID;
 public record TrackingResponse(UUID bookingPublicId, BookingStatus status, UUID driverPublicId,
                                Instant driverAcceptedAt, Instant driverArrivedAt,
                                Instant passengerOnboardAt, Instant tripStartedAt, Instant tripCompletedAt,
+                               Instant cancelledAt, String cancelledBy, Instant dispatchFailedAt,
                                Double latitude, Double longitude, Double accuracy, Double bearing,
                                Instant locationUpdatedAt, TripStore.DriverSummary assignedDriver,
                                TripStore.VehicleSummary assignedVehicle, TripStore.CustomerSummary customer) {
     public static TrackingResponse from(TripStore.TrackingState row) {
         return new TrackingResponse(row.bookingPublicId(), row.status(), row.driverPublicId(),
                 row.driverAcceptedAt(), row.driverArrivedAt(), row.passengerOnboardAt(),
-                row.tripStartedAt(), row.tripCompletedAt(), row.latitude(), row.longitude(),
+                row.tripStartedAt(), row.tripCompletedAt(), row.cancelledAt(), row.cancelledBy(),
+                row.dispatchFailedAt(), row.latitude(), row.longitude(),
                 row.accuracy(), row.bearing(), row.locationUpdatedAt(), row.assignedDriver(),
                 row.assignedVehicle(), row.customer());
     }

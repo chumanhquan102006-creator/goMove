@@ -41,18 +41,33 @@ class _Geocoder implements GeocodingRepository {
 }
 
 class _Repository implements TripRepository {
+  @override
+  Future<TripTransition> cancelCustomer(String id, int generation) =>
+      throw UnimplementedError();
+  @override
+  Future<TripTransition> cancelDriver(String id, int generation) async {
+    cancelCalls++;
+    if (cancelError != null) throw cancelError!;
+    if (cancelReply != null) return cancelReply!();
+    status = 'CANCELLED';
+    return TripTransition(id, 'CANCELLED', DateTime.utc(2026, 10, 16, 10));
+  }
+
   String status = 'DRIVER_ACCEPTED';
   String paymentStatus = 'PENDING';
   int transitionCalls = 0;
   int cashCalls = 0;
   int trackingCalls = 0;
   int paymentCalls = 0;
+  int cancelCalls = 0;
   Object? transitionError;
   Object? cashError;
+  Object? cancelError;
   Future<TrackingSnapshot> Function(String bookingPublicId)? trackingReply;
   Future<CashPayment> Function(String bookingPublicId)? paymentReply;
   Future<TripTransition> Function(TripAction)? transitionReply;
   Future<CashReceipt> Function()? cashReply;
+  Future<TripTransition> Function()? cancelReply;
 
   @override
   Future<TrackingSnapshot> tracking(
@@ -247,6 +262,319 @@ void main() {
     expect(cubit.state.canConfirmCash, isTrue);
     expect(released, isEmpty);
     expect(cubit.state.receipt, isNull);
+  });
+
+  test('Driver cancellation is allowed only before passenger pickup', () {
+    for (final status in ['DRIVER_ACCEPTED', 'DRIVER_ARRIVED']) {
+      expect(
+          DriverTripState(
+                  tracking: TrackingSnapshot(
+                      bookingPublicId: 'booking-1', status: status))
+              .canCancel,
+          isTrue);
+    }
+    for (final status in [
+      'PASSENGER_ONBOARD',
+      'IN_PROGRESS',
+      'COMPLETED',
+      'CANCELLED'
+    ]) {
+      expect(
+          DriverTripState(
+                  tracking: TrackingSnapshot(
+                      bookingPublicId: 'booking-1', status: status))
+              .canCancel,
+          isFalse);
+    }
+  });
+
+  test('Confirmed Driver cancellation is single-flight and releases UI state',
+      () async {
+    final cancelled = <String>[];
+    final local = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        onCancelled: (id) async => cancelled.add(id),
+        pollInterval: const Duration(hours: 1),
+        gpsInterval: const Duration(hours: 1));
+    addTearDown(local.close);
+    await local.initialize();
+    expect(local.state.canCancel, isTrue);
+    final pending = Completer<TripTransition>();
+    repository.cancelReply = () => pending.future;
+    final first = local.cancel();
+    await local.cancel();
+    expect(repository.cancelCalls, 1);
+    expect(local.state.operationBusy, isTrue);
+    repository.status = 'CANCELLED';
+    pending.complete(TripTransition(
+        'booking-1', 'CANCELLED', DateTime.utc(2026, 10, 16, 10)));
+    await first;
+    expect(local.state.status, 'CANCELLED');
+    expect(local.state.payment, isNull);
+    expect(local.state.availableAction, isNull);
+    expect(local.state.canConfirmCash, isFalse);
+    expect(cancelled, ['booking-1']);
+  });
+
+  test('Driver timeout is unresolved until fresh REST confirms cancellation',
+      () async {
+    repository.cancelError = const NetworkException('timeout');
+    await cubit.initialize();
+    await cubit.cancel();
+    expect(cubit.state.status, 'DRIVER_ACCEPTED');
+    expect(cubit.state.unresolved, isTrue);
+    expect(cubit.state.canCancel, isFalse);
+    repository.status = 'CANCELLED';
+    await cubit.refresh();
+    expect(cubit.state.status, 'CANCELLED');
+    expect(cubit.state.unresolved, isFalse);
+  });
+
+  test('Customer cancellation on REST removes Driver contact and GPS channel',
+      () async {
+    final cancelled = <String>[];
+    repository.trackingReply = (_) async => const TrackingSnapshot(
+        bookingPublicId: 'booking-1',
+        status: 'DRIVER_ACCEPTED',
+        driverPublicId: 'driver-1',
+        customer: CustomerSummary(displayName: 'Khách B', phone: '0900000002'));
+    final local = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        onCancelled: (id) async => cancelled.add(id),
+        pollInterval: const Duration(hours: 1),
+        gpsInterval: const Duration(hours: 1));
+    addTearDown(local.close);
+    await local.initialize();
+    expect(local.state.tracking?.customer?.phone, '0900000002');
+    repository.trackingReply = (_) async => TrackingSnapshot(
+        bookingPublicId: 'booking-1',
+        status: 'CANCELLED',
+        driverPublicId: 'driver-1',
+        cancelledAt: DateTime.utc(2026, 10, 16, 10));
+    await local.refresh();
+    expect(local.state.status, 'CANCELLED');
+    expect(local.state.tracking?.customer, isNull);
+    expect(local.state.payment, isNull);
+    expect(realtime.latest?.disposed, isTrue);
+    expect(cancelled, ['booking-1']);
+  });
+
+  test('CANCELLED event blocks an older REST read until cleanup is verified',
+      () async {
+    const active = TrackingSnapshot(
+        bookingPublicId: 'booking-1',
+        status: 'DRIVER_ACCEPTED',
+        driverPublicId: 'driver-1',
+        latitude: 21.1,
+        longitude: 105.1,
+        customer: CustomerSummary(displayName: 'Khách A', phone: '0900000002'));
+    final cancelled = <String>[];
+    repository.trackingReply = (_) async => active;
+    final local = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        onCancelled: (id) async => cancelled.add(id),
+        pollInterval: const Duration(hours: 1),
+        gpsInterval: const Duration(hours: 1));
+    addTearDown(local.close);
+    await local.initialize();
+    expect(local.state.tracking?.customer?.phone, '0900000002');
+    final subscription = realtime.latest!;
+    subscription.connect();
+    await Future<void>.delayed(Duration.zero);
+
+    final old = Completer<TrackingSnapshot>();
+    repository.trackingReply = (_) => old.future;
+    final oldRefresh = local.refresh();
+    await Future<void>.delayed(Duration.zero);
+    final terminal = local.stream.firstWhere((s) => s.status == 'CANCELLED');
+    subscription.event(TripStatusChangedEvent(
+        'booking-1', 'CANCELLED', DateTime.utc(2026, 10, 16, 10, 5)));
+    await terminal;
+    expect(local.state.tracking?.customer, isNull);
+    expect(local.state.tracking?.latitude, isNull);
+    expect(local.state.payment, isNull);
+    expect(local.state.availableAction, isNull);
+    expect(local.state.canCancel, isFalse);
+    expect(cancelled, isEmpty);
+
+    final failed = local.stream.firstWhere((s) => s.error != null);
+    repository.trackingReply = (_) async => throw const NetworkException();
+    old.complete(active);
+    await oldRefresh;
+    await failed;
+    expect(local.state.status, 'CANCELLED');
+    expect(local.state.tracking?.customer, isNull);
+    expect(local.state.tracking?.latitude, isNull);
+    expect(local.state.availableAction, isNull);
+    expect(cancelled, isEmpty);
+    expect(subscription.disposed, isTrue);
+    final sends = subscription.sends;
+    await local.sendGpsOnce();
+    expect(subscription.sends, sends);
+
+    repository.trackingReply = (_) async => TrackingSnapshot(
+        bookingPublicId: 'booking-1',
+        status: 'CANCELLED',
+        driverPublicId: 'driver-1',
+        cancelledAt: DateTime.utc(2026, 10, 16, 10, 5));
+    await local.refresh(manual: true);
+    expect(local.state.status, 'CANCELLED');
+    expect(
+        local.state.tracking?.cancelledAt, DateTime.utc(2026, 10, 16, 10, 5));
+    expect(cancelled, ['booking-1']);
+    await local.refresh();
+    expect(cancelled, ['booking-1']);
+  });
+
+  test('COMPLETED event waits for fresh REST before CASH PENDING or PAID',
+      () async {
+    const active = TrackingSnapshot(
+        bookingPublicId: 'booking-1',
+        status: 'IN_PROGRESS',
+        driverPublicId: 'driver-1',
+        latitude: 21.1,
+        longitude: 105.1,
+        customer: CustomerSummary(displayName: 'Khách A', phone: '0900000002'));
+    var completions = 0;
+    repository.trackingReply = (_) async => active;
+    final local = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        onCompleted: (_) => completions++,
+        pollInterval: const Duration(hours: 1),
+        gpsInterval: const Duration(hours: 1));
+    addTearDown(local.close);
+    await local.initialize();
+    final subscription = realtime.latest!;
+    final old = Completer<TrackingSnapshot>();
+    repository.trackingReply = (_) => old.future;
+    final oldRefresh = local.refresh();
+    await Future<void>.delayed(Duration.zero);
+    final terminal = local.stream.firstWhere((s) => s.status == 'COMPLETED');
+    subscription.event(TripStatusChangedEvent(
+        'booking-1', 'COMPLETED', DateTime.utc(2026, 10, 16, 10, 5)));
+    await terminal;
+    expect(local.state.tracking?.customer, isNull);
+    expect(local.state.tracking?.latitude, isNull);
+    expect(local.state.payment, isNull);
+    expect(local.state.canConfirmCash, isFalse);
+    expect(local.state.availableAction, isNull);
+
+    final failed = local.stream.firstWhere((s) => s.error != null);
+    repository.trackingReply = (_) async => throw const NetworkException();
+    old.complete(active);
+    await oldRefresh;
+    await failed;
+    expect(local.state.status, 'COMPLETED');
+    expect(local.state.tracking?.customer, isNull);
+    expect(local.state.payment, isNull);
+    expect(local.state.canConfirmCash, isFalse);
+
+    repository.trackingReply = (_) async => TrackingSnapshot(
+        bookingPublicId: 'booking-1',
+        status: 'COMPLETED',
+        driverPublicId: 'driver-1',
+        tripCompletedAt: DateTime.utc(2026, 10, 16, 10, 5));
+    await local.refresh();
+    expect(local.state.payment?.status, 'PENDING');
+    expect(local.state.canConfirmCash, isTrue);
+    expect(completions, 1);
+    repository.paymentStatus = 'PAID';
+    await local.refresh();
+    expect(local.state.payment?.status, 'PAID');
+    expect(local.state.canConfirmCash, isFalse);
+    expect(local.state.canRecoverReceipt, isTrue);
+  });
+
+  test('A new but stale active REST read cannot undo a terminal event',
+      () async {
+    const active = TrackingSnapshot(
+        bookingPublicId: 'booking-1',
+        status: 'DRIVER_ACCEPTED',
+        customer: CustomerSummary(displayName: 'Khách A', phone: '0900000002'));
+    final cancelled = <String>[];
+    repository.trackingReply = (_) async => active;
+    final local = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        onCancelled: (id) async => cancelled.add(id),
+        pollInterval: const Duration(hours: 1),
+        gpsInterval: const Duration(hours: 1));
+    addTearDown(local.close);
+    await local.initialize();
+    final terminal = local.stream.firstWhere((s) => s.status == 'CANCELLED');
+    realtime.latest!.event(TripStatusChangedEvent(
+        'booking-1', 'CANCELLED', DateTime.utc(2026, 10, 16, 10, 5)));
+    await terminal;
+    await local.refresh(manual: true);
+    expect(local.state.status, 'CANCELLED');
+    expect(local.state.tracking?.customer, isNull);
+    expect(local.state.availableAction, isNull);
+    expect(cancelled, isEmpty);
+
+    repository.trackingReply = (_) async => const TrackingSnapshot(
+        bookingPublicId: 'booking-1', status: 'CANCELLED');
+    await local.refresh();
+    expect(cancelled, ['booking-1']);
+  });
+
+  test('Confirmed cancellation retries local cleanup after callback failure',
+      () async {
+    repository.status = 'CANCELLED';
+    var attempts = 0;
+    final local = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        onCancelled: (_) async {
+          attempts++;
+          if (attempts == 1) throw StateError('temporary local store error');
+        },
+        pollInterval: const Duration(hours: 1),
+        gpsInterval: const Duration(hours: 1));
+    addTearDown(local.close);
+    await local.initialize();
+    expect(attempts, 1);
+    expect(local.state.status, 'CANCELLED');
+    await local.refresh();
+    expect(attempts, 2);
+    await local.refresh();
+    expect(attempts, 2);
+  });
+
+  test('Replaced Driver session ignores late cancellation response', () async {
+    await cubit.initialize();
+    final pending = Completer<TripTransition>();
+    repository.cancelReply = () => pending.future;
+    final request = cubit.cancel();
+    await Future<void>.delayed(Duration.zero);
+    generation++;
+    pending.complete(TripTransition(
+        'booking-1', 'CANCELLED', DateTime.utc(2026, 10, 16, 10)));
+    await request;
+    expect(cubit.state.sessionEnded, isTrue);
+    expect(cubit.state.tracking, isNull);
+    expect(cubit.state.payment, isNull);
   });
 
   test('duplicate taps produce one in-flight transition', () async {
@@ -559,6 +887,48 @@ void main() {
     expect(find.byKey(const ValueKey('driver-trip-status-DRIVER_ARRIVED')),
         findsOneWidget);
     expect(repository.transitionCalls, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Driver cancellation requires confirmation on narrow screen',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final local = DriverTripCubit(
+        bookingPublicId: 'booking-1',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        pollInterval: const Duration(hours: 1),
+        gpsInterval: const Duration(hours: 1));
+    await tester.pumpWidget(MaterialApp(
+        home: DriverAcceptedBookingScreen(
+            offer: _offer(), tripCubit: local, mapBuilder: _fakeMap)));
+    await tester.pump();
+    await tester.drag(find.byKey(const ValueKey('driver-trip-sheet-scroll')),
+        const Offset(0, -260));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('driver-cancel-trip')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('driver-cancel-trip')));
+    await tester.pump();
+    expect(find.text('Hủy chuyến đã nhận?'), findsOneWidget);
+    await tester.tap(find.text('Giữ chuyến'));
+    await tester.pumpAndSettle();
+    expect(repository.cancelCalls, 0);
+    await tester.tap(find.byKey(const ValueKey('driver-cancel-trip')));
+    await tester.pump();
+    await tester.tap(find.text('Xác nhận hủy'));
+    await tester.pumpAndSettle();
+    expect(repository.cancelCalls, 1);
+    expect(find.text('Chuyến đi đã được hủy', skipOffstage: false),
+        findsOneWidget);
+    expect(find.text('Xác nhận đã thu tiền mặt'), findsNothing);
+    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 

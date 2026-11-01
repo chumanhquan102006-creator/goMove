@@ -742,6 +742,39 @@ void main() {
     expect(repository.statusCalls, 1); // BUSY is system-managed.
   });
 
+  test('Confirmed cancellation clears handoff and revalidates online state',
+      () async {
+    repository.offers = [offer(now.add(const Duration(seconds: 15)))];
+    await cubit.initialize();
+    await cubit.goOnline();
+    await cubit.decide(true);
+    expect(cubit.state.acceptedOffer?.bookingPublicId, 'booking-1');
+
+    await cubit.finishCancelledBooking('booking-1');
+
+    expect(store.values['user-A'], isNull);
+    expect(cubit.state.acceptedOffer, isNull);
+    expect(cubit.state.operatingStatus, 'ONLINE');
+    expect(repository.statusCalls, 2);
+    expect(cubit.state.notice, contains('trực tuyến trở lại'));
+  });
+
+  test('Failed online revalidation never fabricates a status after cancel',
+      () async {
+    repository.offers = [offer(now.add(const Duration(seconds: 15)))];
+    await cubit.initialize();
+    await cubit.goOnline();
+    await cubit.decide(true);
+    repository.statusError = const NetworkException('offline');
+
+    await cubit.finishCancelledBooking('booking-1');
+
+    expect(store.values['user-A'], isNull);
+    expect(cubit.state.acceptedOffer, isNull);
+    expect(cubit.state.operatingStatus, isNull);
+    expect(cubit.state.notice, contains('Bật trực tuyến lại'));
+  });
+
   test('Reject dismisses offer and continues ONLINE polling', () async {
     repository.offers = [offer(now.add(const Duration(seconds: 15)))];
     await cubit.initialize();
@@ -855,6 +888,22 @@ void main() {
     await cubit.initialize();
     expect(cubit.state.acceptedOffer, isNull);
     expect(cubit.state.operatingStatus, isNull);
+  });
+
+  test('Restart clears a server-cancelled handoff and explains how to resume',
+      () async {
+    store.values['user-A'] = AcceptedBookingRecord(
+        'driver-1', offer(now.add(const Duration(seconds: 15))));
+    repository.trackingValue =
+        const BookingTracking('booking-1', 'CANCELLED', 'driver-1');
+
+    await cubit.initialize();
+
+    expect(store.values['user-A'], isNull);
+    expect(cubit.state.acceptedOffer, isNull);
+    expect(cubit.state.operatingStatus, isNull);
+    expect(cubit.state.notice, contains('chuyến đã lưu bị hủy'));
+    expect(repository.gpsCalls, 0);
   });
 
   test('COMPLETED with CASH PENDING keeps account-scoped handoff and BUSY',

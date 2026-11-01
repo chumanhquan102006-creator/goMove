@@ -61,5 +61,12 @@ class CustomerModels {
         tripCompletedAt: json['tripCompletedAt'] == null
             ? null
             : DateTime.parse(json['tripCompletedAt'] as String),
+        cancelledAt: json['cancelledAt'] == null
+            ? null
+            : DateTime.parse(json['cancelledAt'] as String),
+        cancelledBy: json['cancelledBy'] as String?,
+        dispatchFailedAt: json['dispatchFailedAt'] == null
+            ? null
+            : DateTime.parse(json['dispatchFailedAt'] as String),
       );
 }

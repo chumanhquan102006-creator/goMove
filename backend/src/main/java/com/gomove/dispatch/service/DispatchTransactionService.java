@@ -4,6 +4,8 @@ import com.gomove.booking.domain.BookingStatus;
 import com.gomove.dispatch.infrastructure.DispatchStore;
 import com.gomove.dispatch.domain.DriverOfferStatus;
 import com.gomove.location.infrastructure.LocationProperties;
+import com.gomove.trip.realtime.TripStatusEvent;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,13 +18,16 @@ public class DispatchTransactionService {
     private final DispatchProperties properties;
     private final LocationProperties locationProperties;
     private final Clock clock;
+    private final ApplicationEventPublisher events;
 
     public DispatchTransactionService(DispatchStore store, DispatchProperties properties,
-                                      LocationProperties locationProperties, Clock clock) {
+                                      LocationProperties locationProperties, Clock clock,
+                                      ApplicationEventPublisher events) {
         this.store = store;
         this.properties = properties;
         this.locationProperties = locationProperties;
         this.clock = clock;
+        this.events = events;
     }
 
     @Transactional
@@ -38,6 +43,11 @@ public class DispatchTransactionService {
         }
 
         Instant now = clock.instant();
+        Instant deadline = booking.deadlineAt();
+        if (deadline == null) {
+            deadline = now.plusSeconds(properties.getSearchTimeoutSeconds());
+            requireUpdated(store.initializeDeadline(bookingId, deadline, now));
+        }
         var pending = store.pendingForBooking(bookingId);
         if (pending.isPresent()) {
             if (now.isBefore(pending.get().expiresAt())) {
@@ -45,6 +55,16 @@ public class DispatchTransactionService {
                 return;
             }
             requireUpdated(store.finishOffer(pending.get().id(), DriverOfferStatus.EXPIRED, now));
+        }
+
+        // A valid 15-second offer may finish after the overall search deadline.
+        // Once it is gone, stop durable retries instead of searching forever.
+        if (!now.isBefore(deadline)) {
+            Instant failedAt = store.failNoDriver(bookingId, now);
+            if (failedAt == null) throw new IllegalStateException("Dispatch failure state changed unexpectedly");
+            events.publishEvent(new TripStatusEvent(booking.publicId(),
+                    BookingStatus.NO_DRIVER_AVAILABLE, failedAt));
+            return;
         }
 
         var candidate = store.nearestCandidate(bookingId,

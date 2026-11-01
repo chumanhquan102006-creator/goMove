@@ -55,6 +55,7 @@ public class TripStore {
                        customer.full_name AS customer_name, customer.phone AS customer_phone,
                        b.driver_accepted_at, b.driver_arrived_at, b.passenger_onboard_at,
                        b.trip_started_at, b.trip_completed_at,
+                       b.cancelled_at, b.cancelled_by, b.dispatch_failed_at,
                        ST_Y(dl.current_location::geometry) AS latitude,
                        ST_X(dl.current_location::geometry) AS longitude,
                        dl.accuracy, dl.bearing, dl.updated_at AS location_updated_at
@@ -132,7 +133,9 @@ public class TripStore {
                 status, rs.getObject("driver_public_id", UUID.class),
                 instant(rs, "driver_accepted_at"), instant(rs, "driver_arrived_at"),
                 instant(rs, "passenger_onboard_at"), instant(rs, "trip_started_at"),
-                instant(rs, "trip_completed_at"), rs.getObject("latitude", Double.class),
+                instant(rs, "trip_completed_at"), instant(rs, "cancelled_at"),
+                rs.getString("cancelled_by"), instant(rs, "dispatch_failed_at"),
+                rs.getObject("latitude", Double.class),
                 rs.getObject("longitude", Double.class), rs.getObject("accuracy", Double.class),
                 rs.getObject("bearing", Double.class), instant(rs, "location_updated_at"),
                 assignedDriver, assignedVehicle, customer);
@@ -148,6 +151,7 @@ public class TripStore {
     public record TrackingState(UUID bookingPublicId, BookingStatus status, UUID driverPublicId,
                                 Instant driverAcceptedAt, Instant driverArrivedAt,
                                 Instant passengerOnboardAt, Instant tripStartedAt, Instant tripCompletedAt,
+                                Instant cancelledAt, String cancelledBy, Instant dispatchFailedAt,
                                 Double latitude, Double longitude, Double accuracy, Double bearing,
                                 Instant locationUpdatedAt, DriverSummary assignedDriver,
                                 VehicleSummary assignedVehicle, CustomerSummary customer) {}

@@ -15,6 +15,7 @@ import '../bloc/booking_cubit.dart';
 import '../formatters.dart';
 import 'booking_status_screen.dart';
 import 'customer_map_canvas.dart';
+import '../widgets/customer_premium_widgets.dart';
 
 class QuoteReviewScreen extends StatefulWidget {
   final Quote quote;
@@ -117,6 +118,9 @@ class _QuoteReviewScreenState extends State<QuoteReviewScreen>
     return label == null || label.isEmpty ? null : label;
   }
 
+  String _stopLabel(String? address, Coordinates point) =>
+      address ?? 'Vĩ độ ${point.latitude} · Kinh độ ${point.longitude}';
+
   Future<void> _loadAddresses() async {
     if (widget.geocodingRepository == null &&
         sl.isRegistered<AppConfig>() &&
@@ -187,26 +191,6 @@ class _QuoteReviewScreenState extends State<QuoteReviewScreen>
     }
   }
 
-  Widget _addressLine(BuildContext context, IconData icon, String title,
-          String? address, Coordinates point) =>
-      Padding(
-        padding: const EdgeInsets.symmetric(vertical: 5),
-        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Icon(icon, size: 20, color: Theme.of(context).colorScheme.primary),
-          const SizedBox(width: 10),
-          Expanded(
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                Text(title, style: Theme.of(context).textTheme.labelLarge),
-                Text(address ?? 'Địa chỉ chưa khả dụng'),
-                if (address == null)
-                  Text('${point.latitude}, ${point.longitude}',
-                      style: Theme.of(context).textTheme.bodySmall),
-              ])),
-        ]),
-      );
-
   Widget _fareLine(BuildContext context, String label, String amount) {
     final textTheme = Theme.of(context).textTheme;
     return Padding(
@@ -245,6 +229,34 @@ class _QuoteReviewScreenState extends State<QuoteReviewScreen>
     final reducedMotion = AppMotion.reduceMotion(context);
     final revealFare = _fareVisible || reducedMotion;
     final cardDuration = AppMotion.duration(context, AppMotion.card);
+    final showRoutePreview = (widget.routeRepository != null ||
+            sl.isRegistered<RoadRouteRepository>()) &&
+        (widget.routeSession != null ||
+            sl.isRegistered<SecureStorageService>());
+    final routeAnimation = ModalRoute.of(context)?.animation;
+
+    Widget buildRoutePreview() => SizedBox(
+          height: 200,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: AuthorizedRoadRoute(
+              publicId: quote.publicId,
+              isQuote: true,
+              pickup: quote.pickup,
+              dropoff: quote.dropoff,
+              repository: widget.routeRepository,
+              session: widget.routeSession,
+              builder: (context, route) => CustomerMapCanvas(
+                pickup: quote.pickup,
+                dropoff: quote.dropoff,
+                route: route,
+                onTap: (_) {},
+                fullScreen: true,
+                scrollablePreview: true,
+              ),
+            ),
+          ),
+        );
 
     return BlocListener<BookingCubit, BookingState>(
       listener: (context, state) {
@@ -254,60 +266,39 @@ class _QuoteReviewScreenState extends State<QuoteReviewScreen>
         }
       },
       child: Scaffold(
-        appBar: AppBar(title: const Text('Xác nhận chuyến')),
+        appBar: AppBar(title: const Text('Kiểm tra chuyến đi')),
         body: SafeArea(
           child: ListView(padding: const EdgeInsets.all(16), children: [
-            if ((widget.routeRepository != null ||
-                    sl.isRegistered<RoadRouteRepository>()) &&
-                (widget.routeSession != null ||
-                    sl.isRegistered<SecureStorageService>())) ...[
-              Text('Tuyến đường theo phố', style: textTheme.titleMedium),
-              const SizedBox(height: 8),
-              SizedBox(
-                height: 260,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(18),
-                  child: AuthorizedRoadRoute(
-                    publicId: quote.publicId,
-                    isQuote: true,
-                    pickup: quote.pickup,
-                    dropoff: quote.dropoff,
-                    repository: widget.routeRepository,
-                    session: widget.routeSession,
-                    builder: (context, route) => CustomerMapCanvas(
-                      pickup: quote.pickup,
-                      dropoff: quote.dropoff,
-                      route: route,
-                      onTap: (_) {},
-                      fullScreen: true,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                  'Đường màu xanh chỉ hiện khi máy chủ cung cấp hình học hợp lệ. '
-                  'Chạm “Xem 2 điểm” để căn lại bản đồ.',
-                  style: textTheme.bodySmall),
-              const SizedBox(height: 12),
-            ],
-            Card(
-              key: const ValueKey('quote-address-card'),
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _addressLine(context, Icons.trip_origin, 'Điểm đón',
-                          _pickupAddress, quote.pickup),
-                      _addressLine(context, Icons.location_on_outlined,
-                          'Điểm đến', _dropoffAddress, quote.dropoff),
-                      if (_pickupAddress != null || _dropoffAddress != null)
-                        Text('© OpenStreetMap contributors',
-                            style: textTheme.bodySmall),
-                    ]),
-              ),
-            ),
+            AppMotion.entrance(
+                context,
+                CustomerPremiumSurface(
+                  key: const ValueKey('quote-address-card'),
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const CustomerSectionHeading(
+                            icon: Icons.alt_route_rounded,
+                            title: 'Hành trình của bạn'),
+                        const SizedBox(height: 16),
+                        CustomerJourneyTimeline(
+                          pickup: _stopLabel(_pickupAddress, quote.pickup),
+                          dropoff: _stopLabel(_dropoffAddress, quote.dropoff),
+                          pickupMaxLines: _pickupAddress == null ? null : 2,
+                          dropoffMaxLines: _dropoffAddress == null ? null : 2,
+                        ),
+                        if (_pickupAddress == null ||
+                            _dropoffAddress == null) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                              'Chưa xác minh được địa chỉ. Hãy kiểm tra tọa độ trước khi đặt.',
+                              style: textTheme.bodySmall),
+                        ],
+                        if (!showRoutePreview &&
+                            (_pickupAddress != null || _dropoffAddress != null))
+                          Text('© OpenStreetMap contributors',
+                              style: textTheme.bodySmall),
+                      ]),
+                )),
             const SizedBox(height: 12),
             AnimatedOpacity(
               key: const ValueKey('quote-fare-reveal'),
@@ -325,66 +316,83 @@ class _QuoteReviewScreenState extends State<QuoteReviewScreen>
                   offset: Offset(0, travel),
                   child: child,
                 ),
-                child: Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(children: [
-                          CircleAvatar(
-                            backgroundColor: colors.primaryContainer,
-                            foregroundColor: colors.onPrimaryContainer,
-                            child: Icon(
-                                quote.vehicleType == VehicleType.motorbike
-                                    ? Icons.two_wheeler
-                                    : Icons.directions_car),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(quote.vehicleType.label,
-                                    style: textTheme.titleMedium),
-                                const SizedBox(height: 2),
-                                Text('Chuyến đi của bạn',
-                                    style: textTheme.bodySmall),
-                              ],
-                            ),
-                          ),
-                        ]),
-                        const SizedBox(height: 12),
-                        Wrap(spacing: 8, runSpacing: 4, children: [
-                          Chip(
-                              avatar: const Icon(Icons.route, size: 18),
-                              label: Text(distanceLabel(quote))),
-                          Chip(
-                              avatar: const Icon(Icons.schedule, size: 18),
-                              label: Text(durationLabel(quote))),
-                        ]),
-                        const Divider(height: 24),
-                        Text('Tổng cước được xác nhận',
-                            style: textTheme.bodyMedium),
-                        const SizedBox(height: 4),
-                        FittedBox(
-                          fit: BoxFit.scaleDown,
-                          alignment: Alignment.centerLeft,
-                          child: Text(vnd(quote.finalFare),
-                              style: textTheme.headlineMedium?.copyWith(
-                                  color: colors.primary,
-                                  fontWeight: FontWeight.bold)),
+                child: CustomerPremiumSurface(
+                  highlighted: true,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(children: [
+                        CircleAvatar(
+                          backgroundColor: colors.primaryContainer,
+                          foregroundColor: colors.onPrimaryContainer,
+                          child: Icon(quote.vehicleType == VehicleType.motorbike
+                              ? Icons.two_wheeler
+                              : Icons.directions_car),
                         ),
-                        const SizedBox(height: 4),
-                        Text('Giá cuối cùng do máy chủ trả về.',
-                            style: textTheme.bodySmall),
-                      ],
-                    ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(quote.vehicleType.label,
+                                  style: textTheme.titleMedium),
+                              const SizedBox(height: 2),
+                              Text('Chuyến đi của bạn',
+                                  style: textTheme.bodySmall),
+                            ],
+                          ),
+                        ),
+                      ]),
+                      const SizedBox(height: 12),
+                      Wrap(spacing: 8, runSpacing: 4, children: [
+                        Chip(
+                            avatar: const Icon(Icons.route, size: 18),
+                            label: Text(distanceLabel(quote))),
+                        Chip(
+                            avatar: const Icon(Icons.schedule, size: 18),
+                            label: Text(durationLabel(quote))),
+                      ]),
+                      const Divider(height: 24),
+                      Text('Giá chuyến đi', style: textTheme.bodyMedium),
+                      const SizedBox(height: 4),
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(vnd(quote.finalFare),
+                            style: textTheme.headlineMedium?.copyWith(
+                                color: colors.primary,
+                                fontWeight: FontWeight.bold)),
+                      ),
+                      const SizedBox(height: 4),
+                      Text('Giá được báo trước, thanh toán bằng tiền mặt.',
+                          style: textTheme.bodySmall),
+                    ],
                   ),
                 ),
               ),
             ),
             const SizedBox(height: 12),
+            if (showRoutePreview) ...[
+              const CustomerSectionHeading(
+                icon: Icons.route_rounded,
+                title: 'Tuyến đường dự kiến',
+              ),
+              const SizedBox(height: 8),
+              // The route transition animates Flutter content only. Create
+              // the native map once the transition has settled, and remove it
+              // before the reverse transition starts.
+              if (routeAnimation == null)
+                buildRoutePreview()
+              else
+                AnimatedBuilder(
+                  animation: routeAnimation,
+                  builder: (context, _) =>
+                      routeAnimation.status == AnimationStatus.completed
+                          ? buildRoutePreview()
+                          : const SizedBox(height: 200),
+                ),
+              const SizedBox(height: 12),
+            ],
             Card(
               child: AnimatedContainer(
                 key: const ValueKey('quote-lifetime-motion'),
@@ -424,7 +432,7 @@ class _QuoteReviewScreenState extends State<QuoteReviewScreen>
                           const SizedBox(height: 2),
                           Text(
                             usable
-                                ? 'Giá có hiệu lực đến khi hết thời gian trên.'
+                                ? 'Xác nhận trước khi báo giá hết hạn.'
                                 : 'Quay lại để lấy báo giá mới trước khi đặt xe.',
                             style: textTheme.bodySmall?.copyWith(
                                 color: usable
@@ -442,12 +450,13 @@ class _QuoteReviewScreenState extends State<QuoteReviewScreen>
             Card(
               child: ExpansionTile(
                 title: const Text('Chi tiết giá'),
-                subtitle: const Text('Các khoản do máy chủ tính toán'),
+                subtitle: const Text('Xem các khoản trong giá chuyến đi'),
                 childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                 children: [
                   _fareLine(context, 'Giá mở cửa', quote.baseFare),
-                  _fareLine(context, 'Quãng đường', quote.distanceFare),
-                  _fareLine(context, 'Thời gian', quote.timeFare),
+                  _fareLine(
+                      context, 'Cước theo quãng đường', quote.distanceFare),
+                  _fareLine(context, 'Cước theo thời gian', quote.timeFare),
                   _fareLine(context, 'Phụ phí', quote.surcharge),
                   _fareLine(context, 'Giờ cao điểm', quote.surgeAmount),
                   _fareLine(
@@ -482,9 +491,7 @@ class _QuoteReviewScreenState extends State<QuoteReviewScreen>
                           style: TextStyle(color: colors.error)),
                     if (state.error != null)
                       Text(state.error!, style: TextStyle(color: colors.error)),
-                    FilledButton(
-                      style: FilledButton.styleFrom(
-                          minimumSize: const Size.fromHeight(48)),
+                    CustomerPressableAction(
                       onPressed: canSubmit
                           ? () {
                               // A deadline can pass between countdown ticks.

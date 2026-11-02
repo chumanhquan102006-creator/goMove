@@ -3,12 +3,14 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../../core/di/injection.dart';
 import '../../../../core/theme/app_motion.dart';
+import '../../../../core/theme/app_colors.dart';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../auth/presentation/bloc/auth_state.dart';
 import '../../domain/models/quote.dart';
 import '../bloc/trip_history_cubit.dart';
 import '../formatters.dart';
 import 'trip_history_detail_screen.dart';
+import '../widgets/customer_premium_widgets.dart';
 
 String historyDate(DateTime value) {
   final local = value.toLocal();
@@ -143,6 +145,11 @@ class _TripHistoryScreenState extends State<TripHistoryScreen>
                           .addresses[TripHistoryCubit.pointKey(item.dropoff)];
                       return Card(
                         key: ValueKey('history-${item.bookingPublicId}'),
+                        margin: const EdgeInsets.only(bottom: 12),
+                        elevation: 2,
+                        shadowColor: const Color(0x160E285A),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(22)),
                         child: InkWell(
                           onTap: !_sameAccount
                               ? null
@@ -150,28 +157,53 @@ class _TripHistoryScreenState extends State<TripHistoryScreen>
                                   .immediateRoute<void>(TripHistoryDetailScreen(
                                       customerPublicId: widget.customerPublicId,
                                       bookingPublicId: item.bookingPublicId))),
+                          borderRadius: BorderRadius.circular(22),
                           child: Padding(
-                            padding: const EdgeInsets.all(14),
+                            padding: const EdgeInsets.all(18),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(historyDate(item.tripCompletedAt),
+                                Row(children: [
+                                  const Icon(Icons.check_circle_rounded,
+                                      color: AppColors.success),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                      child: Text(
+                                          historyDate(item.tripCompletedAt),
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .titleMedium)),
+                                ]),
+                                const SizedBox(height: 14),
+                                CustomerJourneyTimeline(
+                                  pickup: pickup?.label ??
+                                      historyPoint(item.pickup),
+                                  dropoff: dropoff?.label ??
+                                      historyPoint(item.dropoff),
+                                ),
+                                const Divider(height: 24),
+                                Row(children: [
+                                  Expanded(
+                                      child: Text(item.vehicleType.label,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall)),
+                                  Flexible(
+                                      child: Text(
+                                          historyMoney(
+                                              item.finalFare, item.currency),
+                                          textAlign: TextAlign.end,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .titleMedium
+                                              ?.copyWith(
+                                                  color: AppColors.primary))),
+                                ]),
+                                const SizedBox(height: 6),
+                                Text(historyPaymentLabel(item.paymentStatus),
                                     style: Theme.of(context)
                                         .textTheme
-                                        .titleMedium),
-                                const SizedBox(height: 8),
-                                Text(
-                                    'Đón: ${pickup?.label ?? historyPoint(item.pickup)}'),
-                                Text(
-                                    'Đến: ${dropoff?.label ?? historyPoint(item.dropoff)}'),
-                                const SizedBox(height: 8),
-                                Wrap(spacing: 12, runSpacing: 4, children: [
-                                  Text(item.vehicleType.label),
-                                  Text(historyMoney(
-                                      item.finalFare, item.currency)),
-                                  const Text('Hoàn thành'),
-                                  Text(historyPaymentLabel(item.paymentStatus)),
-                                ]),
+                                        .labelMedium),
                                 if (pickup != null || dropoff != null)
                                   Text(
                                       pickup?.attribution ??

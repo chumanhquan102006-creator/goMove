@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../../core/di/injection.dart';
+import '../../../../core/theme/app_colors.dart';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../auth/presentation/bloc/auth_state.dart';
 import '../../../review/domain/rating_repository.dart';
@@ -9,6 +10,7 @@ import '../../../review/presentation/rating_panel.dart';
 import '../../domain/models/quote.dart';
 import '../bloc/trip_history_detail_cubit.dart';
 import 'trip_history_screen.dart';
+import '../widgets/customer_premium_widgets.dart';
 
 class TripHistoryDetailScreen extends StatefulWidget {
   final String customerPublicId;
@@ -103,26 +105,52 @@ class _TripHistoryDetailScreenState extends State<TripHistoryDetailScreen>
                     physics: const AlwaysScrollableScrollPhysics(),
                     padding: const EdgeInsets.all(16),
                     children: [
+                      CustomerPremiumSurface(
+                        highlighted: true,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(Icons.verified_rounded,
+                                color: AppColors.success, size: 34),
+                            const SizedBox(height: 8),
+                            Text('Chuyến đi đã hoàn thành',
+                                style: Theme.of(context).textTheme.titleLarge),
+                            const SizedBox(height: 6),
+                            Text(
+                                historyMoney(
+                                    booking.finalFare, booking.currency),
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .headlineMedium
+                                    ?.copyWith(
+                                        color: AppColors.primary,
+                                        fontWeight: FontWeight.w800)),
+                            const SizedBox(height: 4),
+                            Text(historyDate(booking.tripCompletedAt!),
+                                style: Theme.of(context).textTheme.bodySmall),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
                       Card(
                           child: Padding(
                         padding: const EdgeInsets.all(16),
                         child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text('Chuyến đã hoàn thành',
+                              Text('Hành trình',
                                   style:
                                       Theme.of(context).textTheme.titleLarge),
                               _line('Đặt lúc', historyDate(booking.createdAt)),
                               _line('Hoàn thành lúc',
                                   historyDate(booking.tripCompletedAt!)),
-                              _line(
-                                  'Điểm đón',
-                                  state.pickupAddress?.label ??
-                                      historyPoint(pickup)),
-                              _line(
-                                  'Điểm đến',
-                                  state.dropoffAddress?.label ??
-                                      historyPoint(dropoff)),
+                              const SizedBox(height: 12),
+                              CustomerJourneyTimeline(
+                                pickup: state.pickupAddress?.label ??
+                                    historyPoint(pickup),
+                                dropoff: state.dropoffAddress?.label ??
+                                    historyPoint(dropoff),
+                              ),
                               if (state.pickupAddress != null ||
                                   state.dropoffAddress != null)
                                 Text(

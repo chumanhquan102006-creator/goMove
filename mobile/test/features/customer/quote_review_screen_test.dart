@@ -3,6 +3,7 @@ import 'package:gomove_mobile/core/storage/secure_storage_service.dart';
 import 'package:gomove_mobile/features/customer/domain/models/place_search_result.dart';
 import 'package:gomove_mobile/features/customer/domain/repositories/geocoding_repository.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gomove_mobile/core/theme/app_motion.dart';
@@ -11,9 +12,15 @@ import 'package:gomove_mobile/features/customer/domain/models/quote.dart';
 import 'package:gomove_mobile/features/customer/presentation/bloc/booking_cubit.dart';
 import 'package:gomove_mobile/features/customer/presentation/formatters.dart';
 import 'package:gomove_mobile/features/customer/presentation/screens/quote_review_screen.dart';
+import 'package:gomove_mobile/features/customer/presentation/screens/customer_map_canvas.dart';
+import 'package:gomove_mobile/features/customer/presentation/widgets/customer_map_source.dart';
+import 'package:gomove_mobile/features/trip/domain/models/road_route.dart';
+import 'package:gomove_mobile/features/trip/domain/repositories/road_route_repository.dart';
 import 'package:mocktail/mocktail.dart';
 
 const _quoteId = '550e8400-e29b-41d4-a716-446655440001';
+const _pickupCoordinates = 'Vĩ độ 21.0287 · Kinh độ 105.8524';
+const _dropoffCoordinates = 'Vĩ độ 21.0245 · Kinh độ 105.8576';
 
 class _MockBookingCubit extends MockCubit<BookingState>
     implements BookingCubit {}
@@ -37,6 +44,19 @@ class _Geocoder implements GeocodingRepository {
   }
 }
 
+class _UnavailableRouteRepo implements RoadRouteRepository {
+  @override
+  Future<RoadRoute> quote(String quotePublicId, int sessionGeneration) async =>
+      RoadRoute.fromJson({
+        'sourceQuotePublicId': quotePublicId,
+        'availability': 'UNAVAILABLE',
+      });
+
+  @override
+  Future<RoadRoute> booking(String bookingPublicId, int sessionGeneration) =>
+      throw UnimplementedError();
+}
+
 Quote _quote(DateTime expiresAt) => Quote(
       publicId: _quoteId,
       pickup: const Coordinates(21.0287, 105.8524),
@@ -58,9 +78,14 @@ Quote _quote(DateTime expiresAt) => Quote(
       expiresAt: expiresAt,
     );
 
-Future<void> _showText(WidgetTester tester, String value) =>
-    tester.scrollUntilVisible(find.text(value), 120,
-        scrollable: find.byType(Scrollable).first);
+Future<void> _showText(WidgetTester tester, String value) async {
+  await tester.scrollUntilVisible(find.text(value), 120,
+      scrollable: find.byType(Scrollable).first);
+  if (value == 'Chi tiết giá') {
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, -300));
+  }
+  await tester.pumpAndSettle();
+}
 
 void main() {
   late _MockBookingCubit cubit;
@@ -77,6 +102,7 @@ void main() {
           {bool reducedMotion = false,
           GeocodingRepository? geocodingRepository,
           SecureStorageService? addressSession,
+          RoadRouteRepository? routeRepository,
           String? pickupLabel,
           String? dropoffLabel}) =>
       MaterialApp(
@@ -93,6 +119,7 @@ void main() {
                 now: now,
                 geocodingRepository: geocodingRepository,
                 routeSession: addressSession,
+                routeRepository: routeRepository,
                 pickupLabel: pickupLabel,
                 dropoffLabel: dropoffLabel)),
       );
@@ -112,9 +139,78 @@ void main() {
         dropoffLabel: 'Bến xe Mỹ Đình'));
     expect(find.text('Hồ Hoàn Kiếm'), findsOneWidget);
     expect(find.text('Bến xe Mỹ Đình'), findsOneWidget);
+    expect(find.text(_pickupCoordinates), findsNothing);
+    expect(find.text(_dropoffCoordinates), findsNothing);
     expect(find.text('16.500 VND'), findsOneWidget);
     expect(geocoder.reverseCalls, 0);
     await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+      'Quote shows actual pickup coordinates when its address is missing',
+      (tester) async {
+    final now = DateTime.utc(2026, 10, 22, 12);
+    await tester.pumpWidget(screen(
+        _quote(now.add(const Duration(seconds: 60))), () => now,
+        dropoffLabel: 'Bến xe Mỹ Đình'));
+    expect(find.text(_pickupCoordinates), findsOneWidget);
+    expect(find.text('Bến xe Mỹ Đình'), findsOneWidget);
+    expect(find.text(_dropoffCoordinates), findsNothing);
+    expect(find.text('Địa chỉ chưa khả dụng'), findsNothing);
+  });
+
+  testWidgets(
+      'Quote shows actual dropoff coordinates when its address is missing',
+      (tester) async {
+    final now = DateTime.utc(2026, 10, 22, 12);
+    await tester.pumpWidget(screen(
+        _quote(now.add(const Duration(seconds: 60))), () => now,
+        pickupLabel: 'Hồ Hoàn Kiếm'));
+    expect(find.text('Hồ Hoàn Kiếm'), findsOneWidget);
+    expect(find.text(_pickupCoordinates), findsNothing);
+    expect(find.text(_dropoffCoordinates), findsOneWidget);
+    expect(find.text('Địa chỉ chưa khả dụng'), findsNothing);
+  });
+
+  testWidgets('Quote shows both actual coordinates without verified addresses',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final now = DateTime.utc(2026, 10, 22, 12);
+    await tester.pumpWidget(
+        screen(_quote(now.add(const Duration(seconds: 60))), () => now));
+    expect(find.text(_pickupCoordinates), findsOneWidget);
+    expect(find.text(_dropoffCoordinates), findsOneWidget);
+    expect(tester.widget<Text>(find.text(_pickupCoordinates)).maxLines, isNull);
+    expect(
+        tester.widget<Text>(find.text(_dropoffCoordinates)).maxLines, isNull);
+    expect(find.text('Địa chỉ chưa khả dụng'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Quote keeps a long Vietnamese address without overflow',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final now = DateTime.utc(2026, 10, 22, 12);
+    const longAddress = 'Ngõ 123, Đường Trần Duy Hưng, Phường Trung Hòa, '
+        'Quận Cầu Giấy, Thành phố Hà Nội, Việt Nam';
+    await tester.pumpWidget(screen(
+        _quote(now.add(const Duration(seconds: 60))), () => now,
+        pickupLabel: longAddress, dropoffLabel: 'Hồ Hoàn Kiếm'));
+    final label = find.text(longAddress);
+    expect(label, findsOneWidget);
+    expect(tester.widget<Text>(label).maxLines, 2);
+    expect(find.text(_pickupCoordinates), findsNothing);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('Quote ignores reverse results for different coordinates',
@@ -136,7 +232,7 @@ void main() {
     await tester.pump();
     expect(find.text('Sai tọa độ'), findsNothing);
     expect(find.text('Điểm đến thật'), findsOneWidget);
-    expect(find.text('Địa chỉ chưa khả dụng'), findsOneWidget);
+    expect(find.text(_pickupCoordinates), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -196,6 +292,10 @@ void main() {
     await _showText(tester, 'Chi tiết giá');
     await tester.tap(find.text('Chi tiết giá'));
     await tester.pumpAndSettle();
+    expect(find.text('Cước theo quãng đường'), findsOneWidget);
+    expect(find.text('Cước theo thời gian'), findsOneWidget);
+    expect(find.text('Quãng đường'), findsNothing);
+    expect(find.text('Thời gian'), findsNothing);
     expect(find.text('4.500,50 VND'), findsOneWidget);
     expect(find.text('-500 VND'), findsOneWidget);
     expect(find.text('-0,50 VND'), findsOneWidget);
@@ -251,6 +351,7 @@ void main() {
 
     now = quote.expiresAt;
     await tester.pump(const Duration(milliseconds: 250));
+    await _showText(tester, 'Báo giá đã hết hạn');
     expect(find.text('Báo giá đã hết hạn'), findsOneWidget);
     await _showText(tester, 'Lấy báo giá mới');
     expect(tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
@@ -348,12 +449,104 @@ void main() {
     expect(tester.takeException(), isNull);
     await _showText(tester, 'Xác nhận đặt xe');
     expect(find.text('Xác nhận đặt xe'), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('Chi tiết giá'), 180,
-        scrollable: find.byType(Scrollable).first);
+    await _showText(tester, 'Chi tiết giá');
     await tester.tap(find.text('Chi tiết giá'));
     await tester.pumpAndSettle();
     expect(find.text('Điều chỉnh làm tròn'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Quote route preview scrolls and keeps one visible map credit',
+      (tester) async {
+    const channel = MethodChannel('plugins.flutter.io/maplibre_gl');
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel, (_) async => throw PlatformException(code: 'offline'));
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null));
+    final session = _Session();
+    when(() => session.getSession()).thenAnswer(
+        (_) async => const AuthSessionSnapshot(1, 'access', 'refresh'));
+    when(() => session.isCurrentSession(1)).thenAnswer((_) async => true);
+    final now = DateTime.utc(2026, 10, 22, 12);
+    await tester.pumpWidget(screen(
+        _quote(now.add(const Duration(seconds: 60))), () => now,
+        pickupLabel: 'Hồ Hoàn Kiếm',
+        dropoffLabel: 'Bến xe Mỹ Đình',
+        addressSession: session,
+        routeRepository: _UnavailableRouteRepo()));
+    await tester.pump();
+    final canvas = find.byType(CustomerMapCanvas);
+    await tester.scrollUntilVisible(canvas, 160,
+        scrollable: find.byType(Scrollable).first);
+    expect(tester.widget<CustomerMapCanvas>(canvas).scrollablePreview, isTrue);
+    expect(find.text(CustomerMapSource.visibleAttribution), findsOneWidget);
+    expect(find.text('© OpenStreetMap contributors'), findsNothing);
+    await tester.ensureVisible(canvas);
+    await tester.pump();
+    final scrollable =
+        tester.state<ScrollableState>(find.byType(Scrollable).first);
+    final before = scrollable.position.pixels;
+    await tester.dragFrom(tester.getCenter(canvas), const Offset(0, 150));
+    await tester.pump();
+    expect(scrollable.position.pixels, lessThan(before));
+    expect(find.text('Xác nhận đặt xe'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Quote page transition never animates the native map preview',
+      (tester) async {
+    tester.view.physicalSize = const Size(800, 1280);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    const channel = MethodChannel('plugins.flutter.io/maplibre_gl');
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel, (_) async => throw PlatformException(code: 'offline'));
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null));
+    final session = _Session();
+    when(() => session.getSession()).thenAnswer(
+        (_) async => const AuthSessionSnapshot(1, 'access', 'refresh'));
+    when(() => session.isCurrentSession(1)).thenAnswer((_) async => true);
+    final now = DateTime.utc(2026, 10, 22, 12);
+    await tester.pumpWidget(BlocProvider<BookingCubit>.value(
+      value: cubit,
+      child: MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () => Navigator.of(context).push(
+                AppMotion.contentRoute<void>(
+                  context,
+                  QuoteReviewScreen(
+                    quote: _quote(now.add(const Duration(seconds: 60))),
+                    now: () => now,
+                    routeRepository: _UnavailableRouteRepo(),
+                    routeSession: session,
+                  ),
+                ),
+              ),
+              child: const Text('Mở báo giá'),
+            ),
+          ),
+        ),
+      ),
+    ));
+    await tester.tap(find.text('Mở báo giá'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.byType(QuoteReviewScreen), findsOneWidget);
+    expect(find.byType(CustomerMapCanvas), findsNothing);
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.byType(CustomerMapCanvas), findsOneWidget);
+    await tester.pageBack();
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(find.byType(CustomerMapCanvas), findsNothing);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
   });
 }

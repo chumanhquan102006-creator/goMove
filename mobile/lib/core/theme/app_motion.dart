@@ -11,6 +11,7 @@ abstract final class AppMotion {
   static const Duration pageEnter = Duration(milliseconds: 280);
   static const Duration pageExit = Duration(milliseconds: 220);
   static const Duration cash = Duration(milliseconds: 240);
+  static const Duration sheet = Duration(milliseconds: 360);
 
   static const Curve enterCurve = Curves.easeOutCubic;
   static const Curve exitCurve = Curves.easeInCubic;
@@ -68,6 +69,31 @@ abstract final class AppMotion {
               ),
             );
           },
+        );
+      },
+    );
+  }
+
+  /// Slide/fade Flutter content. A destination containing a native map must
+  /// mount it after this route completes and remove it before reverse motion.
+  static PageRoute<T> contentRoute<T>(BuildContext context, Widget page) {
+    final reduced = reduceMotion(context);
+    return PageRouteBuilder<T>(
+      pageBuilder: (_, __, ___) => page,
+      transitionDuration: reduced ? Duration.zero : pageEnter,
+      reverseTransitionDuration: reduced ? Duration.zero : pageExit,
+      transitionsBuilder: (_, animation, __, child) {
+        if (reduced) return child;
+        final curved = animation.drive(CurveTween(curve: standardCurve));
+        return FadeTransition(
+          opacity: curved,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(.06, 0),
+              end: Offset.zero,
+            ).animate(curved),
+            child: child,
+          ),
         );
       },
     );

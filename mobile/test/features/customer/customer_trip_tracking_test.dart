@@ -519,9 +519,16 @@ void main() {
             trackingMapBuilder: (_, __, ___) =>
                 const Text('Bản đồ thử nghiệm'))));
     await tester.pump();
+    await tester.dragFrom(
+        tester.getCenter(
+            find.byKey(const ValueKey('customer-trip-sheet-handle'))),
+        const Offset(0, -280));
+    await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
         find.byKey(const ValueKey('customer-cancel-booking')), 120,
         scrollable: find.byType(Scrollable).first);
+    await tester
+        .ensureVisible(find.byKey(const ValueKey('customer-cancel-booking')));
     await tester.tap(find.byKey(const ValueKey('customer-cancel-booking')));
     await tester.pump();
     expect(find.text('Hủy chuyến này?'), findsOneWidget);
@@ -1203,15 +1210,17 @@ void main() {
     await tester.pump();
     expect(find.text('Chuyến đi đang diễn ra.'), findsOneWidget);
     final compactStatusCard = find.ancestor(
-        of: find.text('Chuyến đi đang diễn ra.'), matching: find.byType(Card));
+        of: find.text('Chuyến đi đang diễn ra.'),
+        matching: find.byKey(const ValueKey('customer-status-surface')));
     expect(
         find.descendant(
             of: compactStatusCard,
             matching: find.text('Vị trí đang được cập nhật')),
         findsOneWidget);
-    await tester.scrollUntilVisible(find.text('16.500 VND'), 80,
+    await tester.scrollUntilVisible(
+        find.text('Thanh toán tiền mặt · 16.500 VND'), 80,
         scrollable: find.byType(Scrollable).first);
-    expect(find.text('16.500 VND'), findsOneWidget);
+    expect(find.text('Thanh toán tiền mặt · 16.500 VND'), findsOneWidget);
     await tester.scrollUntilVisible(find.text('Tài xế đã đến điểm đón'), 250,
         scrollable: find.byType(Scrollable).first);
     expect(find.text('Tài xế đã đến điểm đón'), findsOneWidget);
@@ -1228,7 +1237,7 @@ void main() {
     expect(seenLocations.last.latitude, 21.1);
     expect(seenLocations.last.longitude, 105.1);
     await tester.scrollUntilVisible(
-        find.textContaining('Vị trí mới nhất:'), 250,
+        find.textContaining('Vị trí mới nhất:'), 80,
         scrollable: find.byType(Scrollable).first);
     expect(find.textContaining('Vị trí mới nhất:'), findsOneWidget);
     await tester.scrollUntilVisible(find.text('Chờ xác nhận thanh toán'), 250,
@@ -1239,6 +1248,37 @@ void main() {
     expect(trips.transitionCalls, 0);
     expect(trips.confirmCalls, 0);
     await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Support reference is an explicit action and hidden by default',
+      (tester) async {
+    trips.value = tracking('DRIVER_ACCEPTED');
+    registerScreenServices();
+    await tester.pumpWidget(MaterialApp(
+        home: BookingStatusScreen(
+            booking: booking('DRIVER_ACCEPTED'),
+            trackingMapBuilder: (_, __, ___) =>
+                const Text('Bản đồ thử nghiệm'))));
+    await tester.pump();
+    await tester.pump();
+
+    final support = find.byKey(const ValueKey('customer-trip-support'));
+    await tester.dragFrom(
+        tester.getCenter(
+            find.byKey(const ValueKey('customer-trip-sheet-handle'))),
+        const Offset(0, -280));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(support, 80,
+        scrollable: find.byType(Scrollable).first);
+    await tester.ensureVisible(support);
+    expect(find.text('Cần hỗ trợ về chuyến đi?'), findsOneWidget);
+    expect(find.text(bookingId), findsNothing);
+
+    await tester.tap(support);
+    await tester.pumpAndSettle();
+    expect(find.text(bookingId), findsOneWidget);
+    expect(find.text('Cung cấp mã chuyến này khi cần được hỗ trợ.'),
+        findsOneWidget);
   });
 
   testWidgets('Booking addresses require authorized Quote and fresh resume',
@@ -1730,9 +1770,9 @@ void main() {
     expect(cashSwitcher.duration, AppMotion.cash);
 
     trips.cash = payment('PAID');
-    await tester.scrollUntilVisible(find.text('Cập nhật từ máy chủ'), 250,
+    await tester.scrollUntilVisible(find.text('Cập nhật chuyến đi'), 250,
         scrollable: find.byType(Scrollable).first);
-    await tester.tap(find.text('Cập nhật từ máy chủ'));
+    await tester.tap(find.text('Cập nhật chuyến đi'));
     await tester.pump();
     await tester.pump();
     await tester.scrollUntilVisible(find.text('Đã thanh toán'), 250,

@@ -1,16 +1,65 @@
 import 'dart:math' show Point;
 
 import 'package:flutter/foundation.dart' show Factory;
-import 'package:flutter/gestures.dart' show OneSequenceGestureRecognizer;
+import 'package:flutter/gestures.dart'
+    show
+        EagerGestureRecognizer,
+        HorizontalDragGestureRecognizer,
+        OneSequenceGestureRecognizer,
+        TapGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gomove_mobile/features/customer/domain/models/quote.dart';
 import 'package:gomove_mobile/features/customer/presentation/screens/customer_map_canvas.dart';
+import 'package:gomove_mobile/features/customer/presentation/widgets/customer_map_source.dart';
 import 'package:gomove_mobile/features/trip/domain/models/road_route.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 
 void main() {
+  testWidgets('Quote map preview permits vertical page drag and one credit',
+      (tester) async {
+    const channel = MethodChannel('plugins.flutter.io/maplibre_gl');
+    tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (_) async => null);
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null));
+    final originalFactory = MapLibrePlatform.createInstance;
+    MapLibrePlatform.createInstance = _FakeMapLibrePlatform.new;
+    addTearDown(() => MapLibrePlatform.createInstance = originalFactory);
+
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: ListView(children: const [
+          SizedBox(
+            height: 200,
+            child: CustomerMapCanvas(
+              pickup: Coordinates(21.0287, 105.8524),
+              dropoff: Coordinates(21.0245, 105.8576),
+              onTap: _ignoreTap,
+              fullScreen: true,
+              scrollablePreview: true,
+            ),
+          ),
+          SizedBox(height: 900),
+        ]),
+      ),
+    ));
+    await tester.pump();
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final gestureTypes = map.gestureRecognizers!.map((e) => e.type).toSet();
+    expect(gestureTypes, contains(HorizontalDragGestureRecognizer));
+    expect(gestureTypes, contains(TapGestureRecognizer));
+    expect(gestureTypes, isNot(contains(EagerGestureRecognizer)));
+    expect(find.text(CustomerMapSource.visibleAttribution), findsOneWidget);
+    final scrollable =
+        tester.state<ScrollableState>(find.byType(Scrollable).first);
+    await tester.dragFrom(tester.getCenter(find.byType(CustomerMapCanvas)),
+        const Offset(0, -150));
+    await tester.pumpAndSettle();
+    expect(scrollable.position.pixels, greaterThan(0));
+  });
+
   testWidgets('Map request setup failure keeps coordinate fallback guidance',
       (tester) async {
     const channel = MethodChannel('plugins.flutter.io/maplibre_gl');
@@ -156,7 +205,8 @@ void main() {
     expect(find.byType(MapLibreMap), findsOneWidget);
   });
 
-  testWidgets('Authorized road geometry draws in lon/lat order without remount or camera move',
+  testWidgets(
+      'Authorized road geometry draws in lon/lat order without remount or camera move',
       (tester) async {
     const channel = MethodChannel('plugins.flutter.io/maplibre_gl');
     tester.binding.defaultBinaryMessenger

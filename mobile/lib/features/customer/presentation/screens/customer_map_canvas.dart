@@ -2,7 +2,11 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show Factory;
 import 'package:flutter/gestures.dart'
-    show EagerGestureRecognizer, OneSequenceGestureRecognizer;
+    show
+        EagerGestureRecognizer,
+        HorizontalDragGestureRecognizer,
+        OneSequenceGestureRecognizer,
+        TapGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 
@@ -26,6 +30,8 @@ class CustomerMapCanvas extends StatefulWidget {
   final ValueChanged<Coordinates> onTap;
   final bool fullScreen;
   final RoadRoute? route;
+  final double attributionTop;
+  final bool scrollablePreview;
 
   const CustomerMapCanvas({
     super.key,
@@ -34,6 +40,8 @@ class CustomerMapCanvas extends StatefulWidget {
     required this.onTap,
     this.fullScreen = false,
     this.route,
+    this.attributionTop = 12,
+    this.scrollablePreview = false,
   });
 
   @override
@@ -44,6 +52,13 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
   static const _hanoi = LatLng(21.0287, 105.8524);
   static final _mapGestures = <Factory<OneSequenceGestureRecognizer>>{
     const Factory<EagerGestureRecognizer>(EagerGestureRecognizer.new),
+  };
+  // In a vertical Quote list, let the list win vertical drags while the map
+  // still accepts taps and horizontal panning. Home keeps full map gestures.
+  static final _scrollPreviewGestures = <Factory<OneSequenceGestureRecognizer>>{
+    const Factory<HorizontalDragGestureRecognizer>(
+        HorizontalDragGestureRecognizer.new),
+    const Factory<TapGestureRecognizer>(TapGestureRecognizer.new),
   };
 
   MapLibreMapController? _controller;
@@ -278,7 +293,9 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
                   AnnotationType.line,
                   AnnotationType.circle
                 ],
-                gestureRecognizers: _mapGestures,
+                gestureRecognizers: widget.scrollablePreview
+                    ? _scrollPreviewGestures
+                    : _mapGestures,
                 onMapCreated: (controller) => _controller = controller,
                 onStyleLoadedCallback: _onStyleLoaded,
                 onMapClick: (_, position) {
@@ -327,7 +344,7 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
           ),
         ),
         Positioned(
-          top: 12,
+          top: widget.attributionTop,
           left: 12,
           right: 76,
           child: DecoratedBox(

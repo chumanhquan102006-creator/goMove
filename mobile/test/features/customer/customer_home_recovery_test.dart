@@ -244,6 +244,10 @@ void main() {
   Coordinates? lastMapDropoff;
   var mapMounts = 0;
   var mapDisposals = 0;
+  var steadyMounts = 0;
+  var steadyDisposals = 0;
+  var manualOpened = false;
+  var locationOptionsOpened = false;
 
   Widget fakeMapBuilder(BuildContext context, Coordinates? pickup,
       Coordinates? dropoff, ValueChanged<Coordinates> onTap) {
@@ -279,6 +283,10 @@ void main() {
     lastMapDropoff = null;
     mapMounts = 0;
     mapDisposals = 0;
+    steadyMounts = 0;
+    steadyDisposals = 0;
+    manualOpened = false;
+    locationOptionsOpened = false;
     activeStore = _ActiveStore();
     tripRepository = _TripRepository();
     session = _Session();
@@ -331,39 +339,82 @@ void main() {
             home:
                 CustomerHomeScreen(user: userA, mapBuilder: fakeMapBuilder))));
     await tester.pumpAndSettle();
+    steadyMounts = mapMounts;
+    steadyDisposals = mapDisposals;
+  }
+
+  void expectMapSteady() {
+    expect(mapMounts, steadyMounts, reason: 'The map must not remount');
+    expect(mapDisposals, steadyDisposals,
+        reason: 'The map must stay mounted during Flutter overlays');
   }
 
   Future<void> selectOnFakeMap(
       WidgetTester tester, String mode, Coordinates point) async {
     mapTap = point;
-    // The map button is below the choice chips. A previous selection may leave
-    // the lazy ListView scrolled past them, so begin each selection at the top.
-    tester
-        .state<ScrollableState>(find.byType(Scrollable).first)
-        .position
-        .jumpTo(0);
-    await tester.pump();
-    await tester.scrollUntilVisible(find.text(mode), 250,
-        scrollable: find.byType(Scrollable).first);
-    await tester.tap(find.text(mode));
-    await tester.pump();
+    await tester.tap(find.byKey(ValueKey(mode == 'Chọn điểm đón'
+        ? 'floating-pickup-search'
+        : 'floating-dropoff-search')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('customer-location-search-page')),
+        findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('customer-search-choose-map')));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Chọn trên bản đồ giả'));
     await tester.pumpAndSettle();
   }
 
+  Future<void> openSearch(WidgetTester tester, {bool pickup = true}) async {
+    await tester.tap(find.byKey(ValueKey(
+        pickup ? 'floating-pickup-search' : 'floating-dropoff-search')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('customer-location-search-page')),
+        findsOneWidget);
+  }
+
+  Future<void> openLocationOptions(WidgetTester tester) async {
+    if (locationOptionsOpened) return;
+    await tester.dragFrom(
+        tester.getCenter(
+            find.byKey(const ValueKey('customer-booking-sheet-grip'))),
+        const Offset(0, -350));
+    await tester.pumpAndSettle();
+    final options = find.byKey(const ValueKey('customer-location-options'));
+    await tester.scrollUntilVisible(options, 250,
+        scrollable: find.descendant(
+            of: find.byKey(const ValueKey('customer-booking-sheet-scroll')),
+            matching: find.byType(Scrollable)));
+    await tester.ensureVisible(options);
+    await tester.pumpAndSettle();
+    await tester.tap(options);
+    await tester.pumpAndSettle();
+    locationOptionsOpened = true;
+  }
+
   Future<void> enterCoordinate(
       WidgetTester tester, String label, String value) async {
+    await openLocationOptions(tester);
+    if (!manualOpened) {
+      final manual = find.text('Nhập vị trí thủ công khi cần');
+      await tester.scrollUntilVisible(manual, 250,
+          scrollable: find.byType(Scrollable).first);
+      await tester.ensureVisible(manual);
+      await tester.pumpAndSettle();
+      await tester.tap(manual);
+      await tester.pumpAndSettle();
+      manualOpened = true;
+    }
     final field = find.widgetWithText(TextFormField, label);
     await tester.scrollUntilVisible(field, 250,
         scrollable: find.byType(Scrollable).first);
+    await tester.ensureVisible(field);
+    await tester.pumpAndSettle();
     await tester.enterText(field, value);
     await tester.pump();
   }
 
   Future<void> requestQuote(WidgetTester tester) async {
-    final action = find.text('Lấy báo giá từ máy chủ');
-    await tester.scrollUntilVisible(action, 250,
-        scrollable: find.byType(Scrollable).first);
+    final action = find.text('Xem giá chuyến đi');
     await tester.tap(action);
     await tester.pumpAndSettle();
   }
@@ -397,31 +448,191 @@ void main() {
     final sheet = tester.widget<DraggableScrollableSheet>(sheetFinder);
     final scroll = tester.widget<ListView>(scrollFinder);
     expect(sheet.snap, isTrue);
-    expect(sheet.minChildSize, .46);
+    expect(sheet.minChildSize, inInclusiveRange(.28, .48));
     expect(scroll.controller, isNotNull);
-    expect(mapMounts - mapDisposals, 1);
+    expectMapSteady();
     final collapsedHeight = tester.getSize(sheetFinder).height;
 
     await tester.dragFrom(
         tester.getCenter(
-            find.byKey(const ValueKey('customer-booking-sheet-handle'))),
+            find.byKey(const ValueKey('customer-booking-sheet-grip'))),
         const Offset(0, -350));
     await tester.pumpAndSettle();
     expect(tester.getSize(sheetFinder).height, greaterThan(collapsedHeight));
-    expect(mapMounts - mapDisposals, 1);
+    expectMapSteady();
 
+    await openLocationOptions(tester);
+    await tester.scrollUntilVisible(
+        find.text('Nhập vị trí thủ công khi cần'), 200,
+        scrollable: find.descendant(
+            of: scrollFinder, matching: find.byType(Scrollable)));
+    await tester.ensureVisible(find.text('Nhập vị trí thủ công khi cần'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Nhập vị trí thủ công khi cần'));
+    await tester.pumpAndSettle();
     await tester.scrollUntilVisible(find.text('Điểm đến · kinh độ'), 200,
         scrollable: find.byType(Scrollable).first);
+    await tester.ensureVisible(find.text('Điểm đến · kinh độ'));
+    await tester.pumpAndSettle();
     expect(find.text('Điểm đến · kinh độ'), findsOneWidget);
-    expect(find.text('Lấy báo giá từ máy chủ'), findsOneWidget);
-    expect(mapMounts - mapDisposals, 1);
+    expect(find.text('Xem giá chuyến đi'), findsOneWidget);
+    expectMapSteady();
     expect(repository.quoteRequests, isEmpty);
     expect(repository.createCalls, 0);
+    await tester.dragFrom(
+        tester.getCenter(
+            find.byKey(const ValueKey('customer-booking-sheet-grip'))),
+        const Offset(0, 380));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(sheetFinder).height, closeTo(collapsedHeight, 5));
+  });
+
+  testWidgets('Sheet content drag expands and collapses at scroll origin',
+      (tester) async {
+    await showHome(tester);
+    final sheet = find.byKey(const ValueKey('customer-booking-sheet'));
+    final content = find.byKey(const ValueKey('customer-booking-sheet-scroll'));
+    final collapsed = tester.getSize(sheet).height;
+
+    await tester.dragFrom(tester.getCenter(content), const Offset(0, -230));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(sheet).height, greaterThan(collapsed + 40));
+    expectMapSteady();
+
+    final controller = tester.widget<ListView>(content).controller!;
+    controller.jumpTo(0);
+    await tester.pump();
+    await tester.dragFrom(tester.getCenter(content), const Offset(0, 260));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(sheet).height, closeTo(collapsed, 5));
+    expectMapSteady();
+  });
+
+  testWidgets('Grip settles at the half-open sheet stop', (tester) async {
+    await showHome(tester);
+    final sheetFinder = find.byKey(const ValueKey('customer-booking-sheet'));
+    final sheet = tester.widget<DraggableScrollableSheet>(sheetFinder);
+    final half = (sheet.minChildSize + sheet.maxChildSize) / 2;
+    await tester.timedDrag(
+        find.byKey(const ValueKey('customer-booking-sheet-grip')),
+        const Offset(0, -125),
+        const Duration(milliseconds: 700));
+    await tester.pumpAndSettle();
+    expect(sheet.controller!.size, closeTo(half, .025));
+    expectMapSteady();
+  });
+
+  testWidgets('Keyboard opens the sheet without clipping its booking action',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+      tester.view.resetViewInsets();
+    });
+    await showHome(tester);
+    await enterCoordinate(tester, 'Điểm đón · vĩ độ', '21.03');
+    tester.view.viewInsets = const FakeViewPadding(bottom: 280);
+    await tester.pumpAndSettle();
+    final sheet = tester.widget<DraggableScrollableSheet>(
+        find.byKey(const ValueKey('customer-booking-sheet')));
+    expect(sheet.controller!.size, closeTo(sheet.maxChildSize, .02));
+    expect(find.text('Xem giá chuyến đi'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    tester.view.resetViewInsets();
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Destination opens full-screen search without remounting the map',
+      (tester) async {
+    await showHome(tester);
+    expect(find.widgetWithText(TextFormField, 'Điểm đón · vĩ độ'), findsNothing,
+        reason: 'Manual coordinates are a secondary fallback');
+
+    await openSearch(tester, pickup: false);
+    expect(
+        tester
+            .widget<TextField>(
+                find.byKey(const ValueKey('dropoff-place-search')))
+            .focusNode!
+            .hasFocus,
+        isTrue);
+    expectMapSteady();
+    expect(repository.quoteRequests, isEmpty);
+    expect(find.byKey(const ValueKey('floating-dropoff-search')), findsNothing,
+        reason: 'The full-screen search route covers Home controls');
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(
+        find.byKey(const ValueKey('floating-dropoff-search')), findsOneWidget);
+    expectMapSteady();
+  });
+
+  testWidgets('Nokia T20 layout keeps long verified addresses readable',
+      (tester) async {
+    tester.view.physicalSize = const Size(800, 1280);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    const longAddress = 'Ngõ 123, Đường Trần Duy Hưng, Phường Trung Hòa, '
+        'Quận Cầu Giấy, Thành phố Hà Nội, Việt Nam';
+    geocoding.searchHandler =
+        (_) async => [place(longAddress, const Coordinates(21.03, 105.84))];
+    await showHome(tester);
+    await openSearch(tester);
+    final field = find.byKey(const ValueKey('pickup-place-search'));
+    await tester.enterText(field, 'Trần Duy Hưng');
+    await tester.pump(const Duration(milliseconds: 450));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(ListTile, longAddress));
+    await tester.pumpAndSettle();
+    final floating = find.descendant(
+        of: find.byKey(const ValueKey('floating-pickup-search')),
+        matching: find.text(longAddress));
+    expect(floating, findsOneWidget);
+    expect(tester.widget<Text>(floating).maxLines, 1);
+    expectMapSteady();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Reduced motion disables floating search transition',
+      (tester) async {
+    await showHome(tester, reducedMotion: true);
+    final field = find.descendant(
+        of: find.byKey(const ValueKey('floating-pickup-search')),
+        matching: find.byType(AnimatedContainer));
+    expect(tester.widget<AnimatedContainer>(field).duration, Duration.zero);
+    expect(
+        tester
+            .widget<DraggableScrollableSheet>(
+                find.byKey(const ValueKey('customer-booking-sheet')))
+            .snap,
+        isFalse);
+    await openSearch(tester, pickup: false);
+    expect(
+        ModalRoute.of(tester.element(
+                find.byKey(const ValueKey('customer-location-search-page'))))
+            ?.transitionDuration,
+        Duration.zero);
+    expect(
+        tester
+            .widget<TextField>(
+                find.byKey(const ValueKey('dropoff-place-search')))
+            .focusNode!
+            .hasFocus,
+        isTrue);
+    expect(tester.takeException(), isNull);
+    expectMapSteady();
   });
 
   testWidgets('Selection motion follows point choice without a Quote request',
       (tester) async {
     await showHome(tester);
+    await openLocationOptions(tester);
     await tester.scrollUntilVisible(find.text('Chọn điểm đón'), 250,
         scrollable: find.byType(Scrollable).first);
     expect(
@@ -459,6 +670,7 @@ void main() {
   testWidgets('Reduced motion keeps map point selection immediate',
       (tester) async {
     await showHome(tester, reducedMotion: true);
+    await openLocationOptions(tester);
     await tester.scrollUntilVisible(find.text('Chọn điểm đón'), 250,
         scrollable: find.byType(Scrollable).first);
     expect(
@@ -534,6 +746,7 @@ void main() {
       'Location summaries label coordinates without inventing addresses',
       (tester) async {
     await showHome(tester);
+    await openLocationOptions(tester);
     await tester.scrollUntilVisible(find.text('Đang chọn: Điểm đón'), 250,
         scrollable: find.byType(Scrollable).first);
     expect(find.text('Đang chọn: Điểm đón'), findsOneWidget);
@@ -625,10 +838,8 @@ void main() {
       (tester) async {
     repository.pendingQuote = Completer<Quote>();
     await showHome(tester);
-    await tester.scrollUntilVisible(find.text('Lấy báo giá từ máy chủ'), 250,
-        scrollable: find.byType(Scrollable).first);
     final action = tester.widget<FilledButton>(find.ancestor(
-        of: find.text('Lấy báo giá từ máy chủ'),
+        of: find.text('Xem giá chuyến đi'),
         matching: find.byType(FilledButton)));
     action.onPressed!();
     action.onPressed!();
@@ -671,8 +882,8 @@ void main() {
   testWidgets('Recovery control is visible with no saved Booking',
       (tester) async {
     await showHome(tester);
-    final recovery = tester.widget<TextButton>(
-        find.widgetWithText(TextButton, 'Tìm lại chuyến bằng mã'));
+    final recovery = tester.widget<IconButton>(
+        find.byKey(const ValueKey('customer-recover-booking')));
     expect(recovery.onPressed, isNotNull);
     expect(repository.requested, isEmpty);
   });
@@ -688,8 +899,8 @@ void main() {
             home:
                 CustomerHomeScreen(user: userA, mapBuilder: fakeMapBuilder))));
     await tester.pump();
-    final recovery = tester.widget<TextButton>(
-        find.widgetWithText(TextButton, 'Tìm lại chuyến bằng mã'));
+    final recovery = tester.widget<IconButton>(
+        find.byKey(const ValueKey('customer-recover-booking')));
     expect(recovery.onPressed, isNull);
     repository.pending!.complete(booking('DRIVER_ARRIVED'));
     await tester.pumpAndSettle();
@@ -701,8 +912,13 @@ void main() {
     when(() => session.getSession())
         .thenAnswer((_) async => const AuthSessionSnapshot(7, null, 'refresh'));
     await showHome(tester);
-    final recovery = tester.widget<TextButton>(
-        find.widgetWithText(TextButton, 'Tìm lại chuyến bằng mã'));
+    await tester.dragFrom(
+        tester.getCenter(
+            find.byKey(const ValueKey('customer-booking-sheet-grip'))),
+        const Offset(0, -220));
+    await tester.pumpAndSettle();
+    final recovery = tester.widget<IconButton>(
+        find.byKey(const ValueKey('customer-recover-booking')));
     expect(recovery.onPressed, isNull);
     expect(find.textContaining('Phiên đăng nhập đã thay đổi'), findsWidgets);
   });
@@ -714,10 +930,15 @@ void main() {
     repository.error =
         const ServerException(message: 'route unavailable', statusCode: 503);
     await showHome(tester);
-    final recovery = tester.widget<TextButton>(
-        find.widgetWithText(TextButton, 'Tìm lại chuyến bằng mã'));
+    final recovery = tester.widget<IconButton>(
+        find.byKey(const ValueKey('customer-recover-booking')));
     expect(recovery.onPressed, isNotNull);
     expect(find.text('Tiếp tục chuyến đang diễn ra'), findsNothing);
+    await tester.dragFrom(
+        tester.getCenter(
+            find.byKey(const ValueKey('customer-booking-sheet-grip'))),
+        const Offset(0, -300));
+    await tester.pumpAndSettle();
     expect(find.textContaining('Máy chủ đang bận'), findsOneWidget);
   });
 
@@ -731,8 +952,13 @@ void main() {
     final resume = tester.widget<FilledButton>(
         find.widgetWithText(FilledButton, 'Tiếp tục chuyến đang diễn ra'));
     expect(resume.onPressed, isNotNull);
+    await tester.dragFrom(
+        tester.getCenter(
+            find.byKey(const ValueKey('customer-booking-sheet-grip'))),
+        const Offset(0, -300));
+    await tester.pumpAndSettle();
     final entrance = find.ancestor(
-        of: find.text('Tiếp tục chuyến đang diễn ra'),
+        of: find.text('Xem chuyến'),
         matching: find.byType(TweenAnimationBuilder<double>));
     expect(entrance, findsOneWidget);
     expect(tester.widget<TweenAnimationBuilder<double>>(entrance).duration,
@@ -770,7 +996,7 @@ void main() {
       (tester) async {
     await showHome(tester);
     expect(find.text('Tiếp tục chuyến đang diễn ra'), findsNothing);
-    await tester.tap(find.text('Tìm lại chuyến bằng mã').first);
+    await tester.tap(find.byKey(const ValueKey('customer-recover-booking')));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextFormField).last, 'not-a-uuid');
     await tester.tap(find.text('Tìm chuyến'));
@@ -791,7 +1017,7 @@ void main() {
     repository.error =
         const ServerException(message: 'forbidden', statusCode: 403);
     await showHome(tester);
-    await tester.tap(find.text('Tìm lại chuyến bằng mã').first);
+    await tester.tap(find.byKey(const ValueKey('customer-recover-booking')));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextFormField).last, bookingId);
     await tester.tap(find.text('Tìm chuyến'));
@@ -799,7 +1025,8 @@ void main() {
     expect(activeStore.records, isEmpty);
     expect(find.text('Tiếp tục chuyến đang diễn ra'), findsNothing);
     expect(find.textContaining('không được phép xem Booking'), findsOneWidget);
-    expect(find.text('Tìm lại chuyến bằng mã'), findsOneWidget);
+    expect(
+        find.byKey(const ValueKey('customer-recover-booking')), findsOneWidget);
   });
 
   testWidgets('COMPLETED plus PAID is a final card, not an active trip',
@@ -810,7 +1037,16 @@ void main() {
     tripRepository.paymentStatus = 'PAID';
     await showHome(tester);
     expect(find.text('Tiếp tục chuyến đang diễn ra'), findsNothing);
-    expect(find.text('Chuyến đã hoàn thành · Đã thanh toán'), findsOneWidget);
+    await tester.dragFrom(
+        tester.getCenter(
+            find.byKey(const ValueKey('customer-booking-sheet-grip'))),
+        const Offset(0, -300));
+    await tester.pumpAndSettle();
+    expect(find.text('Chuyến trước đã thanh toán'), findsOneWidget);
+    await tester.tap(find.byTooltip('Ẩn chuyến đã thanh toán'));
+    await tester.pumpAndSettle();
+    expect(find.text('Chuyến trước đã thanh toán'), findsNothing);
+    expect(find.text('Xem giá chuyến đi'), findsOneWidget);
   });
 
   testWidgets('COMPLETED plus CASH PENDING keeps a resume entry',
@@ -820,8 +1056,13 @@ void main() {
     repository.value = booking('COMPLETED');
     await showHome(tester);
     expect(find.text('Tiếp tục chuyến đang diễn ra'), findsOneWidget);
-    expect(find.text('Thanh toán tiền mặt đang chờ xác nhận.'), findsOneWidget);
-    expect(find.text('Chuyến đã hoàn thành · Đã thanh toán'), findsNothing);
+    await tester.dragFrom(
+        tester.getCenter(
+            find.byKey(const ValueKey('customer-booking-sheet-grip'))),
+        const Offset(0, -300));
+    await tester.pumpAndSettle();
+    expect(find.text('Chờ xác nhận tiền mặt'), findsOneWidget);
+    expect(find.text('Chuyến trước đã thanh toán'), findsNothing);
   });
 
   testWidgets('Account replacement hides A Booking immediately',
@@ -847,25 +1088,26 @@ void main() {
           place('Hồ Hoàn Kiếm', const Coordinates(21.0287, 105.8524)),
         ];
     await showHome(tester);
+    await openSearch(tester);
     final pickupSearch = find.byKey(const ValueKey('pickup-place-search'));
-    await tester.scrollUntilVisible(pickupSearch, 250,
-        scrollable: find.byType(Scrollable).first);
     await tester.enterText(pickupSearch, 'Hồ Hoàn Kiếm');
     await tester.pump(const Duration(milliseconds: 350));
     expect(geocoding.searches, isEmpty);
     await tester.pump(const Duration(milliseconds: 100));
     await tester.pump();
     expect(geocoding.searches, ['Hồ Hoàn Kiếm']);
-    await tester.scrollUntilVisible(find.text('Hồ Hoàn Kiếm').last, 100,
-        scrollable: find.byType(Scrollable).first);
     await tester.tap(find.text('Hồ Hoàn Kiếm').last);
     await tester.pumpAndSettle();
     expect(lastMapPickup?.latitude, 21.0287);
     expect(lastMapPickup?.longitude, 105.8524);
     expect(lastMapDropoff?.latitude, 21.0245);
     expect(lastMapDropoff?.longitude, 105.8576);
-    expect(mapMounts - mapDisposals, 1);
-    expect(find.text('© OpenStreetMap contributors · Photon'), findsOneWidget);
+    expectMapSteady();
+    expect(
+        find.descendant(
+            of: find.byKey(const ValueKey('floating-pickup-search')),
+            matching: find.text('Hồ Hoàn Kiếm')),
+        findsOneWidget);
   });
 
   testWidgets('Pickup and destination searches stay independent',
@@ -880,16 +1122,14 @@ void main() {
       (const ValueKey('pickup-place-search'), 'Hồ Hoàn Kiếm'),
       (const ValueKey('dropoff-place-search'), 'Bến xe Mỹ Đình'),
     ]) {
+      await openSearch(tester,
+          pickup: entry.$1 == const ValueKey('pickup-place-search'));
       final field = find.byKey(entry.$1);
-      await tester.scrollUntilVisible(field, 250,
-          scrollable: find.byType(Scrollable).first);
       await tester.enterText(field, entry.$2);
       await tester.pump(const Duration(milliseconds: 450));
       await tester.pump();
-      await tester.scrollUntilVisible(find.text(entry.$2).last, 100,
-          scrollable: find.byType(Scrollable).first);
       await tester.tap(find.text(entry.$2).last);
-      await tester.pump();
+      await tester.pumpAndSettle();
     }
     expect(lastMapPickup?.longitude, 105.8524);
     expect(lastMapDropoff?.longitude, 105.778);
@@ -904,9 +1144,8 @@ void main() {
         : Future.value(
             [place('Địa điểm mới', const Coordinates(21.03, 105.85))]);
     await showHome(tester);
+    await openSearch(tester);
     final field = find.byKey(const ValueKey('pickup-place-search'));
-    await tester.scrollUntilVisible(field, 250,
-        scrollable: find.byType(Scrollable).first);
     await tester.enterText(field, 'Địa điểm cũ');
     await tester.pump(const Duration(milliseconds: 450));
     await tester.enterText(field, 'Địa điểm mới');
@@ -928,8 +1167,6 @@ void main() {
         const Coordinates(21.031234567, 105.841234567));
     expect(geocoding.reverses.single.latitude, 21.031234567);
     expect(lastMapPickup?.latitude, 21.031234567);
-    await tester.scrollUntilVisible(find.text('Phố Tràng Tiền'), 100,
-        scrollable: find.byType(Scrollable).first);
     expect(find.text('Phố Tràng Tiền'), findsOneWidget);
     await enterCoordinate(tester, 'Điểm đón · vĩ độ', '21.04');
     expect(find.text('Phố Tràng Tiền'), findsNothing);
@@ -944,6 +1181,7 @@ void main() {
     await selectOnFakeMap(
         tester, 'Chọn điểm đến', const Coordinates(21.05, 105.88));
     expect(lastMapDropoff?.latitude, 21.05);
+    await openLocationOptions(tester);
     expect(find.textContaining('Không thể xác minh địa chỉ'), findsOneWidget);
   });
 
@@ -952,9 +1190,8 @@ void main() {
     final pending = Completer<List<PlaceSearchResult>>();
     geocoding.searchHandler = (_) => pending.future;
     await showHome(tester);
+    await openSearch(tester);
     final field = find.byKey(const ValueKey('pickup-place-search'));
-    await tester.scrollUntilVisible(field, 250,
-        scrollable: find.byType(Scrollable).first);
     await tester.enterText(field, 'Địa chỉ riêng A');
     await tester.pump(const Duration(milliseconds: 450));
     final bReady = auth.stream.firstWhere((state) =>
@@ -975,9 +1212,8 @@ void main() {
   testWidgets('Background cancels search and resume keeps Quote fallback',
       (tester) async {
     await showHome(tester);
+    await openSearch(tester);
     final field = find.byKey(const ValueKey('pickup-place-search'));
-    await tester.scrollUntilVisible(field, 250,
-        scrollable: find.byType(Scrollable).first);
     await tester.enterText(field, 'Đại học Quốc gia Hà Nội');
     await tester.pump(const Duration(milliseconds: 150));
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
@@ -985,6 +1221,8 @@ void main() {
     expect(geocoding.searches, isEmpty);
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     await tester.pump();
+    await tester.pageBack();
+    await tester.pumpAndSettle();
     repository.quoteError =
         const ServerException(message: 'routing unavailable', statusCode: 503);
     await requestQuote(tester);
@@ -1014,18 +1252,17 @@ void main() {
       tester.view.resetDevicePixelRatio();
     });
     await showHome(tester);
+    await openSearch(tester, pickup: false);
     final field = find.byKey(const ValueKey('dropoff-place-search'));
-    await tester.scrollUntilVisible(field, 250,
-        scrollable: find.byType(Scrollable).first);
     await tester.tap(field);
     await tester.enterText(field, 'Bến xe Mỹ Đình');
     await tester.pump(const Duration(milliseconds: 450));
     await tester.pump();
     expect(tester.takeException(), isNull);
     expect(geocoding.searches, ['Bến xe Mỹ Đình']);
-    await tester.scrollUntilVisible(
-        find.byKey(const ValueKey('pickup-place-search')), -250,
-        scrollable: find.byType(Scrollable).first);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await openSearch(tester);
     expect(find.byKey(const ValueKey('pickup-place-search')), findsOneWidget);
   });
 
@@ -1033,9 +1270,8 @@ void main() {
       (tester) async {
     geocoding.searchHandler = (_) async => const [];
     await showHome(tester);
+    await openSearch(tester);
     final field = find.byKey(const ValueKey('pickup-place-search'));
-    await tester.scrollUntilVisible(field, 250,
-        scrollable: find.byType(Scrollable).first);
     await tester.enterText(field, 'Địa điểm không có');
     await tester.pump(const Duration(milliseconds: 450));
     await tester.pump();
@@ -1046,7 +1282,9 @@ void main() {
     await tester.enterText(field, 'Địa điểm khác');
     await tester.pump(const Duration(milliseconds: 450));
     await tester.pump();
-    expect(find.textContaining('đang giới hạn yêu cầu'), findsWidgets);
+    expect(find.textContaining('Tìm kiếm đang quá tải'), findsWidgets);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
     await enterCoordinate(tester, 'Điểm đón · vĩ độ', '21.03');
     expect(lastMapPickup?.latitude, 21.03);
   });
@@ -1064,15 +1302,12 @@ void main() {
               coordinates: Coordinates(21.02, 105.82)),
         ];
     await showHome(tester);
+    await openSearch(tester, pickup: false);
     final field = find.byKey(const ValueKey('dropoff-place-search'));
-    await tester.scrollUntilVisible(field, 250,
-        scrollable: find.byType(Scrollable).first);
     await tester.enterText(field, 'Quán cà phê');
     await tester.pump(const Duration(milliseconds: 450));
     await tester.pump();
     final secondResult = find.textContaining('Quán cà phê, Quận B');
-    await tester.scrollUntilVisible(secondResult, 100,
-        scrollable: find.byType(Scrollable).first);
     await tester.tap(secondResult);
     await tester.pump();
     expect(lastMapDropoff?.latitude, 21.02);
@@ -1086,36 +1321,34 @@ void main() {
           place('Hồ Hoàn Kiếm', const Coordinates(21.0287, 105.8524)),
         ];
     await showHome(tester);
+    await openSearch(tester);
     final pickupSearch = find.byKey(const ValueKey('pickup-place-search'));
-    await tester.scrollUntilVisible(pickupSearch, 250,
-        scrollable: find.byType(Scrollable).first);
     await tester.enterText(pickupSearch, 'Hồ Hoàn Kiếm');
     await tester.pump(const Duration(milliseconds: 450));
     await tester.pump();
     await tester.tap(find.text('Hồ Hoàn Kiếm').last);
-    await tester.pump();
-    await tester.scrollUntilVisible(pickupSearch, -250,
-        scrollable: find.byType(Scrollable).first);
+    await tester.pumpAndSettle();
+    await openSearch(tester);
     expect(tester.widget<TextField>(pickupSearch).controller!.text,
         'Hồ Hoàn Kiếm');
+    await tester.pageBack();
+    await tester.pumpAndSettle();
 
     await selectOnFakeMap(
         tester, 'Chọn điểm đón', const Coordinates(21.031, 105.841));
-    await tester.scrollUntilVisible(pickupSearch, -250,
-        scrollable: find.byType(Scrollable).first);
+    await openSearch(tester);
     expect(tester.widget<TextField>(pickupSearch).controller!.text, isEmpty);
     expect(find.text('Hồ Hoàn Kiếm'), findsNothing);
     expect(lastMapPickup?.latitude, 21.031);
 
-    await tester.scrollUntilVisible(pickupSearch, -250,
-        scrollable: find.byType(Scrollable).first);
     await tester.enterText(pickupSearch, 'Hồ Hoàn Kiếm');
     await tester.pump(const Duration(milliseconds: 450));
     await tester.pump();
     expect(find.text('Hồ Hoàn Kiếm'), findsWidgets);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
     await enterCoordinate(tester, 'Điểm đón · kinh độ', '105.84');
-    await tester.scrollUntilVisible(pickupSearch, -250,
-        scrollable: find.byType(Scrollable).first);
+    await openSearch(tester);
     expect(tester.widget<TextField>(pickupSearch).controller!.text, isEmpty);
     expect(find.text('Hồ Hoàn Kiếm'), findsNothing);
     expect(lastMapPickup?.longitude, 105.84);
@@ -1130,9 +1363,8 @@ void main() {
     await showHome(tester);
     final check = Completer<bool>();
     when(() => session.isCurrentSession(7)).thenAnswer((_) => check.future);
+    await openSearch(tester);
     final field = find.byKey(const ValueKey('pickup-place-search'));
-    await tester.scrollUntilVisible(field, 250,
-        scrollable: find.byType(Scrollable).first);
     await tester.enterText(field, 'Địa chỉ cũ');
     await tester.pump(const Duration(milliseconds: 450));
     await tester.pump();
@@ -1179,9 +1411,8 @@ void main() {
     await showHome(tester);
     final check = Completer<bool>();
     when(() => session.isCurrentSession(7)).thenAnswer((_) => check.future);
+    await openSearch(tester);
     final field = find.byKey(const ValueKey('pickup-place-search'));
-    await tester.scrollUntilVisible(field, 250,
-        scrollable: find.byType(Scrollable).first);
     await tester.enterText(field, 'Địa chỉ cũ');
     await tester.pump(const Duration(milliseconds: 450));
     await tester.pump();
@@ -1207,8 +1438,6 @@ void main() {
     check.complete(true);
     await tester.pumpAndSettle();
     expect(find.text('Phố cũ'), findsNothing);
-    await tester.scrollUntilVisible(find.text('Phố mới'), 100,
-        scrollable: find.byType(Scrollable).first);
     expect(find.text('Phố mới'), findsOneWidget);
     expect(lastMapPickup?.latitude, 21.04);
   });

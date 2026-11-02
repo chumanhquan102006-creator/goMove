@@ -5,6 +5,7 @@ import '../../../../core/config/app_config.dart';
 import '../../../../core/di/injection.dart';
 import '../../../../core/storage/secure_storage_service.dart';
 import '../../../../core/theme/app_motion.dart';
+import '../../../../core/theme/app_colors.dart';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../auth/presentation/bloc/auth_state.dart';
 import '../../../review/domain/rating_repository.dart';
@@ -19,8 +20,8 @@ import '../../domain/repositories/geocoding_repository.dart';
 import '../../domain/usecases/customer_usecases.dart';
 import '../bloc/booking_status_cubit.dart';
 import '../formatters.dart';
-import '../widgets/customer_map_source.dart';
 import '../widgets/customer_trip_tracking_map.dart';
+import '../widgets/customer_premium_widgets.dart';
 import '../widgets/customer_trip_eta.dart';
 
 typedef CustomerTripMapBuilder = Widget Function(BuildContext context,
@@ -347,6 +348,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                     key: const ValueKey('customer-trip-sheet'),
                     expand: false,
                     snap: !reduceMotion,
+                    snapSizes: const [.30, .58],
                     minChildSize: .30,
                     initialChildSize: .30,
                     maxChildSize: .86,
@@ -372,103 +374,154 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                             ),
                           ),
                           const SizedBox(height: 12),
-                          Card(
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text('TRẠNG THÁI CHUYẾN ĐI',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .labelMedium
-                                          ?.copyWith(
-                                              color: colors.primary,
-                                              fontWeight: FontWeight.w700,
-                                              letterSpacing: 0.7)),
-                                  const SizedBox(height: 8),
-                                  AnimatedSwitcher(
-                                    key: const ValueKey(
-                                        'customer-status-switcher'),
-                                    duration: motionDuration,
-                                    switchInCurve: AppMotion.enterCurve,
-                                    switchOutCurve: AppMotion.exitCurve,
-                                    transitionBuilder: (child, animation) =>
-                                        reduceMotion
-                                            ? child
-                                            : AnimatedBuilder(
-                                                animation: animation,
-                                                child: child,
-                                                builder: (context, child) =>
-                                                    Transform.translate(
-                                                  offset: Offset(
-                                                      0,
-                                                      AppMotion.cardTravel *
-                                                          (1 -
-                                                              animation.value)),
-                                                  child: Opacity(
-                                                    opacity: animation.value,
-                                                    child: child,
-                                                  ),
+                          CustomerPremiumSurface(
+                            surfaceKey:
+                                const ValueKey('customer-status-surface'),
+                            highlighted: true,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(children: [
+                                  const Icon(Icons.near_me_rounded,
+                                      color: AppColors.primary, size: 20),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                      child: Text('Hành trình của bạn',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .labelLarge
+                                              ?.copyWith(
+                                                  color: AppColors.primary,
+                                                  fontWeight:
+                                                      FontWeight.w700))),
+                                  if (state.status == 'COMPLETED')
+                                    const Icon(Icons.verified_rounded,
+                                        color: AppColors.success),
+                                ]),
+                                const SizedBox(height: 8),
+                                AnimatedSwitcher(
+                                  key: const ValueKey(
+                                      'customer-status-switcher'),
+                                  duration: motionDuration,
+                                  switchInCurve: AppMotion.enterCurve,
+                                  switchOutCurve: AppMotion.exitCurve,
+                                  transitionBuilder: (child, animation) =>
+                                      reduceMotion
+                                          ? child
+                                          : AnimatedBuilder(
+                                              animation: animation,
+                                              child: child,
+                                              builder: (context, child) =>
+                                                  Transform.translate(
+                                                offset: Offset(
+                                                    0,
+                                                    AppMotion.cardTravel *
+                                                        (1 - animation.value)),
+                                                child: Opacity(
+                                                  opacity: animation.value,
+                                                  child: child,
                                                 ),
                                               ),
-                                    child: Text(
-                                        customerTripStatusLabel(state.status),
-                                        key: ValueKey(state.status),
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .headlineSmall),
-                                  ),
-                                  if (!isTerminalTripStatus(state.status)) ...[
-                                    const SizedBox(height: 6),
-                                    Text(
-                                        customerRealtimeLabel(
-                                            state.realtimeState),
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall),
-                                  ],
-                                  if (!isTerminalTripStatus(state.status)) ...[
-                                    const SizedBox(height: 14),
-                                    ClipRRect(
-                                      borderRadius: BorderRadius.circular(8),
-                                      child: TweenAnimationBuilder<double>(
-                                        key: const ValueKey(
-                                            'customer-trip-progress'),
-                                        tween: Tween<double>(
-                                          begin: (_progress(
-                                                      widget.booking.status) +
-                                                  1) /
-                                              _timeline.length,
-                                          end:
-                                              (progress + 1) / _timeline.length,
-                                        ),
-                                        duration: motionDuration,
-                                        curve: AppMotion.standardCurve,
-                                        builder: (context, value, child) =>
-                                            LinearProgressIndicator(
-                                          value: value,
-                                          minHeight: 7,
-                                          semanticsLabel: 'Tiến độ chuyến đi',
-                                        ),
+                                            ),
+                                  child: Text(
+                                      customerTripStatusLabel(state.status),
+                                      key: ValueKey(state.status),
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .headlineSmall),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                    'Thanh toán tiền mặt · ${vnd(booking.finalFare)}',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleSmall
+                                        ?.copyWith(
+                                            color: AppColors.primaryDark)),
+                                if (!isTerminalTripStatus(state.status)) ...[
+                                  const SizedBox(height: 6),
+                                  Text(
+                                      customerRealtimeLabel(
+                                          state.realtimeState),
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall),
+                                ],
+                                if (!isTerminalTripStatus(state.status)) ...[
+                                  const SizedBox(height: 14),
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: TweenAnimationBuilder<double>(
+                                      key: const ValueKey(
+                                          'customer-trip-progress'),
+                                      tween: Tween<double>(
+                                        begin:
+                                            (_progress(widget.booking.status) +
+                                                    1) /
+                                                _timeline.length,
+                                        end: (progress + 1) / _timeline.length,
+                                      ),
+                                      duration: motionDuration,
+                                      curve: AppMotion.standardCurve,
+                                      builder: (context, value, child) =>
+                                          LinearProgressIndicator(
+                                        value: value,
+                                        minHeight: 7,
+                                        semanticsLabel: 'Tiến độ chuyến đi',
                                       ),
                                     ),
-                                  ],
-                                  if (state.status == 'PASSENGER_ONBOARD' ||
-                                      state.status == 'IN_PROGRESS' ||
-                                      state.status == 'COMPLETED')
-                                    const Padding(
-                                        padding: EdgeInsets.only(top: 8),
-                                        child: Text(
-                                            'Không thể tự hủy sau khi khách đã lên xe.')),
-                                  if (state.status == 'CANCELLED')
-                                    Text(
-                                        'Đã hủy lúc: ${_time(state.tracking?.cancelledAt ?? booking.cancelledAt)}'),
-                                  if (state.status == 'NO_DRIVER_AVAILABLE')
-                                    Text(
-                                        'Đã dừng tìm lúc: ${_time(state.tracking?.dispatchFailedAt ?? booking.dispatchFailedAt)}'),
+                                  ),
                                 ],
-                              ),
+                                if (state.canCancel) ...[
+                                  const SizedBox(height: 12),
+                                  OutlinedButton.icon(
+                                    key: const ValueKey(
+                                        'customer-cancel-booking'),
+                                    onPressed: state.loading ||
+                                            state.cancellationBusy ||
+                                            state.cancellationUnresolved
+                                        ? null
+                                        : _confirmCancel,
+                                    icon: const Icon(Icons.cancel_outlined),
+                                    label: const Text('Hủy chuyến'),
+                                  ),
+                                ],
+                                if (state.status == 'PASSENGER_ONBOARD' ||
+                                    state.status == 'IN_PROGRESS')
+                                  const Padding(
+                                      padding: EdgeInsets.only(top: 8),
+                                      child: Text(
+                                          'Không thể tự hủy sau khi khách đã lên xe.')),
+                                if (state.status == 'CANCELLED')
+                                  Text(
+                                      'Đã hủy lúc: ${_time(state.tracking?.cancelledAt ?? booking.cancelledAt)}'),
+                                if (state.status == 'NO_DRIVER_AVAILABLE')
+                                  Text(
+                                      'Đã dừng tìm lúc: ${_time(state.tracking?.dispatchFailedAt ?? booking.dispatchFailedAt)}'),
+                                const SizedBox(height: 8),
+                                ExpansionTile(
+                                  key: const ValueKey('customer-trip-support'),
+                                  tilePadding: EdgeInsets.zero,
+                                  childrenPadding: EdgeInsets.zero,
+                                  leading:
+                                      const Icon(Icons.support_agent_outlined),
+                                  title: const Text('Cần hỗ trợ về chuyến đi?'),
+                                  children: [
+                                    const Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: Text(
+                                          'Cung cấp mã chuyến này khi cần được hỗ trợ.'),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: SelectableText(booking.publicId),
+                                    ),
+                                  ],
+                                ),
+                              ],
                             ),
                           ),
                           CustomerTripEta(
@@ -485,19 +538,6 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                               customerPublicId: _customerPublicId!,
                               autoPrompt: true,
                             ),
-                          if (state.canCancel) ...[
-                            const SizedBox(height: 8),
-                            OutlinedButton.icon(
-                              key: const ValueKey('customer-cancel-booking'),
-                              onPressed: state.loading ||
-                                      state.cancellationBusy ||
-                                      state.cancellationUnresolved
-                                  ? null
-                                  : _confirmCancel,
-                              icon: const Icon(Icons.cancel_outlined),
-                              label: const Text('Hủy chuyến'),
-                            ),
-                          ],
                           if (state.cancellationBusy)
                             const Padding(
                                 padding: EdgeInsets.all(8),
@@ -552,40 +592,14 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                               ListTile(
                                   dense: true,
                                   title: const Text('Giá đã chấp nhận'),
-                                  subtitle: Text(vnd(booking.finalFare),
+                                  subtitle: Text('Thanh toán bằng tiền mặt',
                                       style: Theme.of(context)
                                           .textTheme
-                                          .titleLarge
-                                          ?.copyWith(color: colors.primary))),
+                                          .bodySmall)),
                               ListTile(
                                   dense: true,
                                   title: const Text('Tạo lúc'),
                                   subtitle: Text(_time(booking.createdAt))),
-                              ExpansionTile(
-                                title: const Text('Mã tham chiếu hỗ trợ'),
-                                children: [
-                                  ListTile(
-                                      dense: true,
-                                      title: const Text('Mã chuyến'),
-                                      subtitle:
-                                          SelectableText(booking.publicId)),
-                                  if ((state.tracking?.driverPublicId ??
-                                          booking.driverPublicId) !=
-                                      null)
-                                    ListTile(
-                                        dense: true,
-                                        title: const Text('Mã tài xế'),
-                                        subtitle: SelectableText(
-                                            state.tracking?.driverPublicId ??
-                                                booking.driverPublicId!)),
-                                  if (booking.vehiclePublicId != null)
-                                    ListTile(
-                                        dense: true,
-                                        title: const Text('Mã xe'),
-                                        subtitle: SelectableText(
-                                            booking.vehiclePublicId!)),
-                                ],
-                              ),
                             ]),
                           ),
                           if (state.tracking?.bookingPublicId ==
@@ -671,7 +685,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                             .textTheme
                                             .bodySmall),
                                     const Text(
-                                        'Bản đồ hiển thị vị trí và tuyến đường đã được xác minh khi có dữ liệu.'),
+                                        'Vị trí tài xế chỉ hiển thị trong chuyến đi đang hoạt động.'),
                                     if (!isTerminalTripStatus(state.status) &&
                                         !hasRenderableLocation)
                                       const Text(
@@ -680,10 +694,6 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                         location != null)
                                       Text(
                                           'Vị trí mới nhất: ${_time(location.updatedAt)}'),
-                                    Text(CustomerMapSource.visibleAttribution,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall),
                                   ]),
                             ),
                           ),
@@ -764,7 +774,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                     .read<BookingStatusCubit>()
                                     .refresh(resolveCancellation: true),
                             icon: const Icon(Icons.refresh),
-                            label: const Text('Cập nhật từ máy chủ'),
+                            label: const Text('Cập nhật chuyến đi'),
                           ),
                         ],
                       ),
@@ -785,29 +795,58 @@ Widget _assignedDriverCard(BuildContext context, TrackingSnapshot tracking) {
       .whereType<String>()
       .where((value) => value.trim().isNotEmpty)
       .join(' ');
-  return Card(
+  return CustomerPremiumSurface(
     key: const ValueKey('customer-assigned-driver-card'),
-    child: Padding(
-      padding: const EdgeInsets.all(12),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('Tài xế và xe đã nhận chuyến',
-            style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 6),
-        Text(driver.displayName),
-        Text(driver.ratingCount == 0 || driver.ratingAverage == null
-            ? 'Chưa có đánh giá'
-            : '${driver.ratingAverage!.toStringAsFixed(2)} ★ · '
-                '${driver.ratingCount} đánh giá'),
-        if (driver.phone?.trim().isNotEmpty == true)
-          Text('Điện thoại: ${driver.phone}'),
-        if (vehicle != null) ...[
-          const SizedBox(height: 4),
-          Text('${_assignedVehicleLabel(vehicle.vehicleType)} · '
-              '${vehicle.licensePlate}'),
-          if (details.isNotEmpty) Text(details),
-        ],
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const CustomerSectionHeading(
+          icon: Icons.person_pin_circle_rounded, title: 'Tài xế đồng hành'),
+      const SizedBox(height: 14),
+      Row(children: [
+        const CircleAvatar(
+          radius: 24,
+          backgroundColor: AppColors.paleViolet,
+          child: Icon(Icons.person_rounded, color: AppColors.violet),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+            child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(driver.displayName,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.titleMedium),
+            Text(driver.ratingCount == 0 || driver.ratingAverage == null
+                ? 'Chưa có đánh giá'
+                : '${driver.ratingAverage!.toStringAsFixed(2)} ★ · '
+                    '${driver.ratingCount} đánh giá'),
+          ],
+        )),
       ]),
-    ),
+      if (vehicle != null) ...[
+        const SizedBox(height: 12),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: AppColors.paleBlue,
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(
+                '${_assignedVehicleLabel(vehicle.vehicleType)} · '
+                '${vehicle.licensePlate}',
+                style: Theme.of(context).textTheme.titleSmall),
+            if (details.isNotEmpty) Text(details),
+          ]),
+        ),
+      ],
+      if (driver.phone?.trim().isNotEmpty == true) ...[
+        const SizedBox(height: 8),
+        Text('Điện thoại: ${driver.phone}'),
+      ],
+    ]),
   );
 }
 
@@ -829,9 +868,6 @@ Widget _bookingAddressCard(BuildContext context, Coordinates pickup,
           Text('Điểm đến: ${dropoffAddress ?? 'Địa chỉ chưa khả dụng'}'),
           if (dropoffAddress == null)
             Text('${dropoff.latitude}, ${dropoff.longitude}',
-                style: Theme.of(context).textTheme.bodySmall),
-          if (pickupAddress != null || dropoffAddress != null)
-            Text('© OpenStreetMap contributors',
                 style: Theme.of(context).textTheme.bodySmall),
         ]),
       ),

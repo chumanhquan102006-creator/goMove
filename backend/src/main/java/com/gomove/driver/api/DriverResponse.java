@@ -11,16 +11,18 @@ public record DriverResponse(
         String approvalStatus,
         String operatingStatus,
         BigDecimal ratingAverage,
+        long ratingCount,
         int totalTrips
 ) {
-    public static DriverResponse from(Driver driver) {
+    public static DriverResponse from(Driver driver, BigDecimal verifiedAverage, long ratingCount) {
         return new DriverResponse(
                 driver.getPublicId(),
                 driver.getUser().getPublicId(),
                 driver.getLicenseNumber(),
                 driver.getApprovalStatus().name(),
                 driver.getOperatingStatus().name(),
-                driver.getRatingAverage(),
+                verifiedAverage,
+                ratingCount,
                 driver.getTotalTrips()
         );
     }

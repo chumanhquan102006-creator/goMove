@@ -425,7 +425,7 @@ void main() {
                 matching: find.byType(Scrollable))
             .first);
     expect(find.text('Biên nhận thanh toán'), findsOneWidget);
-    expect(find.text('Đã thanh toán (PAID)'), findsOneWidget);
+    expect(find.text('Đã thanh toán'), findsOneWidget);
     expect(find.text('0900000001'), findsNothing);
     expect(tester.takeException(), isNull);
   });

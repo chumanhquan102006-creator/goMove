@@ -26,6 +26,9 @@ class CustomerTripTrackingMap extends StatefulWidget {
   final bool fullBleed;
   final String? bookingPublicId;
 
+  /// Driven only by the authenticated Booking status, never a local timer.
+  final bool searchingForDriver;
+
   /// Trial only until native MapLibre performance is measured on two devices.
   /// This changes marker presentation, never REST/STOMP or persisted GPS.
   final bool enableMarkerInterpolation;
@@ -43,6 +46,7 @@ class CustomerTripTrackingMap extends StatefulWidget {
     this.dropoff,
     this.fullBleed = false,
     this.bookingPublicId,
+    this.searchingForDriver = false,
     this.enableMarkerInterpolation = const bool.fromEnvironment(
         'GOMOVE_EXPERIMENTAL_MARKER_INTERPOLATION',
         defaultValue: false),
@@ -86,11 +90,13 @@ class CustomerMarkerMotion {
   static const maxSpeedMetersPerSecond = 35.0;
 
   final void Function(LatLng) onPosition;
+  final void Function(double?)? onBearing;
   final DateTime Function() now;
   CustomerLiveLocation? _accepted;
   Timer? _timer;
 
-  CustomerMarkerMotion({required this.onPosition, DateTime Function()? now})
+  CustomerMarkerMotion(
+      {required this.onPosition, this.onBearing, DateTime Function()? now})
       : now = now ?? DateTime.now;
 
   bool get isAnimating => _timer != null;
@@ -142,6 +148,17 @@ class CustomerMarkerMotion {
         longitude);
   }
 
+  static double? bearingAt(double? first, double? second, double progress) {
+    if (second == null || !second.isFinite || second < 0 || second >= 360) {
+      return null;
+    }
+    if (first == null || !first.isFinite || first < 0 || first >= 360) {
+      return second;
+    }
+    final delta = (second - first + 540) % 360 - 180;
+    return (first + delta * progress + 360) % 360;
+  }
+
   void accept(CustomerLiveLocation sample, {required bool animate}) {
     if (!CustomerTripTrackingMap.isRenderable(sample) ||
         (_accepted != null &&
@@ -158,12 +175,14 @@ class CustomerMarkerMotion {
         prior.latitude == sample.latitude &&
         prior.longitude == sample.longitude) {
       // A fresh timestamp for a stationary driver needs no native write.
+      onBearing?.call(bearingAt(prior.bearing, sample.bearing, 1));
       return;
     }
     if (!animate ||
         interrupted ||
         prior == null ||
         !canInterpolate(prior, sample, now())) {
+      onBearing?.call(bearingAt(prior?.bearing, sample.bearing, 1));
       onPosition(LatLng(sample.latitude, sample.longitude));
       return;
     }
@@ -173,8 +192,10 @@ class CustomerMarkerMotion {
       if (step == 3) {
         timer.cancel();
         _timer = null;
+        onBearing?.call(bearingAt(prior.bearing, sample.bearing, 1));
         onPosition(LatLng(sample.latitude, sample.longitude));
       } else {
+        onBearing?.call(bearingAt(prior.bearing, sample.bearing, step / 3));
         onPosition(_at(prior, sample, step / 3));
       }
     });
@@ -185,6 +206,7 @@ class CustomerMarkerMotion {
     _timer = null;
     final accepted = _accepted;
     if (accepted != null) {
+      onBearing?.call(bearingAt(null, accepted.bearing, 1));
       onPosition(LatLng(accepted.latitude, accepted.longitude));
     }
   }
@@ -208,6 +230,11 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
   late final Future<bool> _mapReady;
   MapLibreMapController? _controller;
   Circle? _driverCircle;
+  Symbol? _driverDirection;
+  double? _visualBearing;
+  final List<Circle> _radarCircles = [];
+  Timer? _radarTimer;
+  int _radarTick = 0;
   Timer? _styleTimeout;
   Future<void> _markerSync = Future<void>.value();
   Future<void> _routeSync = Future<void>.value();
@@ -228,8 +255,10 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
     WidgetsBinding.instance.addObserver(this);
     _shownLocation = widget.location;
     _visualPoint = _shownLocation == null ? null : _point(_shownLocation!);
+    _visualBearing = _shownLocation?.bearing;
     _motion = CustomerMarkerMotion(
         now: widget.motionNow,
+        onBearing: _updateVisualBearing,
         onPosition: (point) {
           _visualPoint = point;
           widget.onVisualPosition?.call(point);
@@ -255,6 +284,7 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
     final reduced = AppMotion.reduceMotion(context);
     if (reduced && !_reducedMotion) _motion.snap();
     _reducedMotion = reduced;
+    _refreshRadar();
   }
 
   @override
@@ -262,9 +292,12 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
     if (state == AppLifecycleState.resumed) {
       _paused = false;
       _queueMarkerSync();
+      _refreshRadar();
     } else {
       _paused = true;
       _motion.snap();
+      _radarTimer?.cancel();
+      _radarTimer = null;
     }
   }
 
@@ -292,6 +325,8 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
       // If it does not, fail closed instead of retaining another trip's map.
       _scopeChanged = true;
       _motion.dispose();
+      _radarTimer?.cancel();
+      _radarTimer = null;
       _mapVersion++;
       return;
     }
@@ -312,12 +347,18 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
       }
       _queueStaticMarkerSync();
     }
+    if (widget.searchingForDriver != oldWidget.searchingForDriver ||
+        widget.pickup?.latitude != oldWidget.pickup?.latitude ||
+        widget.pickup?.longitude != oldWidget.pickup?.longitude) {
+      _refreshRadar();
+    }
     if (widget.location == null && _shownLocation != null) {
       // Completion/privacy loss removes the native GPS annotation immediately.
       _gpsRemovalPending = true;
       _motion.dispose();
       _motion = CustomerMarkerMotion(
           now: widget.motionNow,
+          onBearing: _updateVisualBearing,
           onPosition: (point) {
             _visualPoint = point;
             widget.onVisualPosition?.call(point);
@@ -325,6 +366,7 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
           });
       _shownLocation = null;
       _visualPoint = null;
+      _visualBearing = null;
       _queueMarkerSync();
     } else if (widget.location != null &&
         CustomerTripTrackingMap.shouldAcceptNewFix(
@@ -345,19 +387,29 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
     _mapVersion++;
     _styleTimeout?.cancel();
     _motion.dispose();
+    _radarTimer?.cancel();
     _controller =
         null; // MapLibreMap disposes its own controller/platform view.
     _driverCircle = null;
+    _driverDirection = null;
+    _radarCircles.clear();
     super.dispose();
   }
 
   static LatLng _point(CustomerLiveLocation location) =>
       LatLng(location.latitude, location.longitude);
 
+  void _updateVisualBearing(double? bearing) {
+    if (_visualBearing == bearing) return;
+    _visualBearing = bearing;
+    _queueMarkerSync();
+  }
+
   void _onMapCreated(MapLibreMapController controller) {
     _motion.snap();
     _controller = controller;
     _driverCircle = null;
+    _driverDirection = null;
     _styleLoaded = false;
     _mapVersion++;
     _styleTimeout?.cancel();
@@ -374,58 +426,136 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
     _styleTimeout?.cancel();
     _mapVersion++;
     _driverCircle = null; // A style reload loses its annotation layer.
+    _driverDirection = null;
+    _radarCircles.clear();
     setState(() {
       _styleLoaded = true;
       _mapUnavailable = false;
     });
     _queueRouteSync();
     _queueStaticMarkerSync();
+    _refreshRadar();
   }
 
   void _queueStaticMarkerSync() {
     final version = _mapVersion;
-    _markerSync = _markerSync
-        .then((_) async {
-          final controller = _controller;
-          if (!mounted ||
-              !_styleLoaded ||
-              controller == null ||
-              version != _mapVersion) {
-            return;
-          }
-          await controller.clearCircles();
-          if (!mounted || version != _mapVersion) {
-            return;
-          }
-          _driverCircle = null;
-          final pickup = widget.pickup;
-          if (pickup?.isValid == true) {
-            await controller.addCircle(CircleOptions(
-              geometry: LatLng(pickup!.latitude, pickup.longitude),
-              circleRadius: 12,
-              circleColor: '#FFFFFF',
-              circleStrokeColor: '#0066FF',
-              circleStrokeWidth: 4,
-            ));
-          }
-          if (!mounted || version != _mapVersion) {
-            return;
-          }
-          final dropoff = widget.dropoff;
-          if (dropoff?.isValid == true) {
-            await controller.addCircle(CircleOptions(
-              geometry: LatLng(dropoff!.latitude, dropoff.longitude),
-              circleRadius: 11,
-              circleColor: '#E87521',
-              circleStrokeColor: '#FFFFFF',
-              circleStrokeWidth: 3,
-            ));
-          }
-        })
-        .then((_) => _queueMarkerSync())
-        .catchError((Object _) {
-          // Trip details and CASH stay available if native annotations fail.
-        });
+    _markerSync = _markerSync.then((_) async {
+      final controller = _controller;
+      if (!mounted ||
+          !_styleLoaded ||
+          controller == null ||
+          version != _mapVersion) {
+        return;
+      }
+      // This widget owns the style's Symbol annotations. Clearing circles
+      // alone leaves the direction arrow at its previous native position.
+      await controller.clearSymbols();
+      if (!mounted || _controller != controller || version != _mapVersion) {
+        return;
+      }
+      _driverDirection = null;
+      await controller.clearCircles();
+      if (!mounted || _controller != controller || version != _mapVersion) {
+        return;
+      }
+      _driverCircle = null;
+      _radarCircles.clear();
+      final pickup = widget.pickup;
+      if (pickup?.isValid == true) {
+        await controller.addCircle(CircleOptions(
+          geometry: LatLng(pickup!.latitude, pickup.longitude),
+          circleRadius: 12,
+          circleColor: '#FFFFFF',
+          circleStrokeColor: '#0066FF',
+          circleStrokeWidth: 4,
+        ));
+      }
+      if (!mounted || version != _mapVersion) {
+        return;
+      }
+      final dropoff = widget.dropoff;
+      if (dropoff?.isValid == true) {
+        await controller.addCircle(CircleOptions(
+          geometry: LatLng(dropoff!.latitude, dropoff.longitude),
+          circleRadius: 11,
+          circleColor: '#E87521',
+          circleStrokeColor: '#FFFFFF',
+          circleStrokeWidth: 3,
+        ));
+      }
+    }).then((_) {
+      if (!mounted || version != _mapVersion || _scopeChanged) return;
+      _queueMarkerSync();
+      _queueRadarSync();
+    }).catchError((Object _) {
+      // Trip details and CASH stay available if native annotations fail.
+    });
+  }
+
+  bool get _radarAllowed =>
+      widget.searchingForDriver &&
+      widget.pickup?.isValid == true &&
+      !_paused &&
+      !_reducedMotion &&
+      !_scopeChanged &&
+      _styleLoaded &&
+      _controller != null;
+
+  void _refreshRadar() {
+    if (!_radarAllowed) {
+      _radarTimer?.cancel();
+      _radarTimer = null;
+      _queueRadarSync();
+      return;
+    }
+    if (_radarTimer != null) return;
+    _queueRadarSync();
+    // Native annotation writes are capped near ten per second in total.
+    _radarTimer = Timer.periodic(const Duration(milliseconds: 300), (_) {
+      _radarTick = (_radarTick + 1) % 10;
+      _queueRadarSync();
+    });
+  }
+
+  void _queueRadarSync() {
+    final version = _mapVersion;
+    _markerSync = _markerSync.then((_) async {
+      final controller = _controller;
+      if (!mounted ||
+          controller == null ||
+          !_styleLoaded ||
+          version != _mapVersion) {
+        return;
+      }
+      if (!_radarAllowed) {
+        for (final circle in _radarCircles) {
+          await controller.removeCircle(circle);
+        }
+        _radarCircles.clear();
+        return;
+      }
+      final pickup = widget.pickup!;
+      final point = LatLng(pickup.latitude, pickup.longitude);
+      for (var index = 0; index < 3; index++) {
+        final phase = ((_radarTick + index * 3) % 10) / 10;
+        final radius = 18.0 + phase * 44;
+        if (index >= _radarCircles.length) {
+          _radarCircles.add(await controller.addCircle(CircleOptions(
+            geometry: point,
+            circleRadius: radius,
+            circleColor: '#3559D5',
+            circleOpacity: .12,
+            circleStrokeColor: '#3559D5',
+            circleStrokeWidth: 1,
+          )));
+        } else {
+          await controller.updateCircle(_radarCircles[index],
+              CircleOptions(geometry: point, circleRadius: radius));
+        }
+      }
+    }).catchError((Object _) {
+      // Booking status and native map remain usable if radar rendering fails.
+    });
   }
 
   void _queueRouteSync() {
@@ -460,7 +590,6 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
       if (_pendingMarkerVersion == version) _pendingMarkerVersion = null;
       final controller = _controller;
       if (!mounted ||
-          _paused ||
           _scopeChanged ||
           !_styleLoaded ||
           controller == null ||
@@ -470,16 +599,31 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
       final position = _visualPoint;
       final circle = _driverCircle;
       if (!CustomerTripTrackingMap.isRenderable(_shownLocation) ||
-          position == null) {
+          position == null ||
+          _gpsRemovalPending) {
+        // Clear every native arrow, including one whose addSymbol completed
+        // after tracking was revoked. Keep the privacy cover on failure.
+        await controller.clearSymbols();
+        if (!mounted || _controller != controller || version != _mapVersion) {
+          return;
+        }
+        _driverDirection = null;
         if (circle != null) {
           await controller.removeCircle(circle);
-          if (mounted && version == _mapVersion) _driverCircle = null;
+          if (!mounted || _controller != controller || version != _mapVersion) {
+            return;
+          }
+          _driverCircle = null;
         }
-        if (mounted && version == _mapVersion && _gpsRemovalPending) {
+        if (_gpsRemovalPending) {
           setState(() => _gpsRemovalPending = false);
+          if (CustomerTripTrackingMap.isRenderable(_shownLocation)) {
+            _queueMarkerSync();
+          }
         }
         return;
       }
+      if (_paused) return;
       if (circle == null) {
         final created = await controller.addCircle(CircleOptions(
           geometry: position,
@@ -494,6 +638,62 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
       } else {
         await controller.updateCircle(
             circle, CircleOptions(geometry: position));
+      }
+      if (!mounted ||
+          _controller != controller ||
+          version != _mapVersion ||
+          _scopeChanged ||
+          _paused ||
+          _gpsRemovalPending ||
+          !CustomerTripTrackingMap.isRenderable(_shownLocation)) {
+        return;
+      }
+      // Native bearing is from the same validated GPS sample as the position.
+      // An optional arrow rotates over a bounded, ordered interpolation only.
+      try {
+        final bearing = _visualBearing;
+        final direction = _driverDirection;
+        if (bearing == null) {
+          if (direction != null) {
+            await controller.removeSymbol(direction);
+            if (mounted &&
+                _controller == controller &&
+                version == _mapVersion) {
+              _driverDirection = null;
+            }
+          }
+        } else if (direction == null) {
+          final created = await controller.addSymbol(SymbolOptions(
+              geometry: position,
+              textField: '▲',
+              textRotate: bearing,
+              textSize: 15,
+              textColor: '#FFFFFF'));
+          if (mounted && _controller == controller && version == _mapVersion) {
+            _driverDirection = created;
+            if (_gpsRemovalPending ||
+                !CustomerTripTrackingMap.isRenderable(_shownLocation)) {
+              // addSymbol may finish after a terminal update. Remove that
+              // result immediately; the queued privacy cleanup clears any
+              // remaining annotation before uncovering the map.
+              await controller.removeSymbol(created);
+              if (mounted &&
+                  _controller == controller &&
+                  version == _mapVersion) {
+                _driverDirection = null;
+              }
+            }
+          } else if (mounted && _controller == controller && _styleLoaded) {
+            // A style reload can finish while addSymbol is in flight.
+            // The new style's queued sync also clears any remaining symbols.
+            await controller.removeSymbol(created);
+          }
+        } else {
+          await controller.updateSymbol(direction,
+              SymbolOptions(geometry: position, textRotate: bearing));
+        }
+      } catch (_) {
+        // Some native styles lack the arrow glyph; keep the circle visible.
       }
     }).catchError((Object _) {
       if (mounted && version == _mapVersion) {
@@ -587,7 +787,8 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
                 gestureRecognizers: _mapGestures,
                 annotationOrder: const [
                   AnnotationType.line,
-                  AnnotationType.circle
+                  AnnotationType.circle,
+                  AnnotationType.symbol,
                 ],
                 annotationConsumeTapEvents: const [AnnotationType.circle],
                 onMapCreated: _onMapCreated,

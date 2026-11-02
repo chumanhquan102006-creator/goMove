@@ -51,6 +51,9 @@ public class TripStore {
         return jdbc.query("""
                 SELECT b.public_id AS booking_public_id, b.status, d.public_id AS driver_public_id,
                        driver_user.full_name AS driver_name, driver_user.phone AS driver_phone,
+                       (SELECT ROUND(AVG(stars)::numeric, 2) FROM trip_ratings
+                        WHERE driver_id = d.id) AS driver_rating_average,
+                       (SELECT count(*) FROM trip_ratings WHERE driver_id = d.id) AS driver_rating_count,
                        v.vehicle_type, v.license_plate, v.brand, v.model,
                        customer.full_name AS customer_name, customer.phone AS customer_phone,
                        b.driver_accepted_at, b.driver_arrived_at, b.passenger_onboard_at,
@@ -123,7 +126,8 @@ public class TripStore {
         boolean active = isTrackingStatus(status) && rs.getObject("driver_public_id") != null;
         DriverSummary assignedDriver = active && role == UserRole.CUSTOMER
                 ? new DriverSummary(rs.getObject("driver_public_id", UUID.class),
-                    rs.getString("driver_name"), rs.getString("driver_phone")) : null;
+                    rs.getString("driver_name"), rs.getString("driver_phone"),
+                    rs.getBigDecimal("driver_rating_average"), rs.getLong("driver_rating_count")) : null;
         VehicleSummary assignedVehicle = assignedDriver != null && rs.getString("vehicle_type") != null
                 ? new VehicleSummary(rs.getString("vehicle_type"), rs.getString("license_plate"),
                     rs.getString("brand"), rs.getString("model")) : null;
@@ -156,7 +160,8 @@ public class TripStore {
                                 Instant locationUpdatedAt, DriverSummary assignedDriver,
                                 VehicleSummary assignedVehicle, CustomerSummary customer) {}
 
-    public record DriverSummary(UUID publicId, String displayName, String phone) {}
+    public record DriverSummary(UUID publicId, String displayName, String phone,
+                                java.math.BigDecimal ratingAverage, long ratingCount) {}
     public record VehicleSummary(String vehicleType, String licensePlate, String brand, String model) {}
     public record CustomerSummary(String displayName, String phone) {}
 

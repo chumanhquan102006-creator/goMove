@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/di/injection.dart';
+import '../../../core/theme/app_motion.dart';
 import '../../auth/domain/entities/user.dart';
 import '../../auth/presentation/bloc/auth_bloc.dart';
 import '../../auth/presentation/bloc/auth_event.dart';
 import '../../auth/presentation/bloc/auth_state.dart';
+import '../../review/domain/review_repository.dart';
+import '../../review/presentation/admin_quality_screen.dart';
 import '../domain/admin_models.dart';
 import 'admin_cubit.dart';
 
@@ -233,16 +236,18 @@ class _AdminHomeScreenState extends State<AdminHomeScreen>
       'customers': 'Khách hàng',
       'drivers': 'Tài xế',
       'pendingApprovals': 'Chờ duyệt',
-      'driversOnline': 'Tài xế ONLINE',
-      'driversOffline': 'Tài xế OFFLINE',
-      'driversBusy': 'Tài xế BUSY',
+      'driversOnline': 'Tài xế sẵn sàng',
+      'driversOffline': 'Tài xế tạm nghỉ',
+      'driversBusy': 'Tài xế đang phục vụ',
       'activeBookings': 'Chuyến đang hoạt động',
       'completedBookings': 'Chuyến hoàn thành',
       'cancelledBookings': 'Chuyến đã hủy',
       'noDriverAvailableBookings': 'Không có tài xế',
-      'paidCashPayments': 'CASH đã thu',
-      'collectiblePendingCashPayments': 'CASH chờ thu hợp lệ',
-      'voidCashPayments': 'CASH không thu (VOID)',
+      'paidCashPayments': 'Tiền mặt đã thu',
+      'collectiblePendingCashPayments': 'Tiền mặt chờ xác nhận',
+      'voidCashPayments': 'Chuyến không thu tiền',
+      'ratedTrips': 'Chuyến được đánh giá',
+      'flaggedDrivers': 'Tài xế cần rà soát',
     };
     return [
       Text('Hoạt động toàn thời gian',
@@ -265,8 +270,18 @@ class _AdminHomeScreenState extends State<AdminHomeScreen>
               ))),
       ]),
       const SizedBox(height: 16),
-      Text('CASH chờ thu từ chuyến hoàn thành: ${data.collectibleAmount} VND'),
-      Text('Giá trị placeholder không thu: ${data.voidAmount} VND'),
+      Text('Tiền mặt chờ thu từ chuyến hoàn thành: ${data.collectibleAmount} VND'),
+      Text('Giá trị chuyến không thu tiền: ${data.voidAmount} VND'),
+      Text('GoPoints đã cộng: ${data.counts['goPointsAwarded'] ?? 0} · '
+          'đã trừ: ${data.counts['goPointsDeducted'] ?? 0}'),
+      if (sl.isRegistered<ReviewRepository>())
+        FilledButton.icon(
+          onPressed: () => Navigator.of(context).push(
+              AppMotion.immediateRoute<void>(
+                  AdminQualityScreen(adminPublicId: widget.adminPublicId))),
+          icon: const Icon(Icons.fact_check_outlined),
+          label: const Text('Rà soát chất lượng tài xế'),
+        ),
     ];
   }
 
@@ -288,8 +303,8 @@ class _AdminHomeScreenState extends State<AdminHomeScreen>
             child: ListTile(
           key: ValueKey('admin-driver-${driver.publicId}'),
           title: Text(driver.fullName),
-          subtitle: Text(
-              '${driver.approvalStatus} · ${driver.operatingStatus} · ${driver.licenseNumber}'),
+          subtitle: Text('${_approval(driver.approvalStatus)} · '
+              '${_operating(driver.operatingStatus)} · ${driver.licenseNumber}'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _cubit.openDriver(driver.publicId),
         )),
@@ -306,9 +321,16 @@ class _AdminHomeScreenState extends State<AdminHomeScreen>
         Text(driver.fullName, style: Theme.of(context).textTheme.titleLarge),
         Text('Điện thoại: ${driver.phone}'),
         Text('Bằng lái: ${driver.licenseNumber}'),
-        Text(
-            'Duyệt: ${driver.approvalStatus} · Hoạt động: ${driver.operatingStatus}'),
+        Text('Duyệt: ${_approval(driver.approvalStatus)} · '
+            'Hoạt động: ${_operating(driver.operatingStatus)}'),
         Text('Số chuyến: ${driver.totalTrips}'),
+        Text(driver.ratingCount == 0 || driver.ratingAverage == null
+            ? 'Chưa có đánh giá từ khách hàng'
+            : '${driver.ratingAverage!.toStringAsFixed(2)} ★ · '
+                '${driver.ratingCount} đánh giá'),
+        Text('${driver.availablePoints} GoPoints'),
+        if (driver.qualityFlagged)
+          const Chip(label: Text('Cần rà soát chất lượng')),
         if (driver.unreleasedBooking)
           const Text(
               'Đang có chuyến chưa giải phóng; không thể từ chối hoặc tạm đình chỉ.'),
@@ -376,7 +398,7 @@ class _AdminHomeScreenState extends State<AdminHomeScreen>
             child: ListTile(
           key: ValueKey('admin-account-${account.publicId}'),
           title: Text(account.fullName),
-          subtitle: Text('${account.role} · ${account.status}'
+          subtitle: Text('${_role(account.role)} · ${_accountStatus(account.status)}'
               '${account.activeBooking ? ' · Đang có chuyến' : ''}'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _cubit.openAccount(account.publicId),
@@ -392,10 +414,11 @@ class _AdminHomeScreenState extends State<AdminHomeScreen>
           Text(account.fullName, style: Theme.of(context).textTheme.titleLarge),
           Text('Điện thoại: ${account.phone}'),
           if (account.email != null) Text('Email: ${account.email}'),
-          Text('Vai trò: ${account.role} · Trạng thái: ${account.status}'),
+          Text('Vai trò: ${_role(account.role)} · '
+              'Trạng thái: ${_accountStatus(account.status)}'),
           if (account.driverApprovalStatus != null)
-            Text('Tài xế: ${account.driverApprovalStatus} · '
-                '${account.driverOperatingStatus}'),
+            Text('Tài xế: ${_approval(account.driverApprovalStatus!)} · '
+                '${_operating(account.driverOperatingStatus)}'),
           Text(account.activeBooking
               ? 'Có chuyến đang hoạt động'
               : 'Không có chuyến đang hoạt động'),
@@ -414,9 +437,9 @@ class _AdminHomeScreenState extends State<AdminHomeScreen>
         Card(
             child: ListTile(
           key: ValueKey('admin-booking-${booking.publicId}'),
-          title: Text(booking.status),
-          subtitle: Text('${booking.publicId}\n${booking.vehicleType} · '
-              '${booking.fare} VND · CASH ${booking.cashStatus}'),
+          title: Text(_bookingStatus(booking.status)),
+          subtitle: Text('${_vehicle(booking.vehicleType)} · '
+              '${booking.fare} VND · ${_cash(booking.cashStatus)}'),
           isThreeLine: true,
         )),
       _pager(page.page, page.hasNext),
@@ -438,3 +461,58 @@ class _AdminHomeScreenState extends State<AdminHomeScreen>
         ],
       );
 }
+
+String _approval(String? value) => switch (value) {
+      'PENDING' => 'Chờ duyệt',
+      'APPROVED' => 'Đã duyệt',
+      'REJECTED' => 'Đã từ chối',
+      'SUSPENDED' => 'Tạm ngừng',
+      _ => 'Chưa xác định',
+    };
+
+String _operating(String? value) => switch (value) {
+      'ONLINE' => 'Sẵn sàng',
+      'OFFLINE' => 'Tạm nghỉ',
+      'BUSY' => 'Đang phục vụ',
+      _ => 'Chưa xác định',
+    };
+
+String _role(String value) => switch (value) {
+      'CUSTOMER' => 'Khách hàng',
+      'DRIVER' => 'Tài xế',
+      'ADMIN' => 'Quản trị',
+      _ => 'Chưa xác định',
+    };
+
+String _accountStatus(String value) => switch (value) {
+      'ACTIVE' => 'Đang hoạt động',
+      'LOCKED' => 'Tạm khóa',
+      'DISABLED' => 'Ngừng hoạt động',
+      _ => value,
+    };
+
+String _bookingStatus(String value) => switch (value) {
+      'REQUESTED' || 'SEARCHING_DRIVER' => 'Đang tìm tài xế',
+      'DRIVER_ACCEPTED' => 'Tài xế đã nhận chuyến',
+      'DRIVER_ARRIVED' => 'Tài xế đã đến điểm đón',
+      'PASSENGER_ONBOARD' => 'Đã đón khách',
+      'IN_PROGRESS' => 'Đang di chuyển',
+      'COMPLETED' => 'Đã hoàn thành',
+      'CANCELLED' => 'Đã hủy',
+      'NO_DRIVER_AVAILABLE' => 'Không tìm được tài xế',
+      _ => 'Chưa xác định',
+    };
+
+String _vehicle(String value) => switch (value) {
+      'MOTORBIKE' => 'Xe máy',
+      'CAR_4_SEAT' => 'Ô tô 4 chỗ',
+      'CAR_7_SEAT' => 'Ô tô 7 chỗ',
+      _ => value,
+    };
+
+String _cash(String value) => switch (value) {
+      'PAID' => 'Đã thu tiền mặt',
+      'PENDING' => 'Chờ xác nhận tiền mặt',
+      'VOID' => 'Không thu tiền',
+      _ => 'Chưa có thông tin thanh toán',
+    };

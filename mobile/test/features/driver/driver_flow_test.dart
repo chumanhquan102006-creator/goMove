@@ -1054,7 +1054,7 @@ void main() {
         home: DriverAcceptedBookingScreen(
             offer: offer(DateTime.utc(2026, 10, 12, 12, 0, 15)))));
     await tester.pump();
-    expect(find.textContaining('Booking UUID: booking-1'), findsOneWidget);
+    expect(find.textContaining('Booking UUID: booking-1'), findsNothing);
     expect(find.textContaining('Chuyến đi đã hoàn thành'), findsWidgets);
     expect(find.textContaining('16.500 VND'), findsOneWidget);
     await tester.scrollUntilVisible(find.text('Xác nhận đã thu tiền mặt'), 80,
@@ -1107,7 +1107,7 @@ void main() {
       create: (_) => sl<AuthBloc>(),
       child: const MaterialApp(home: DriverHomeScreen(user: user)),
     ));
-    expect(find.textContaining('Phê duyệt: Đã duyệt'), findsOneWidget);
+    expect(find.text('Đã duyệt'), findsOneWidget);
     await tester.scrollUntilVisible(find.text('Nhận chuyến'), 180);
     expect(find.textContaining('Giá đã chấp nhận: 16.500 VND'), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -1238,7 +1238,7 @@ void main() {
     ));
     expect(find.textContaining('Cần được phê duyệt'), findsOneWidget);
     final online = tester.widget<FilledButton>(
-        find.widgetWithText(FilledButton, 'Bắt đầu nhận cuốc · ONLINE'));
+        find.widgetWithText(FilledButton, 'Bắt đầu nhận chuyến'));
     expect(online.onPressed, isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });

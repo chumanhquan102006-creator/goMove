@@ -536,7 +536,7 @@ void main() {
     await tester.drag(find.byType(Scrollable).first, const Offset(0, 350));
     await tester.pumpAndSettle();
     expect(find.text('Chuyến đi đã được hủy.'), findsOneWidget);
-    expect(find.text('Chưa thanh toán (PENDING)'), findsNothing);
+    expect(find.text('Chờ xác nhận thanh toán'), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
@@ -1206,7 +1206,8 @@ void main() {
         of: find.text('Chuyến đi đang diễn ra.'), matching: find.byType(Card));
     expect(
         find.descendant(
-            of: compactStatusCard, matching: find.text('Realtime đã kết nối')),
+            of: compactStatusCard,
+            matching: find.text('Vị trí đang được cập nhật')),
         findsOneWidget);
     await tester.scrollUntilVisible(find.text('16.500 VND'), 80,
         scrollable: find.byType(Scrollable).first);
@@ -1226,12 +1227,13 @@ void main() {
     expect(find.text('Bản đồ thử nghiệm'), findsOneWidget);
     expect(seenLocations.last.latitude, 21.1);
     expect(seenLocations.last.longitude, 105.1);
-    await tester.scrollUntilVisible(find.text('Vĩ độ: 21.1'), 250,
+    await tester.scrollUntilVisible(
+        find.textContaining('Vị trí mới nhất:'), 250,
         scrollable: find.byType(Scrollable).first);
-    expect(find.text('Vĩ độ: 21.1'), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('Chưa thanh toán (PENDING)'), 250,
+    expect(find.textContaining('Vị trí mới nhất:'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Chờ xác nhận thanh toán'), 250,
         scrollable: find.byType(Scrollable).first);
-    expect(find.text('Chưa thanh toán (PENDING)'), findsOneWidget);
+    expect(find.text('Chờ xác nhận thanh toán'), findsOneWidget);
     expect(find.text('Xác nhận đã thu tiền mặt'), findsNothing);
     expect(find.text('Hoàn thành chuyến'), findsNothing);
     expect(trips.transitionCalls, 0);
@@ -1418,9 +1420,9 @@ void main() {
     await tester.pump();
     expect(tester.takeException(), isNull);
     expect(find.text('Bản đồ thử nghiệm'), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('Chưa thanh toán (PENDING)'), 190,
+    await tester.scrollUntilVisible(find.text('Chờ xác nhận thanh toán'), 190,
         scrollable: find.byType(Scrollable).first);
-    expect(find.text('Chưa thanh toán (PENDING)'), findsOneWidget);
+    expect(find.text('Chờ xác nhận thanh toán'), findsOneWidget);
     expect(find.text('Số tiền: 16.500 VND'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
@@ -1447,9 +1449,9 @@ void main() {
             })));
     await tester.pump();
     await tester.pump();
-    await tester.scrollUntilVisible(find.text('Đã thanh toán (PAID)'), 190,
+    await tester.scrollUntilVisible(find.text('Đã thanh toán'), 190,
         scrollable: find.byType(Scrollable).first);
-    expect(find.text('Đã thanh toán (PAID)'), findsOneWidget);
+    expect(find.text('Đã thanh toán'), findsOneWidget);
     expect(mapBuilds, 0);
     expect(find.text('Vĩ độ: 21.1'), findsNothing);
     expect(tester.takeException(), isNull);
@@ -1475,9 +1477,9 @@ void main() {
         scrollable: find.byType(Scrollable).first);
     expect(mapBuilds, 0);
     expect(find.text('Bản đồ thử nghiệm'), findsNothing);
-    await tester.scrollUntilVisible(find.text('Chưa thanh toán (PENDING)'), 250,
+    await tester.scrollUntilVisible(find.text('Chờ xác nhận thanh toán'), 250,
         scrollable: find.byType(Scrollable).first);
-    expect(find.text('Chưa thanh toán (PENDING)'), findsOneWidget);
+    expect(find.text('Chờ xác nhận thanh toán'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -1497,14 +1499,14 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(find.text('Không tải được bản đồ thử nghiệm'), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('Vĩ độ: 21.1'), 250,
+    await tester.scrollUntilVisible(
+        find.textContaining('Vị trí mới nhất:'), 250,
         scrollable: find.byType(Scrollable).first);
-    expect(find.text('Vĩ độ: 21.1'), findsOneWidget);
-    expect(find.text('Kinh độ: 105.1'), findsOneWidget);
-    expect(find.text('Độ chính xác: 4.0 m'), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('Chưa thanh toán (PENDING)'), 250,
+    expect(find.textContaining('Vị trí mới nhất:'), findsOneWidget);
+    expect(find.text('Vĩ độ: 21.1'), findsNothing);
+    await tester.scrollUntilVisible(find.text('Chờ xác nhận thanh toán'), 250,
         scrollable: find.byType(Scrollable).first);
-    expect(find.text('Chưa thanh toán (PENDING)'), findsOneWidget);
+    expect(find.text('Chờ xác nhận thanh toán'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -1720,9 +1722,9 @@ void main() {
         .pumpWidget(MaterialApp(home: BookingStatusScreen(booking: booking())));
     await tester.pump();
     await tester.pump();
-    await tester.scrollUntilVisible(find.text('Chưa thanh toán (PENDING)'), 250,
+    await tester.scrollUntilVisible(find.text('Chờ xác nhận thanh toán'), 250,
         scrollable: find.byType(Scrollable).first);
-    expect(find.text('Đã thanh toán (PAID)'), findsNothing);
+    expect(find.text('Đã thanh toán'), findsNothing);
     final cashSwitcher = tester.widget<AnimatedSwitcher>(
         find.byKey(const ValueKey('customer-cash-switcher')));
     expect(cashSwitcher.duration, AppMotion.cash);
@@ -1733,9 +1735,9 @@ void main() {
     await tester.tap(find.text('Cập nhật từ máy chủ'));
     await tester.pump();
     await tester.pump();
-    await tester.scrollUntilVisible(find.text('Đã thanh toán (PAID)'), 250,
+    await tester.scrollUntilVisible(find.text('Đã thanh toán'), 250,
         scrollable: find.byType(Scrollable).first);
-    expect(find.text('Đã thanh toán (PAID)'), findsOneWidget);
+    expect(find.text('Đã thanh toán'), findsOneWidget);
     expect(find.byIcon(Icons.check_circle_outline), findsOneWidget);
     expect(trips.confirmCalls, 0);
     await tester.pumpWidget(const SizedBox.shrink());
@@ -1772,9 +1774,9 @@ void main() {
         250,
         scrollable: find.byType(Scrollable).first);
     expect(find.text('Vĩ độ: 21.1'), findsNothing);
-    await tester.scrollUntilVisible(find.text('Chưa thanh toán (PENDING)'), 250,
+    await tester.scrollUntilVisible(find.text('Chờ xác nhận thanh toán'), 250,
         scrollable: find.byType(Scrollable).first);
-    expect(find.text('Chưa thanh toán (PENDING)'), findsOneWidget);
+    expect(find.text('Chờ xác nhận thanh toán'), findsOneWidget);
     expect(subscription.disposed, isTrue);
     await tester.pumpWidget(const SizedBox.shrink());
   });

@@ -9,8 +9,13 @@ import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../auth/presentation/bloc/auth_event.dart';
 import '../../../auth/presentation/bloc/auth_state.dart';
 import '../../../customer/presentation/formatters.dart';
+import '../../../review/domain/review_repository.dart';
+import '../../../review/presentation/driver_reputation_cubit.dart';
+import '../../../review/presentation/driver_reputation_screen.dart';
+import '../../domain/repositories/driver_earnings_repository.dart';
 import '../../domain/models/driver_models.dart';
 import '../bloc/driver_cubit.dart';
+import '../bloc/driver_earnings_cubit.dart';
 import 'driver_accepted_booking_screen.dart';
 
 class DriverHomeScreen extends StatelessWidget {
@@ -18,10 +23,27 @@ class DriverHomeScreen extends StatelessWidget {
   const DriverHomeScreen({super.key, required this.user});
 
   @override
-  Widget build(BuildContext context) => BlocProvider(
-        create: (_) => sl<DriverCubit>(param1: user.publicId)..initialize(),
-        child: _DriverContent(user: user),
+  Widget build(BuildContext context) {
+    final driver = BlocProvider<DriverCubit>(
+      create: (_) => sl<DriverCubit>(param1: user.publicId)..initialize(),
+      child: _DriverContent(user: user),
+    );
+    Widget screen = driver;
+    if (sl.isRegistered<ReviewRepository>() && !AppConfig.instance.isMock) {
+      screen = BlocProvider<DriverReputationCubit>(
+        create: (_) => sl<DriverReputationCubit>(param1: user.publicId)..load(),
+        child: screen,
       );
+    }
+    if (sl.isRegistered<DriverEarningsRepository>() &&
+        !AppConfig.instance.isMock) {
+      screen = BlocProvider<DriverEarningsCubit>(
+        create: (_) => sl<DriverEarningsCubit>(param1: user.publicId)..load(),
+        child: screen,
+      );
+    }
+    return screen;
+  }
 }
 
 class _DriverContent extends StatefulWidget {
@@ -56,10 +78,24 @@ class _DriverContentState extends State<_DriverContent>
     if (state == AppLifecycleState.resumed) {
       _startCountdown();
       context.read<DriverCubit>().resume();
+      if (sl.isRegistered<ReviewRepository>() && !AppConfig.instance.isMock) {
+        context.read<DriverReputationCubit>().load();
+      }
+      if (sl.isRegistered<DriverEarningsRepository>() &&
+          !AppConfig.instance.isMock) {
+        context.read<DriverEarningsCubit>().load();
+      }
     } else {
       _countdown?.cancel();
       _countdown = null;
       context.read<DriverCubit>().pause();
+      if (sl.isRegistered<ReviewRepository>() && !AppConfig.instance.isMock) {
+        context.read<DriverReputationCubit>().hideForBackground();
+      }
+      if (sl.isRegistered<DriverEarningsRepository>() &&
+          !AppConfig.instance.isMock) {
+        context.read<DriverEarningsCubit>().hideForBackground();
+      }
     }
   }
 
@@ -142,6 +178,14 @@ class _DriverContentState extends State<_DriverContent>
             _countdown?.cancel();
             _countdown = null;
             context.read<DriverCubit>().pause();
+            if (sl.isRegistered<ReviewRepository>() &&
+                !AppConfig.instance.isMock) {
+              context.read<DriverReputationCubit>().invalidateSession();
+            }
+            if (sl.isRegistered<DriverEarningsRepository>() &&
+                !AppConfig.instance.isMock) {
+              context.read<DriverEarningsCubit>().invalidateSession();
+            }
           }
         },
         child: BlocListener<DriverCubit, DriverState>(
@@ -226,15 +270,13 @@ class _DriverContentState extends State<_DriverContent>
                                   icon: state.operatingStatus == 'ONLINE'
                                       ? Icons.radio_button_checked
                                       : Icons.radio_button_off,
-                                  label:
-                                      'Trạng thái: ${_operatingLabel(state.operatingStatus)}',
+                                  label: _operatingLabel(state.operatingStatus),
                                   active: state.operatingStatus == 'ONLINE'),
                               _statusChip(
                                   icon: state.approvalStatus == 'APPROVED'
                                       ? Icons.verified_outlined
                                       : Icons.info_outline,
-                                  label:
-                                      'Phê duyệt: ${_approvalLabel(state.approvalStatus)}',
+                                  label: _approvalLabel(state.approvalStatus),
                                   active: state.approvalStatus == 'APPROVED'),
                             ]),
                             const SizedBox(height: 12),
@@ -258,7 +300,7 @@ class _DriverContentState extends State<_DriverContent>
                                   const SizedBox(width: 10),
                                   Expanded(
                                       child: Text(
-                                          'GPS: ${state.locationMessage}')),
+                                          'Vị trí: ${state.locationMessage}')),
                                 ]),
                             if (!state.foreground)
                               const Text(
@@ -285,8 +327,8 @@ class _DriverContentState extends State<_DriverContent>
                                               : null,
                                           icon: const Icon(
                                               Icons.pause_circle_outline),
-                                          label: const Text(
-                                              'Ngừng nhận cuốc · OFFLINE'))
+                                          label:
+                                              const Text('Ngừng nhận chuyến'))
                                       : FilledButton.icon(
                                           onPressed: _canChangeStatus(state)
                                               ? cubit.goOnline
@@ -294,44 +336,10 @@ class _DriverContentState extends State<_DriverContent>
                                           icon: const Icon(
                                               Icons.power_settings_new),
                                           label: const Text(
-                                              'Bắt đầu nhận cuốc · ONLINE'))),
+                                              'Bắt đầu nhận chuyến'))),
                           ],
                         ))),
                 const SizedBox(height: 16),
-                Text('Xe của tôi',
-                    style: Theme.of(context).textTheme.titleMedium),
-                if (state.vehicles.isEmpty)
-                  const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 12),
-                      child: Text(
-                          'Chưa có xe. Thêm và kích hoạt xe trước khi trực tuyến.')),
-                for (final vehicle in state.vehicles)
-                  Card(
-                      child: ListTile(
-                          leading: Icon(Icons.directions_car_outlined,
-                              color: vehicle.active
-                                  ? scheme.primary
-                                  : scheme.onSurfaceVariant),
-                          title: Text(
-                              '${vehicle.licensePlate} · ${_vehicleLabel(vehicle.vehicleType)}'),
-                          subtitle: Text(vehicle.active
-                              ? 'Đang kích hoạt'
-                              : 'Chưa kích hoạt'),
-                          trailing: vehicle.active
-                              ? const Icon(Icons.check_circle)
-                              : TextButton(
-                                  onPressed: AppConfig.instance.isMock ||
-                                          state.actionBusy
-                                      ? null
-                                      : () => cubit
-                                          .activateVehicle(vehicle.publicId),
-                                  child: const Text('Kích hoạt')))),
-                OutlinedButton.icon(
-                    onPressed: AppConfig.instance.isMock || state.actionBusy
-                        ? null
-                        : _addVehicle,
-                    icon: const Icon(Icons.add),
-                    label: const Text('Thêm xe')),
                 if (state.acceptedOffer != null)
                   _bookingCard(state.acceptedOffer!),
                 if (offer != null && state.acceptedOffer == null)
@@ -359,6 +367,14 @@ class _DriverContentState extends State<_DriverContent>
                             Text(
                                 'Thời gian còn ${seconds > 0 ? seconds : 0} giây để phản hồi',
                                 style: Theme.of(context).textTheme.bodyMedium),
+                            const SizedBox(height: 6),
+                            ClipRRect(
+                                borderRadius: BorderRadius.circular(6),
+                                child: LinearProgressIndicator(
+                                    value: (seconds / 15).clamp(0.0, 1.0),
+                                    minHeight: 6,
+                                    semanticsLabel:
+                                        'Thời gian phản hồi đề nghị')),
                             const SizedBox(height: 12),
                             _offerDetails(offer),
                             if (state.offerActionBusy)
@@ -405,6 +421,117 @@ class _DriverContentState extends State<_DriverContent>
                       ),
                     ),
                   ),
+                const SizedBox(height: 16),
+                Text('Xe của tôi',
+                    style: Theme.of(context).textTheme.titleMedium),
+                if (state.vehicles.isEmpty)
+                  const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Text(
+                          'Chưa có xe. Thêm và kích hoạt xe trước khi trực tuyến.')),
+                for (final vehicle in state.vehicles)
+                  Card(
+                      child: ListTile(
+                          leading: Icon(Icons.directions_car_outlined,
+                              color: vehicle.active
+                                  ? scheme.primary
+                                  : scheme.onSurfaceVariant),
+                          title: Text(
+                              '${vehicle.licensePlate} · ${_vehicleLabel(vehicle.vehicleType)}'),
+                          subtitle: Text(vehicle.active
+                              ? 'Đang kích hoạt'
+                              : 'Chưa kích hoạt'),
+                          trailing: vehicle.active
+                              ? const Icon(Icons.check_circle)
+                              : TextButton(
+                                  onPressed: AppConfig.instance.isMock ||
+                                          state.actionBusy
+                                      ? null
+                                      : () => cubit
+                                          .activateVehicle(vehicle.publicId),
+                                  child: const Text('Kích hoạt')))),
+                OutlinedButton.icon(
+                    onPressed: AppConfig.instance.isMock || state.actionBusy
+                        ? null
+                        : _addVehicle,
+                    icon: const Icon(Icons.add),
+                    label: const Text('Thêm xe')),
+                if (sl.isRegistered<DriverEarningsRepository>() &&
+                    !AppConfig.instance.isMock)
+                  BlocBuilder<DriverEarningsCubit, DriverEarningsState>(
+                    builder: (context, earningsState) {
+                      if (earningsState.sessionEnded) {
+                        return const SizedBox.shrink();
+                      }
+                      final summary = earningsState.summary;
+                      return Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Tổng kết chuyến đã thu tiền mặt',
+                                  style:
+                                      Theme.of(context).textTheme.titleMedium),
+                              if (earningsState.loading)
+                                const LinearProgressIndicator(),
+                              if (earningsState.error != null)
+                                TextButton(
+                                  onPressed:
+                                      context.read<DriverEarningsCubit>().load,
+                                  child: Text('${earningsState.error} Tải lại'),
+                                ),
+                              if (summary != null) ...[
+                                Text(
+                                    '${summary.paidTripCount} chuyến đã xác nhận'),
+                                Text(
+                                    'Tiền mặt đã thu: ${vnd(summary.cashCollectedAmount)}'),
+                                Text(
+                                    'Hoa hồng ghi nhận: ${vnd(summary.commissionDue)}'),
+                                Text(
+                                    'Giá trị sau hoa hồng: '
+                                    '${vnd(summary.afterCommissionAmount)}',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleMedium),
+                                const Text(
+                                    'Đây là tổng kết ghi nhận, không xác nhận '
+                                    'hoa hồng đã được nộp.'),
+                              ],
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                if (sl.isRegistered<ReviewRepository>() &&
+                    !AppConfig.instance.isMock)
+                  BlocBuilder<DriverReputationCubit, DriverReputationState>(
+                    builder: (context, reputationState) {
+                      if (reputationState.sessionEnded) {
+                        return const SizedBox.shrink();
+                      }
+                      final reputation = reputationState.reputation;
+                      return Card(
+                          child: ListTile(
+                        leading: const Icon(Icons.workspace_premium_outlined),
+                        title: Text(reputation == null ||
+                                reputation.ratingCount == 0 ||
+                                reputation.average == null
+                            ? 'Chưa có đánh giá'
+                            : '${reputation.average!.toStringAsFixed(2)} ★ · '
+                                '${reputation.ratingCount} đánh giá'),
+                        subtitle: Text(reputation == null
+                            ? 'Xem đánh giá và GoPoints của bạn'
+                            : '${reputation.availablePoints} GoPoints hiện có'),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () => Navigator.of(context).push(
+                            AppMotion.immediateRoute<void>(
+                                DriverReputationScreen(
+                                    driverPublicId: widget.user.publicId))),
+                      ));
+                    },
+                  ),
               ]);
             }),
           ),
@@ -445,11 +572,8 @@ class _DriverContentState extends State<_DriverContent>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Đã nhận chuyến · BUSY',
+                Text('Đang phục vụ chuyến',
                     style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 4),
-                Text('Booking UUID: ${offer.bookingPublicId}',
-                    style: Theme.of(context).textTheme.bodySmall),
                 const SizedBox(height: 12),
                 _offerDetails(offer),
                 const SizedBox(height: 12),
@@ -494,9 +618,9 @@ class _DriverContentState extends State<_DriverContent>
 }
 
 String _operatingLabel(String? status) => switch (status) {
-      'ONLINE' => 'ONLINE',
-      'OFFLINE' => 'OFFLINE',
-      'BUSY' => 'BUSY',
+      'ONLINE' => 'Đang nhận chuyến',
+      'OFFLINE' => 'Tạm nghỉ',
+      'BUSY' => 'Đang phục vụ',
       _ => 'Chưa xác định',
     };
 

@@ -31,10 +31,20 @@ import '../../features/customer/presentation/bloc/trip_history_detail_cubit.dart
 import '../../features/driver/data/accepted_booking_store.dart';
 import '../../features/driver/data/location/driver_location_source.dart';
 import '../../features/driver/data/repositories/driver_repository_impl.dart';
+import '../../features/driver/data/repositories/driver_earnings_repository_impl.dart';
+import '../../features/driver/domain/repositories/driver_earnings_repository.dart';
 import '../../features/driver/domain/repositories/driver_repository.dart';
 import '../../features/driver/domain/usecases/driver_usecases.dart';
 import '../../features/driver/presentation/bloc/driver_cubit.dart';
+import '../../features/driver/presentation/bloc/driver_earnings_cubit.dart';
 import '../../features/driver/presentation/bloc/onboarding_cubit.dart';
+import '../../features/review/data/rating_repository_impl.dart';
+import '../../features/review/data/review_repository_impl.dart';
+import '../../features/review/domain/rating_repository.dart';
+import '../../features/review/domain/review_repository.dart';
+import '../../features/review/presentation/admin_quality_cubit.dart';
+import '../../features/review/presentation/driver_reputation_cubit.dart';
+import '../../features/review/presentation/rating_cubit.dart';
 import '../../features/trip/data/repositories/trip_repository_impl.dart';
 import '../../features/trip/data/repositories/trip_eta_repository_impl.dart';
 import '../../features/trip/data/repositories/road_route_repository_impl.dart';
@@ -164,6 +174,19 @@ Future<void> setupServiceLocator({required AppConfig config}) async {
 
   sl.registerLazySingleton<AdminRepository>(
       () => AdminRepositoryImpl(sl<ApiClient>()));
+  sl.registerLazySingleton<RatingRepository>(
+      () => RatingRepositoryImpl(sl<ApiClient>()));
+  sl.registerFactoryParam<RatingCubit, String, String>(
+      (bookingPublicId, customerPublicId) => RatingCubit(sl<RatingRepository>(),
+          sl<SecureStorageService>(), customerPublicId, bookingPublicId));
+  sl.registerLazySingleton<ReviewRepository>(
+      () => ReviewRepositoryImpl(sl<ApiClient>()));
+  sl.registerFactoryParam<DriverReputationCubit, String, void>(
+      (driverPublicId, _) => DriverReputationCubit(
+          sl<ReviewRepository>(), sl<SecureStorageService>(), driverPublicId));
+  sl.registerFactoryParam<AdminQualityCubit, String, void>((adminPublicId, _) =>
+      AdminQualityCubit(
+          sl<ReviewRepository>(), sl<SecureStorageService>(), adminPublicId));
   sl.registerFactoryParam<AdminCubit, String, void>((adminPublicId, _) =>
       AdminCubit(
           sl<AdminRepository>(), sl<SecureStorageService>(), adminPublicId));
@@ -208,6 +231,11 @@ Future<void> setupServiceLocator({required AppConfig config}) async {
 
   sl.registerLazySingleton<DriverRepository>(
       () => DriverRepositoryImpl(sl<ApiClient>()));
+  sl.registerLazySingleton<DriverEarningsRepository>(
+      () => DriverEarningsRepositoryImpl(sl<ApiClient>()));
+  sl.registerFactoryParam<DriverEarningsCubit, String, void>(
+      (userPublicId, _) => DriverEarningsCubit(sl<DriverEarningsRepository>(),
+          sl<SecureStorageService>(), userPublicId));
   sl.registerLazySingleton<DriverUseCases>(
       () => DriverUseCases(sl<DriverRepository>()));
   sl.registerLazySingleton<DriverLocationSource>(

@@ -4,6 +4,8 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../../core/di/injection.dart';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../auth/presentation/bloc/auth_state.dart';
+import '../../../review/domain/rating_repository.dart';
+import '../../../review/presentation/rating_panel.dart';
 import '../../domain/models/quote.dart';
 import '../bloc/trip_history_detail_cubit.dart';
 import 'trip_history_screen.dart';
@@ -110,7 +112,6 @@ class _TripHistoryDetailScreenState extends State<TripHistoryDetailScreen>
                               Text('Chuyến đã hoàn thành',
                                   style:
                                       Theme.of(context).textTheme.titleLarge),
-                              _line('Booking UUID', booking.publicId),
                               _line('Đặt lúc', historyDate(booking.createdAt)),
                               _line('Hoàn thành lúc',
                                   historyDate(booking.tripCompletedAt!)),
@@ -141,9 +142,16 @@ class _TripHistoryDetailScreenState extends State<TripHistoryDetailScreen>
                                   'Giá cuối cùng',
                                   historyMoney(
                                       booking.finalFare, booking.currency)),
-                              _line('Trạng thái', booking.status),
+                              _line('Trạng thái', 'Đã hoàn thành'),
                             ]),
                       )),
+                      if (booking.isCompleted &&
+                          sl.isRegistered<RatingRepository>())
+                        RatingPanel(
+                          key: ValueKey('history-rating-${booking.publicId}'),
+                          bookingPublicId: booking.publicId,
+                          customerPublicId: widget.customerPublicId,
+                        ),
                       const SizedBox(height: 12),
                       if (payment?.isPaid == true)
                         Card(
@@ -157,14 +165,12 @@ class _TripHistoryDetailScreenState extends State<TripHistoryDetailScreen>
                                         Theme.of(context).textTheme.titleLarge),
                                 const Text(
                                     'Đây là biên nhận trong ứng dụng, không phải hóa đơn thuế.'),
-                                _line('Booking', payment!.bookingPublicId),
-                                _line('Mã thanh toán', payment.paymentPublicId),
-                                _line('Phương thức', 'Tiền mặt (CASH)'),
+                                _line('Phương thức', 'Tiền mặt'),
                                 _line(
                                     'Số tiền',
                                     historyMoney(
-                                        payment.amount, payment.currency)),
-                                _line('Trạng thái', 'Đã thanh toán (PAID)'),
+                                        payment!.amount, payment.currency)),
+                                _line('Trạng thái', 'Đã thanh toán'),
                                 _line('Thanh toán lúc',
                                     historyDate(payment.paidAt!)),
                               ]),
@@ -179,12 +185,11 @@ class _TripHistoryDetailScreenState extends State<TripHistoryDetailScreen>
                                 Text('Chờ xác nhận thanh toán',
                                     style:
                                         Theme.of(context).textTheme.titleLarge),
-                                _line('Booking', payment!.bookingPublicId),
-                                _line('Phương thức', 'Tiền mặt (CASH)'),
+                                _line('Phương thức', 'Tiền mặt'),
                                 _line(
                                     'Số tiền',
                                     historyMoney(
-                                        payment.amount, payment.currency)),
+                                        payment!.amount, payment.currency)),
                                 const Text(
                                     'Chưa có biên nhận thanh toán hoàn tất.'),
                               ]),
@@ -201,6 +206,14 @@ class _TripHistoryDetailScreenState extends State<TripHistoryDetailScreen>
                                 child: const Text('Thử lại')),
                           ]),
                         )),
+                      ExpansionTile(
+                        title: const Text('Mã tham chiếu hỗ trợ'),
+                        children: [
+                          _line('Mã chuyến', booking.publicId),
+                          if (payment != null)
+                            _line('Mã thanh toán', payment.paymentPublicId),
+                        ],
+                      ),
                     ],
                   ),
                 );

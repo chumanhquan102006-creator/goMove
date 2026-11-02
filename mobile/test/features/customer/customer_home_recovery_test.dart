@@ -512,14 +512,12 @@ void main() {
         tester, 'Chọn điểm đón', const Coordinates(21.1234, 105.5678));
     await selectOnFakeMap(
         tester, 'Chọn điểm đến', const Coordinates(21.9876, 105.4321));
-    final vehicle = find.byType(DropdownButtonFormField<VehicleType>);
+    final vehicle = find.byKey(const ValueKey('customer-vehicle-CAR_4_SEAT'));
     await tester.scrollUntilVisible(vehicle, 250,
         scrollable: find.byType(Scrollable).first);
     await tester.ensureVisible(vehicle);
     await tester.pumpAndSettle();
     await tester.tap(vehicle);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Ô tô 4 chỗ').last);
     await tester.pumpAndSettle();
     await requestQuote(tester);
 
@@ -674,7 +672,7 @@ void main() {
       (tester) async {
     await showHome(tester);
     final recovery = tester.widget<TextButton>(
-        find.widgetWithText(TextButton, 'Khôi phục Booking bằng UUID'));
+        find.widgetWithText(TextButton, 'Tìm lại chuyến bằng mã'));
     expect(recovery.onPressed, isNotNull);
     expect(repository.requested, isEmpty);
   });
@@ -691,7 +689,7 @@ void main() {
                 CustomerHomeScreen(user: userA, mapBuilder: fakeMapBuilder))));
     await tester.pump();
     final recovery = tester.widget<TextButton>(
-        find.widgetWithText(TextButton, 'Khôi phục Booking bằng UUID'));
+        find.widgetWithText(TextButton, 'Tìm lại chuyến bằng mã'));
     expect(recovery.onPressed, isNull);
     repository.pending!.complete(booking('DRIVER_ARRIVED'));
     await tester.pumpAndSettle();
@@ -704,7 +702,7 @@ void main() {
         .thenAnswer((_) async => const AuthSessionSnapshot(7, null, 'refresh'));
     await showHome(tester);
     final recovery = tester.widget<TextButton>(
-        find.widgetWithText(TextButton, 'Khôi phục Booking bằng UUID'));
+        find.widgetWithText(TextButton, 'Tìm lại chuyến bằng mã'));
     expect(recovery.onPressed, isNull);
     expect(find.textContaining('Phiên đăng nhập đã thay đổi'), findsWidgets);
   });
@@ -717,7 +715,7 @@ void main() {
         const ServerException(message: 'route unavailable', statusCode: 503);
     await showHome(tester);
     final recovery = tester.widget<TextButton>(
-        find.widgetWithText(TextButton, 'Khôi phục Booking bằng UUID'));
+        find.widgetWithText(TextButton, 'Tìm lại chuyến bằng mã'));
     expect(recovery.onPressed, isNotNull);
     expect(find.text('Tiếp tục chuyến đang diễn ra'), findsNothing);
     expect(find.textContaining('Máy chủ đang bận'), findsOneWidget);
@@ -772,16 +770,16 @@ void main() {
       (tester) async {
     await showHome(tester);
     expect(find.text('Tiếp tục chuyến đang diễn ra'), findsNothing);
-    await tester.tap(find.text('Khôi phục Booking bằng UUID').first);
+    await tester.tap(find.text('Tìm lại chuyến bằng mã').first);
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextFormField).last, 'not-a-uuid');
-    await tester.tap(find.text('Kiểm tra Booking'));
+    await tester.tap(find.text('Tìm chuyến'));
     await tester.pumpAndSettle();
-    expect(find.text('Nhập đúng UUID của Booking'), findsOneWidget);
+    expect(find.text('Mã tham chiếu chưa đúng định dạng'), findsOneWidget);
     expect(repository.requested, isEmpty);
 
     await tester.enterText(find.byType(TextFormField).last, bookingId);
-    await tester.tap(find.text('Kiểm tra Booking'));
+    await tester.tap(find.text('Tìm chuyến'));
     await tester.pumpAndSettle();
     expect(repository.requested, [bookingId]);
     expect(activeStore.records[customerA]?.bookingPublicId, bookingId);
@@ -793,15 +791,15 @@ void main() {
     repository.error =
         const ServerException(message: 'forbidden', statusCode: 403);
     await showHome(tester);
-    await tester.tap(find.text('Khôi phục Booking bằng UUID').first);
+    await tester.tap(find.text('Tìm lại chuyến bằng mã').first);
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextFormField).last, bookingId);
-    await tester.tap(find.text('Kiểm tra Booking'));
+    await tester.tap(find.text('Tìm chuyến'));
     await tester.pumpAndSettle();
     expect(activeStore.records, isEmpty);
     expect(find.text('Tiếp tục chuyến đang diễn ra'), findsNothing);
     expect(find.textContaining('không được phép xem Booking'), findsOneWidget);
-    expect(find.text('Khôi phục Booking bằng UUID'), findsOneWidget);
+    expect(find.text('Tìm lại chuyến bằng mã'), findsOneWidget);
   });
 
   testWidgets('COMPLETED plus PAID is a final card, not an active trip',
@@ -812,8 +810,7 @@ void main() {
     tripRepository.paymentStatus = 'PAID';
     await showHome(tester);
     expect(find.text('Tiếp tục chuyến đang diễn ra'), findsNothing);
-    expect(find.text('Chuyến đã hoàn thành · Đã thanh toán (PAID)'),
-        findsOneWidget);
+    expect(find.text('Chuyến đã hoàn thành · Đã thanh toán'), findsOneWidget);
   });
 
   testWidgets('COMPLETED plus CASH PENDING keeps a resume entry',
@@ -823,10 +820,8 @@ void main() {
     repository.value = booking('COMPLETED');
     await showHome(tester);
     expect(find.text('Tiếp tục chuyến đang diễn ra'), findsOneWidget);
-    expect(find.text('Thanh toán tiền mặt chưa xác nhận (PENDING).'),
-        findsOneWidget);
-    expect(
-        find.text('Chuyến đã hoàn thành · Đã thanh toán (PAID)'), findsNothing);
+    expect(find.text('Thanh toán tiền mặt đang chờ xác nhận.'), findsOneWidget);
+    expect(find.text('Chuyến đã hoàn thành · Đã thanh toán'), findsNothing);
   });
 
   testWidgets('Account replacement hides A Booking immediately',
@@ -834,7 +829,7 @@ void main() {
     activeStore.records[customerA] = const ActiveBookingRecord(
         customerPublicId: customerA, bookingPublicId: bookingId);
     await showHome(tester);
-    expect(find.textContaining(bookingId), findsOneWidget);
+    expect(find.text('Tiếp tục chuyến đang diễn ra'), findsOneWidget);
     final bReady = auth.stream.firstWhere((state) =>
         state is AuthenticatedState && state.user.publicId == customerB);
     auth.add(const AuthLoginSubmitted(identifier: 'B', password: 'password'));
@@ -842,7 +837,7 @@ void main() {
     await tester.pump();
     expect(auth.state, isA<AuthenticatedState>());
     expect((auth.state as AuthenticatedState).user.publicId, customerB);
-    expect(find.textContaining(bookingId), findsNothing);
+    expect(find.text('Tiếp tục chuyến đang diễn ra'), findsNothing);
     expect(find.textContaining('Customer A'), findsNothing);
   });
 

@@ -440,8 +440,7 @@ class _DriverAcceptedBookingScreenState
                                                         CrossAxisAlignment
                                                             .start,
                                                     children: [
-                                                      Text(
-                                                          'Biên nhận CASH · PAID',
+                                                      Text('Biên nhận tiền mặt',
                                                           style:
                                                               Theme.of(context)
                                                                   .textTheme
@@ -522,7 +521,7 @@ class _DriverAcceptedBookingScreenState
             child: Text(
                 !_verifiedBooking(state)
                     ? 'Đang xác minh chuyến và vị trí được phép xem với máy chủ.'
-                    : 'Chưa có tọa độ điểm đón/đến hợp lệ cho Booking này. '
+                    : 'Chưa có vị trí điểm đón và điểm đến hợp lệ cho chuyến này. '
                         'Bạn vẫn có thể theo dõi trạng thái và thao tác chuyến.',
                 textAlign: TextAlign.center),
           ),
@@ -573,13 +572,12 @@ class _DriverAcceptedBookingScreenState
               : 'Trạng thái chuyến đi do máy chủ xác nhận.'),
           if (completed && state.payment?.status != 'PAID') ...[
             const SizedBox(height: 8),
-            const Text('Chuyến đã hoàn thành nhưng tài xế vẫn BUSY '
-                'cho đến khi tiền mặt được xác nhận.'),
+            const Text(
+                'Chuyến đã hoàn thành. Bạn có thể nhận chuyến mới sau khi tiền mặt được xác nhận.'),
           ],
           if (cancelled) ...[
             const SizedBox(height: 8),
-            Text('Đã hủy lúc: ${_time(state.tracking?.cancelledAt)}. '
-                'Không tiếp tục gửi GPS chuyến đi.'),
+            Text('Đã hủy lúc: ${_time(state.tracking?.cancelledAt)}.'),
           ],
         ]),
       ),
@@ -616,8 +614,6 @@ class _DriverAcceptedBookingScreenState
               const Text('Đang xác minh thông tin chuyến với máy chủ.'),
             ] else ...[
               const SizedBox(height: 4),
-              Text('Booking UUID: ${widget.offer.bookingPublicId}',
-                  style: Theme.of(context).textTheme.bodySmall),
               if (DriverTripMap.hasValidPoints(widget.offer)) ...[
                 const SizedBox(height: 12),
                 ExpansionTile(
@@ -657,7 +653,7 @@ class _DriverAcceptedBookingScreenState
               ] else
                 const Padding(
                   padding: EdgeInsets.only(top: 8),
-                  child: Text('Chưa có tọa độ được xác minh cho Booking này.'),
+                  child: Text('Chưa có vị trí được xác minh cho chuyến này.'),
                 ),
               const SizedBox(height: 8),
               const Text(
@@ -667,6 +663,10 @@ class _DriverAcceptedBookingScreenState
               const SizedBox(height: 4),
               Text('Giá đã chấp nhận: ${vnd(widget.offer.finalFare)}',
                   style: Theme.of(context).textTheme.titleMedium),
+              ExpansionTile(
+                title: const Text('Mã tham chiếu hỗ trợ'),
+                children: [SelectableText(widget.offer.bookingPublicId)],
+              ),
             ],
           ]),
         ),
@@ -714,12 +714,13 @@ class _DriverAcceptedBookingScreenState
                   color: Theme.of(context).colorScheme.primary),
               const SizedBox(width: 10),
               Expanded(
-                  child: Text('Theo dõi GPS: ${_realtimeLabel(state.realtime)}',
+                  child: Text(
+                      'Kết nối chuyến đi: ${_realtimeLabel(state.realtime)}',
                       style: Theme.of(context).textTheme.titleSmall)),
             ]),
             const SizedBox(height: 6),
             const Text(
-                'Khi mất kết nối trực tiếp, ứng dụng vẫn đối chiếu trạng thái bằng REST.'),
+                'Khi mất kết nối trực tiếp, thông tin chuyến vẫn được kiểm tra lại.'),
             if (!state.foreground)
               const Text('Ứng dụng đang nền: đã dừng gửi GPS chuyến đi.'),
           ]),
@@ -790,8 +791,13 @@ class _DriverAcceptedBookingScreenState
   }
 }
 
-String _time(DateTime? date) =>
-    date == null ? 'Chưa có' : date.toLocal().toString();
+String _time(DateTime? date) {
+  if (date == null) return 'Chưa có';
+  final local = date.toLocal();
+  String two(int value) => value.toString().padLeft(2, '0');
+  return '${two(local.day)}/${two(local.month)}/${local.year} '
+      '${two(local.hour)}:${two(local.minute)}';
+}
 
 String _statusLabel(String? status) => switch (status) {
       'DRIVER_ACCEPTED' => 'Tài xế đã nhận chuyến',
@@ -828,6 +834,6 @@ String _realtimeLabel(TripRealtimeConnectionState state) => switch (state) {
       TripRealtimeConnectionState.connecting => 'Đang kết nối',
       TripRealtimeConnectionState.connected => 'Đã kết nối',
       TripRealtimeConnectionState.reconnecting => 'Đang kết nối lại',
-      TripRealtimeConnectionState.disconnected => 'Ngoại tuyến · dùng REST',
-      TripRealtimeConnectionState.failed => 'Kết nối lỗi · dùng REST',
+      TripRealtimeConnectionState.disconnected => 'Đang kiểm tra lại',
+      TripRealtimeConnectionState.failed => 'Đang kiểm tra lại',
     };

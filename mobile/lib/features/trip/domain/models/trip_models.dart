@@ -41,9 +41,15 @@ class AssignedDriverSummary {
   final String publicId;
   final String displayName;
   final String? phone;
+  final double? ratingAverage;
+  final int ratingCount;
 
   const AssignedDriverSummary(
-      {required this.publicId, required this.displayName, this.phone});
+      {required this.publicId,
+      required this.displayName,
+      this.phone,
+      this.ratingAverage,
+      this.ratingCount = 0});
 
   static AssignedDriverSummary? fromJson(dynamic value) {
     final json = _object(value);
@@ -55,7 +61,11 @@ class AssignedDriverSummary {
     return AssignedDriverSummary(
         publicId: json['publicId'] as String,
         displayName: json['displayName'] as String,
-        phone: json['phone'] is String ? json['phone'] as String : null);
+        phone: json['phone'] is String ? json['phone'] as String : null,
+        ratingAverage: json['ratingAverage'] == null
+            ? null
+            : double.tryParse(json['ratingAverage'].toString()),
+        ratingCount: (json['ratingCount'] as num?)?.toInt() ?? 0);
   }
 }
 

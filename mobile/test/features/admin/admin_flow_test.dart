@@ -534,8 +534,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Khách hàng'), findsOneWidget);
     await tester.scrollUntilVisible(
-        find.text('CASH chờ thu từ chuyến hoàn thành: 16500.00 VND'), 300);
-    expect(find.text('CASH chờ thu từ chuyến hoàn thành: 16500.00 VND'),
+        find.text('Tiền mặt chờ thu từ chuyến hoàn thành: 16500.00 VND'), 300);
+    expect(find.text('Tiền mặt chờ thu từ chuyến hoàn thành: 16500.00 VND'),
         findsOneWidget);
     await tester.tap(find.descendant(
         of: find.byType(NavigationBar), matching: find.text('Tài xế')));
@@ -552,7 +552,7 @@ void main() {
     await tester.tap(find.text('Xác nhận'));
     await tester.pumpAndSettle();
     expect(repository.approvals, ['APPROVED']);
-    expect(find.textContaining('APPROVED'), findsWidgets);
+    expect(find.textContaining('Đã duyệt'), findsWidgets);
   });
 
   testWidgets('Background clears unsent phone and submitted email search text',

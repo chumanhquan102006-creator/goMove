@@ -139,7 +139,15 @@ class CashSettlementIntegrationTest extends BaseIntegrationTest {
                         .header("Authorization", bearer(ride.driver().getUser())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.outstandingCommissionDue")
-                        .value(original.commissionAmount().doubleValue()));
+                        .value(original.commissionAmount().doubleValue()))
+                .andExpect(jsonPath("$.data.paidTripCount").value(1))
+                .andExpect(jsonPath("$.data.cashCollectedAmount")
+                        .value(original.cashCollectedAmount().toPlainString()))
+                .andExpect(jsonPath("$.data.commissionDueAmount")
+                        .value(original.commissionAmount().toPlainString()))
+                .andExpect(jsonPath("$.data.afterCommissionAmount")
+                        .value(original.cashCollectedAmount()
+                                .subtract(original.commissionAmount()).toPlainString()));
     }
 
     @Test
@@ -164,6 +172,9 @@ class CashSettlementIntegrationTest extends BaseIntegrationTest {
         mvc.perform(post(confirmUrl(ride.booking()))).andExpect(status().isUnauthorized());
         mvc.perform(get(paymentUrl(ride.booking()))).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/v1/drivers/me/commissions/summary")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/drivers/me/commissions/summary")
+                .header("Authorization", bearer(ride.customer())))
+                .andExpect(status().isForbidden());
         mvc.perform(post(confirmUrl(ride.booking())).header("Authorization", bearer(ride.customer())))
                 .andExpect(status().isForbidden());
         mvc.perform(post(confirmUrl(ride.booking())).header("Authorization", bearer(strangerDriver.getUser())))
@@ -177,7 +188,9 @@ class CashSettlementIntegrationTest extends BaseIntegrationTest {
         mvc.perform(get("/api/v1/drivers/me/commissions/summary")
                         .header("Authorization", bearer(strangerDriver.getUser())))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.outstandingCommissionDue").value(0));
+                .andExpect(jsonPath("$.data.outstandingCommissionDue").value(0))
+                .andExpect(jsonPath("$.data.cashCollectedAmount").value("0"))
+                .andExpect(jsonPath("$.data.paidTripCount").value(0));
         assertThat(ledgerCount(ride.booking())).isZero();
     }
 

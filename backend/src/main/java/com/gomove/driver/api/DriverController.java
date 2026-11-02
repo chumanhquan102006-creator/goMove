@@ -3,6 +3,8 @@ package com.gomove.driver.api;
 import com.gomove.common.api.ApiResponse;
 import com.gomove.common.security.CustomUserPrincipal;
 import com.gomove.driver.service.DriverService;
+import com.gomove.driver.domain.Driver;
+import com.gomove.review.service.RatingService;
 import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -14,9 +16,11 @@ import java.util.UUID;
 @RequestMapping("/api/v1/drivers")
 public class DriverController {
     private final DriverService service;
+    private final RatingService ratings;
 
-    public DriverController(DriverService service) {
+    public DriverController(DriverService service, RatingService ratings) {
         this.service = service;
+        this.ratings = ratings;
     }
 
     @PostMapping("/onboarding")
@@ -26,7 +30,7 @@ public class DriverController {
             @Valid @RequestBody RegisterDriverRequest request
     ) {
         return ApiResponse.success("DRIVER_ONBOARDING_REQUESTED", "Driver onboarding requested",
-                DriverResponse.from(service.onboardCurrentCustomer(principal.publicId(), principal.role(), request.licenseNumber())));
+                response(service.onboardCurrentCustomer(principal.publicId(), principal.role(), request.licenseNumber())));
     }
 
     @PatchMapping("/{driverPublicId}/approval-status")
@@ -37,7 +41,7 @@ public class DriverController {
             @Valid @RequestBody UpdateApprovalStatusRequest request
     ) {
         return ApiResponse.success("DRIVER_APPROVAL_UPDATED", "Driver approval status updated",
-                DriverResponse.from(service.updateApprovalStatusAsAdmin(principal.publicId(), principal.role(),
+                response(service.updateApprovalStatusAsAdmin(principal.publicId(), principal.role(),
                         driverPublicId, request.status())));
     }
 
@@ -48,6 +52,11 @@ public class DriverController {
             @Valid @RequestBody SetOperatingStatusRequest request
     ) {
         return ApiResponse.success("DRIVER_OPERATING_UPDATED", "Driver operating status updated",
-                DriverResponse.from(service.setOwnOperatingStatus(principal.publicId(), principal.role(), request.status())));
+                response(service.setOwnOperatingStatus(principal.publicId(), principal.role(), request.status())));
+    }
+
+    private DriverResponse response(Driver driver) {
+        var reputation = ratings.reputationForDriver(driver.getId());
+        return DriverResponse.from(driver, reputation.ratingAverage(), reputation.ratingCount());
     }
 }

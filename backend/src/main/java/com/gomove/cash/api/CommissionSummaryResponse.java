@@ -4,4 +4,8 @@ import java.math.BigDecimal;
 
 public record CommissionSummaryResponse(BigDecimal accruedCommissionReceivable,
                                         BigDecimal outstandingCommissionDue,
-                                        String currency) {}
+                                        String currency,
+                                        long paidTripCount,
+                                        String cashCollectedAmount,
+                                        String commissionDueAmount,
+                                        String afterCommissionAmount) {}

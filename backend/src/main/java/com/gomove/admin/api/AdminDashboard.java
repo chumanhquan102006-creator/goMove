@@ -9,4 +9,6 @@ public record AdminDashboard(long customers, long drivers, long pendingApprovals
                              long activeBookings, long completedBookings, long cancelledBookings,
                              long noDriverAvailableBookings, long paidCashPayments,
                              long collectiblePendingCashPayments, BigDecimal collectiblePendingCashAmount,
-                             long voidCashPayments, BigDecimal voidCashAmount) {}
+                             long voidCashPayments, BigDecimal voidCashAmount,
+                             long ratedTrips, long flaggedDrivers,
+                             long goPointsAwarded, long goPointsDeducted) {}

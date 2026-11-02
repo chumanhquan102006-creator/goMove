@@ -1231,7 +1231,7 @@ void main() {
     ));
     await tester.pump();
     expect(find.byKey(const ValueKey('driver-trip-fake-map')), findsNothing);
-    expect(find.textContaining('Chưa có tọa độ điểm đón/đến hợp lệ'),
+    expect(find.textContaining('Chưa có vị trí điểm đón và điểm đến hợp lệ'),
         findsWidgets);
     final action = tester.widget<FilledButton>(
         find.widgetWithText(FilledButton, 'Đã đến điểm đón'));
@@ -1271,7 +1271,7 @@ void main() {
     expect(repository.cashCalls, 1);
     expect(screenCubit.state.payment?.status, 'PENDING');
     expect(screenCubit.state.receipt, isNull);
-    expect(find.text('Biên nhận CASH · PAID'), findsNothing);
+    expect(find.text('Biên nhận tiền mặt'), findsNothing);
 
     final receiptSeen =
         screenCubit.stream.firstWhere((state) => state.receipt != null);
@@ -1281,7 +1281,7 @@ void main() {
     await tester.pump();
     expect(screenCubit.state.payment?.status, 'PAID');
     expect(screenCubit.state.receipt?.paymentStatus, 'PAID');
-    await tester.scrollUntilVisible(find.text('Biên nhận CASH · PAID'), 200);
+    await tester.scrollUntilVisible(find.text('Biên nhận tiền mặt'), 200);
     final receiptMotion = tester.widget<TweenAnimationBuilder<double>>(
         find.byKey(const ValueKey('driver-cash-receipt-payment-1')));
     expect(receiptMotion.duration, AppMotion.cash);
@@ -1321,13 +1321,13 @@ void main() {
     expect(screenCubit.state.payment?.status, 'PENDING');
     await screenCubit.confirmCash();
     await tester.pump();
-    await tester.scrollUntilVisible(find.text('Biên nhận CASH · PAID'), 200);
+    await tester.scrollUntilVisible(find.text('Biên nhận tiền mặt'), 200);
     final receiptMotion = tester.widget<TweenAnimationBuilder<double>>(
         find.byKey(const ValueKey('driver-cash-receipt-payment-1')));
     expect(receiptMotion.duration, Duration.zero);
     expect(
       find.ancestor(
-        of: find.text('Biên nhận CASH · PAID'),
+        of: find.text('Biên nhận tiền mặt'),
         matching: find.byType(Opacity),
       ),
       findsNothing,

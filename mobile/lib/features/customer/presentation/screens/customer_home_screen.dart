@@ -204,25 +204,25 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
     final publicId = await showDialog<String>(
         context: context,
         builder: (dialog) => AlertDialog(
-              title: const Text('Khôi phục Booking bằng UUID'),
+              title: const Text('Tìm lại chuyến bằng mã'),
               content: SingleChildScrollView(
                 child: Form(
                   key: form,
                   child: Column(mainAxisSize: MainAxisSize.min, children: [
                     const Text(
-                        'Chỉ Booking thuộc tài khoản đang đăng nhập mới được khôi phục. Máy chủ sẽ kiểm tra quyền truy cập trước khi hiển thị.'),
+                        'Nhập mã tham chiếu của chuyến cũ. Chỉ chuyến thuộc tài khoản của bạn mới được hiển thị.'),
                     const SizedBox(height: 12),
                     TextFormField(
                       onChanged: (value) => input = value,
                       maxLength: 36,
                       decoration: const InputDecoration(
-                          labelText: 'Booking public UUID',
+                          labelText: 'Mã tham chiếu chuyến đi',
                           border: OutlineInputBorder()),
                       validator: (value) =>
                           RegExp(r'^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')
                                   .hasMatch((value ?? '').trim())
                               ? null
-                              : 'Nhập đúng UUID của Booking',
+                              : 'Mã tham chiếu chưa đúng định dạng',
                     ),
                   ]),
                 ),
@@ -237,7 +237,7 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                         Navigator.pop(dialog, input.trim());
                       }
                     },
-                    child: const Text('Kiểm tra Booking')),
+                    child: const Text('Tìm chuyến')),
               ],
             ));
     if (publicId != null && mounted && _isCurrentAccount) {
@@ -635,6 +635,53 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
     );
   }
 
+  Widget _vehicleCard(VehicleType type) {
+    final selected = _vehicle == type;
+    final scheme = Theme.of(context).colorScheme;
+    final icon = switch (type) {
+      VehicleType.motorbike => Icons.two_wheeler_rounded,
+      VehicleType.car4Seat => Icons.directions_car_rounded,
+      VehicleType.car7Seat => Icons.airport_shuttle_rounded,
+    };
+    return Semantics(
+      selected: selected,
+      button: true,
+      label: type.label,
+      child: InkWell(
+        key: ValueKey('customer-vehicle-${type.apiValue}'),
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => setState(() => _vehicle = type),
+        child: AnimatedScale(
+          scale: selected ? 1 : .97,
+          duration: AppMotion.duration(context, AppMotion.touch),
+          curve: AppMotion.enterCurve,
+          child: AnimatedContainer(
+            duration: AppMotion.duration(context, AppMotion.card),
+            curve: AppMotion.standardCurve,
+            width: 112,
+            height: 100,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: selected ? scheme.primaryContainer : scheme.surface,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: selected ? scheme.primary :
+                  scheme.outlineVariant, width: selected ? 2 : 1),
+            ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center, children: [
+                Icon(icon, color: selected ? scheme.primary :
+                    scheme.onSurfaceVariant, size: 28),
+                const SizedBox(height: 8),
+                Text(type.label, maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelLarge),
+              ]),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _coordinatePair(
       String firstLabel,
       TextEditingController first,
@@ -806,7 +853,7 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                 minChildSize: .46,
                 initialChildSize: .46,
                 maxChildSize: maxSheetExtent,
-                snap: true,
+                snap: !AppMotion.reduceMotion(context),
                 builder: (context, sheetScrollController) => Material(
                   elevation: 12,
                   color: Theme.of(context).colorScheme.surface,
@@ -861,8 +908,7 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                                 children: [
                                   if (state.loading)
                                     const LinearProgressIndicator(
-                                        semanticsLabel:
-                                            'Đang xác minh Booking'),
+                                        semanticsLabel: 'Đang xác minh chuyến'),
                                   if (!state.loading &&
                                       state.isActive &&
                                       booking != null)
@@ -893,14 +939,12 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                                                               Theme.of(context)
                                                                   .textTheme
                                                                   .titleMedium),
-                                                      Text(
-                                                          'Booking UUID: ${booking.publicId}'),
                                                       if (booking.status ==
                                                           'COMPLETED')
                                                         Text(state.payment ==
                                                                 null
                                                             ? 'Chưa xác minh được thanh toán tiền mặt.'
-                                                            : 'Thanh toán tiền mặt chưa xác nhận (PENDING).'),
+                                                            : 'Thanh toán tiền mặt đang chờ xác nhận.'),
                                                       const SizedBox(height: 8),
                                                       FilledButton.icon(
                                                           onPressed: state
@@ -931,9 +975,7 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                                                             .start,
                                                     children: [
                                                       const Text(
-                                                          'Chuyến đã hoàn thành · Đã thanh toán (PAID)'),
-                                                      Text(
-                                                          'Booking UUID: ${booking.publicId}'),
+                                                          'Chuyến đã hoàn thành · Đã thanh toán'),
                                                       TextButton(
                                                           onPressed: state
                                                                   .loading
@@ -967,13 +1009,13 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                                     const Text(
                                         'Phiên đăng nhập đã thay đổi. Hãy đăng nhập lại để khôi phục chuyến.'),
                                   TextButton.icon(
-                                      onPressed:
-                                          state.loading || state.sessionEnded
-                                              ? null
-                                              : _recoverExistingBooking,
-                                      icon: const Icon(Icons.manage_search),
-                                      label: const Text(
-                                          'Khôi phục Booking bằng UUID')),
+                                    onPressed:
+                                        state.loading || state.sessionEnded
+                                            ? null
+                                            : _recoverExistingBooking,
+                                    icon: const Icon(Icons.manage_search),
+                                    label: const Text('Tìm lại chuyến bằng mã'),
+                                  ),
                                 ]);
                           }),
                           const SizedBox(height: 12),
@@ -999,13 +1041,11 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                                             CrossAxisAlignment.start,
                                         children: [
                                           const Text(
-                                              'Booking đang chờ xác minh kết quả',
+                                              'Đang xác minh kết quả đặt chuyến',
                                               style: TextStyle(
                                                   fontWeight: FontWeight.bold)),
-                                          Text(
-                                              'Quote: ${pending.quotePublicId}'),
                                           const Text(
-                                              'Nếu mạng bị ngắt, thử lại sẽ dùng cùng Idempotency-Key.'),
+                                              'Nếu mạng bị ngắt, thử lại vẫn kiểm tra cùng yêu cầu. Đừng đặt chuyến mới trước khi có kết quả.'),
                                           Wrap(spacing: 8, children: [
                                             FilledButton(
                                                 onPressed: state.loading
@@ -1031,7 +1071,7 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                                                                           'Bỏ yêu cầu đang chờ?'),
                                                                       content:
                                                                           const Text(
-                                                                              'Kết quả cũ có thể đã tạo Booking. Chỉ bỏ khi bạn đã tự xác minh kết quả hoặc chấp nhận rủi ro đó.'),
+                                                                              'Yêu cầu cũ có thể đã tạo chuyến. Hãy kiểm tra kết quả trước khi bỏ yêu cầu này.'),
                                                                       actions: [
                                                                         TextButton(
                                                                             onPressed: () => Navigator.pop(ctx,
@@ -1134,13 +1174,21 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                           _pointSummary('Điểm đến', dropoff,
                               const Color(0xFFE87521), _MapTarget.dropoff),
                           const SizedBox(height: 8),
+                          Text('Chọn loại xe',
+                              style: Theme.of(context).textTheme.titleMedium),
+                          const SizedBox(height: 8),
+                          Wrap(spacing: 8, runSpacing: 8, children: [
+                            for (final type in VehicleType.values)
+                              _vehicleCard(type),
+                          ]),
+                          const SizedBox(height: 12),
                           Card(
                             child: Padding(
                               padding: const EdgeInsets.all(16),
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
-                                  Text('Tọa độ thủ công và loại xe',
+                                  Text('Nhập vị trí thủ công khi cần',
                                       style: Theme.of(context)
                                           .textTheme
                                           .titleMedium),
@@ -1186,24 +1234,6 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
                                                 _dropoffLon,
                                                 -180,
                                                 180),
-                                            const SizedBox(height: 16),
-                                            DropdownButtonFormField<
-                                                    VehicleType>(
-                                                initialValue: _vehicle,
-                                                decoration: const InputDecoration(
-                                                    labelText: 'Loại xe',
-                                                    border:
-                                                        OutlineInputBorder()),
-                                                items: VehicleType.values
-                                                    .map((value) =>
-                                                        DropdownMenuItem(
-                                                            value: value,
-                                                            child: Text(
-                                                                value.label)))
-                                                    .toList(),
-                                                onChanged: (value) => setState(
-                                                    () => _vehicle =
-                                                        value ?? _vehicle)),
                                           ])),
                                 ],
                               ),

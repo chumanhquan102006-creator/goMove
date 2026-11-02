@@ -15,6 +15,11 @@ server:
   error:
     include-stacktrace: never
 gomove:
+  review:
+    quality:
+      minimum-ratings: 10
+      recent-window: 10
+      low-average-threshold: 3.0
   cash:
     commission-rate: 0.20
     commission-policy-version: CASH_MVP_V1

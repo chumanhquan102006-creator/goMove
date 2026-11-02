@@ -32,6 +32,13 @@ public class AdminQueryStore {
                 SELECT d.public_id, u.public_id AS user_public_id, u.full_name, u.phone,
                        d.license_number, d.approval_status, d.operating_status,
                        d.total_trips, d.created_at,
+                       (SELECT ROUND(AVG(stars)::numeric, 2) FROM trip_ratings
+                        WHERE driver_id = d.id) AS rating_average,
+                       (SELECT count(*) FROM trip_ratings WHERE driver_id = d.id) AS rating_count,
+                       GREATEST(0, COALESCE((SELECT sum(points_delta) FROM driver_point_events
+                        WHERE driver_id = d.id), 0)) AS available_points,
+                       EXISTS (SELECT 1 FROM driver_quality_cases q WHERE q.driver_id = d.id
+                           AND q.status IN ('OPEN', 'WARNED', 'DISPUTED')) AS quality_flagged,
                        EXISTS (SELECT 1 FROM bookings b WHERE b.assigned_driver_id = d.id
                                AND b.driver_released_at IS NULL) AS unreleased_booking
                 """ + filter + " ORDER BY d.created_at DESC, d.id DESC LIMIT ? OFFSET ?",
@@ -44,6 +51,13 @@ public class AdminQueryStore {
                 SELECT d.id, d.public_id, u.public_id AS user_public_id, u.full_name, u.phone,
                        d.license_number, d.approval_status, d.operating_status,
                        d.total_trips, d.created_at,
+                       (SELECT ROUND(AVG(stars)::numeric, 2) FROM trip_ratings
+                        WHERE driver_id = d.id) AS rating_average,
+                       (SELECT count(*) FROM trip_ratings WHERE driver_id = d.id) AS rating_count,
+                       GREATEST(0, COALESCE((SELECT sum(points_delta) FROM driver_point_events
+                        WHERE driver_id = d.id), 0)) AS available_points,
+                       EXISTS (SELECT 1 FROM driver_quality_cases q WHERE q.driver_id = d.id
+                           AND q.status IN ('OPEN', 'WARNED', 'DISPUTED')) AS quality_flagged,
                        EXISTS (SELECT 1 FROM bookings b WHERE b.assigned_driver_id = d.id
                                AND b.driver_released_at IS NULL) AS unreleased_booking
                 FROM drivers d JOIN users u ON u.id = d.user_id WHERE d.public_id = ?
@@ -62,7 +76,9 @@ public class AdminQueryStore {
                 rs.getString("phone"), rs.getString("license_number"),
                 rs.getString("approval_status"), rs.getString("operating_status"),
                 rs.getInt("total_trips"), rs.getBoolean("unreleased_booking"),
-                instant(rs.getTimestamp("created_at")), vehicles);
+                instant(rs.getTimestamp("created_at")), vehicles,
+                rs.getBigDecimal("rating_average"), rs.getLong("rating_count"),
+                rs.getLong("available_points"), rs.getBoolean("quality_flagged"));
     }
 
     private static final String ACCOUNT_FROM = """
@@ -159,12 +175,23 @@ public class AdminQueryStore {
                        COALESCE(sum(p.amount) FILTER (WHERE p.status = 'VOID'), 0) AS void_amount
                 FROM cash_payments p JOIN bookings b ON b.id = p.booking_id
                 """);
+        var quality = jdbc.queryForMap("""
+                SELECT (SELECT count(*) FROM trip_ratings) AS rated_trips,
+                       (SELECT count(*) FROM driver_quality_cases
+                        WHERE status IN ('OPEN', 'WARNED', 'DISPUTED')) AS flagged_drivers,
+                       (SELECT COALESCE(sum(GREATEST(points_delta, 0)), 0)
+                        FROM driver_point_events) AS points_awarded,
+                       (SELECT COALESCE(sum(GREATEST(-points_delta, 0)), 0)
+                        FROM driver_point_events) AS points_deducted
+                """);
         return new AdminDashboard(number(users, "customers"), number(drivers, "drivers"),
                 number(drivers, "pending"), number(drivers, "online"), number(drivers, "offline"),
                 number(drivers, "busy"), number(bookings, "active"), number(bookings, "completed"),
                 number(bookings, "cancelled"), number(bookings, "no_driver"), number(cash, "paid"),
                 number(cash, "collectible"), (java.math.BigDecimal) cash.get("collectible_amount"),
-                number(cash, "void_count"), (java.math.BigDecimal) cash.get("void_amount"));
+                number(cash, "void_count"), (java.math.BigDecimal) cash.get("void_amount"),
+                number(quality, "rated_trips"), number(quality, "flagged_drivers"),
+                number(quality, "points_awarded"), number(quality, "points_deducted"));
     }
 
     private static long number(java.util.Map<String, Object> row, String key) {

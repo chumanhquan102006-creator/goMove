@@ -45,10 +45,14 @@ class AdminDashboard {
       'noDriverAvailableBookings',
       'paidCashPayments',
       'collectiblePendingCashPayments',
-      'voidCashPayments'
+      'voidCashPayments',
+      'ratedTrips',
+      'flaggedDrivers',
+      'goPointsAwarded',
+      'goPointsDeducted'
     ];
     return AdminDashboard({
-      for (final field in fields) field: (json[field] as num).toInt(),
+      for (final field in fields) field: (json[field] as num?)?.toInt() ?? 0,
     }, json['collectiblePendingCashAmount'].toString(),
         json['voidCashAmount'].toString());
   }
@@ -85,6 +89,10 @@ class AdminDriver {
   final int totalTrips;
   final bool unreleasedBooking;
   final List<AdminVehicle> vehicles;
+  final double? ratingAverage;
+  final int ratingCount;
+  final int availablePoints;
+  final bool qualityFlagged;
 
   const AdminDriver(
       this.publicId,
@@ -95,7 +103,11 @@ class AdminDriver {
       this.operatingStatus,
       this.totalTrips,
       this.unreleasedBooking,
-      this.vehicles);
+      this.vehicles,
+      {this.ratingAverage,
+      this.ratingCount = 0,
+      this.availablePoints = 0,
+      this.qualityFlagged = false});
 
   factory AdminDriver.fromJson(Map<String, dynamic> json) => AdminDriver(
       json['publicId'] as String,
@@ -109,7 +121,13 @@ class AdminDriver {
       (json['vehicles'] as List? ?? const [])
           .map((value) =>
               AdminVehicle.fromJson(Map<String, dynamic>.from(value as Map)))
-          .toList());
+          .toList(),
+      ratingAverage: json['ratingAverage'] == null
+          ? null
+          : double.parse(json['ratingAverage'].toString()),
+      ratingCount: (json['ratingCount'] as num?)?.toInt() ?? 0,
+      availablePoints: (json['availablePoints'] as num?)?.toInt() ?? 0,
+      qualityFlagged: json['qualityFlagged'] == true);
 }
 
 /// A successful PATCH confirms the requested status. A lost PATCH response

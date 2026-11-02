@@ -5,6 +5,10 @@ import '../../../../core/config/app_config.dart';
 import '../../../../core/di/injection.dart';
 import '../../../../core/storage/secure_storage_service.dart';
 import '../../../../core/theme/app_motion.dart';
+import '../../../auth/presentation/bloc/auth_bloc.dart';
+import '../../../auth/presentation/bloc/auth_state.dart';
+import '../../../review/domain/rating_repository.dart';
+import '../../../review/presentation/rating_panel.dart';
 import '../../../trip/data/trip_realtime_client.dart';
 import '../../../trip/domain/models/trip_models.dart';
 import '../../../trip/domain/repositories/trip_repository.dart';
@@ -45,14 +49,15 @@ String customerTripStatusLabel(String status) => switch (status) {
 
 String customerRealtimeLabel(TripRealtimeConnectionState connection) =>
     switch (connection) {
-      TripRealtimeConnectionState.connecting => 'Đang kết nối realtime…',
-      TripRealtimeConnectionState.connected => 'Realtime đã kết nối',
+      TripRealtimeConnectionState.connecting =>
+        'Đang kết nối để theo dõi chuyến…',
+      TripRealtimeConnectionState.connected => 'Vị trí đang được cập nhật',
       TripRealtimeConnectionState.reconnecting =>
-        'Đang kết nối lại realtime; REST vẫn được cập nhật',
+        'Đang kết nối lại; thông tin chuyến vẫn được kiểm tra',
       TripRealtimeConnectionState.disconnected =>
-        'Realtime chưa kết nối; đang dựa vào REST',
+        'Tạm mất kết nối trực tiếp; đang kiểm tra lại vị trí',
       TripRealtimeConnectionState.failed =>
-        'Realtime không khả dụng; đang dựa vào REST',
+        'Chưa có kết nối trực tiếp; thông tin chuyến vẫn được cập nhật',
     };
 
 String _assignedVehicleLabel(String type) => switch (type) {
@@ -107,10 +112,17 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
   String? _pickupAddress;
   String? _dropoffAddress;
   int _pointsRequest = 0;
+  String? _customerPublicId;
 
   @override
   void initState() {
     super.initState();
+    try {
+      final auth = context.read<AuthBloc>().state;
+      if (auth is AuthenticatedState) _customerPublicId = auth.user.publicId;
+    } catch (_) {
+      // Isolated map/widget tests do not install the app authentication shell.
+    }
     _cubit = BookingStatusCubit(
       sl<GetBookingUseCase>(),
       widget.booking,
@@ -287,6 +299,9 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                 key: ValueKey(
                                     'customer-trip-map-${booking.publicId}'),
                                 bookingPublicId: booking.publicId,
+                                searchingForDriver:
+                                    state.status == 'SEARCHING_DRIVER',
+                                enableMarkerInterpolation: true,
                                 location:
                                     hasRenderableLocation ? location : null,
                                 route: route,
@@ -461,6 +476,15 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                             bookingPublicId: booking.publicId,
                             status: state.status,
                           ),
+                          if (state.status == 'COMPLETED' &&
+                              _customerPublicId != null &&
+                              sl.isRegistered<RatingRepository>())
+                            RatingPanel(
+                              key: ValueKey('rating-${booking.publicId}'),
+                              bookingPublicId: booking.publicId,
+                              customerPublicId: _customerPublicId!,
+                              autoPrompt: true,
+                            ),
                           if (state.canCancel) ...[
                             const SizedBox(height: 8),
                             OutlinedButton.icon(
@@ -523,10 +547,6 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                               ),
                               ListTile(
                                   dense: true,
-                                  title: const Text('Mã Booking'),
-                                  subtitle: SelectableText(booking.publicId)),
-                              ListTile(
-                                  dense: true,
                                   title: const Text('Loại xe'),
                                   subtitle: Text(booking.vehicleType.label)),
                               ListTile(
@@ -541,21 +561,31 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                   dense: true,
                                   title: const Text('Tạo lúc'),
                                   subtitle: Text(_time(booking.createdAt))),
-                              if ((state.tracking?.driverPublicId ??
-                                      booking.driverPublicId) !=
-                                  null)
-                                ListTile(
-                                    dense: true,
-                                    title: const Text('Mã tài xế'),
-                                    subtitle: SelectableText(
-                                        state.tracking?.driverPublicId ??
-                                            booking.driverPublicId!)),
-                              if (booking.vehiclePublicId != null)
-                                ListTile(
-                                    dense: true,
-                                    title: const Text('Mã xe'),
-                                    subtitle: SelectableText(
-                                        booking.vehiclePublicId!)),
+                              ExpansionTile(
+                                title: const Text('Mã tham chiếu hỗ trợ'),
+                                children: [
+                                  ListTile(
+                                      dense: true,
+                                      title: const Text('Mã chuyến'),
+                                      subtitle:
+                                          SelectableText(booking.publicId)),
+                                  if ((state.tracking?.driverPublicId ??
+                                          booking.driverPublicId) !=
+                                      null)
+                                    ListTile(
+                                        dense: true,
+                                        title: const Text('Mã tài xế'),
+                                        subtitle: SelectableText(
+                                            state.tracking?.driverPublicId ??
+                                                booking.driverPublicId!)),
+                                  if (booking.vehiclePublicId != null)
+                                    ListTile(
+                                        dense: true,
+                                        title: const Text('Mã xe'),
+                                        subtitle: SelectableText(
+                                            booking.vehiclePublicId!)),
+                                ],
+                              ),
                             ]),
                           ),
                           if (state.tracking?.bookingPublicId ==
@@ -641,34 +671,19 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                             .textTheme
                                             .bodySmall),
                                     const Text(
-                                        'Nếu chưa có dữ liệu tuyến đường, bản đồ chỉ hiển thị các điểm đã được xác minh; không nối thẳng thành đường đi.'),
+                                        'Bản đồ hiển thị vị trí và tuyến đường đã được xác minh khi có dữ liệu.'),
                                     if (!isTerminalTripStatus(state.status) &&
                                         !hasRenderableLocation)
                                       const Text(
                                           'Chưa có vị trí GPS được phép hiển thị.'),
                                     if (hasRenderableLocation &&
-                                        location != null) ...[
-                                      const SizedBox(height: 10),
-                                      Text('Vĩ độ: ${location.latitude}'),
-                                      Text('Kinh độ: ${location.longitude}'),
-                                      if (location.accuracy != null)
-                                        Text(
-                                            'Độ chính xác: ${location.accuracy} m'),
-                                      if (location.bearing != null)
-                                        Text('Hướng: ${location.bearing}°'),
+                                        location != null)
                                       Text(
-                                          'Cập nhật: ${_time(location.updatedAt)}'),
-                                      Text(CustomerMapSource.visibleAttribution,
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall),
-                                    ],
-                                    if (!isTerminalTripStatus(state.status))
-                                      Text(
-                                          'REST là nguồn trạng thái bền vững khi mất realtime.',
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall),
+                                          'Vị trí mới nhất: ${_time(location.updatedAt)}'),
+                                    Text(CustomerMapSource.visibleAttribution,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall),
                                   ]),
                             ),
                           ),
@@ -722,8 +737,8 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                         else ...[
                                           Text(
                                               payment.isPaid
-                                                  ? 'Đã thanh toán (PAID)'
-                                                  : 'Chưa thanh toán (PENDING)',
+                                                  ? 'Đã thanh toán'
+                                                  : 'Chờ xác nhận thanh toán',
                                               style: TextStyle(
                                                   color: payment.isPaid
                                                       ? colors.tertiary
@@ -779,6 +794,10 @@ Widget _assignedDriverCard(BuildContext context, TrackingSnapshot tracking) {
             style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 6),
         Text(driver.displayName),
+        Text(driver.ratingCount == 0 || driver.ratingAverage == null
+            ? 'Chưa có đánh giá'
+            : '${driver.ratingAverage!.toStringAsFixed(2)} ★ · '
+                '${driver.ratingCount} đánh giá'),
         if (driver.phone?.trim().isNotEmpty == true)
           Text('Điện thoại: ${driver.phone}'),
         if (vehicle != null) ...[

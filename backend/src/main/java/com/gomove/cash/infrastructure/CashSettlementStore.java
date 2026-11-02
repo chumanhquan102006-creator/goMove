@@ -149,14 +149,21 @@ public class CashSettlementStore {
 
     public Optional<CommissionSummaryResponse> driverSummary(UUID driverUserPublicId) {
         return jdbc.query("""
-                SELECT COALESCE(SUM(l.commission_amount), 0) AS due
+                SELECT COALESCE(SUM(l.commission_amount), 0) AS due,
+                       COALESCE(SUM(p.amount), 0) AS collected,
+                       count(p.id) AS paid_trips
                 FROM drivers d JOIN users u ON u.id = d.user_id
                 LEFT JOIN driver_commission_ledger l ON l.driver_id = d.id
                     AND l.event_type = 'COMMISSION_ACCRUED'
+                LEFT JOIN cash_payments p ON p.booking_id = l.booking_id
+                    AND p.status = 'PAID' AND p.collected_by_driver_id = d.id
                 WHERE u.public_id = ? GROUP BY d.id
                 """, (rs, row) -> {
                     BigDecimal due = rs.getBigDecimal("due");
-                    return new CommissionSummaryResponse(due, due, "VND");
+                    BigDecimal collected = rs.getBigDecimal("collected");
+                    return new CommissionSummaryResponse(due, due, "VND",
+                            rs.getLong("paid_trips"), collected.toPlainString(),
+                            due.toPlainString(), collected.subtract(due).toPlainString());
                 }, driverUserPublicId).stream().findFirst();
     }
 

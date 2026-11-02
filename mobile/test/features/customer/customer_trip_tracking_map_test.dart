@@ -90,6 +90,61 @@ void main() {
         isFalse);
   });
 
+  test('Bearing takes the short arc between verified samples', () {
+    expect(CustomerMarkerMotion.bearingAt(350, 10, .5), closeTo(0, .001));
+    expect(CustomerMarkerMotion.bearingAt(10, 350, .5), closeTo(0, .001));
+    expect(CustomerMarkerMotion.bearingAt(null, 45, .5), 45);
+    expect(CustomerMarkerMotion.bearingAt(45, null, .5), isNull);
+    expect(CustomerMarkerMotion.bearingAt(45, 370, .5), isNull);
+  });
+
+  testWidgets(
+      'Pickup radar runs only for authoritative search and pauses in background',
+      (tester) async {
+    const channel = MethodChannel('plugins.flutter.io/maplibre_gl');
+    tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (_) async => null);
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null));
+    final originalFactory = MapLibrePlatform.createInstance;
+    MapLibrePlatform.createInstance = _FakeMapLibrePlatform.new;
+    addTearDown(() => MapLibrePlatform.createInstance = originalFactory);
+    final controller = _RecordingTrackingController();
+
+    Future<void> show(bool searching) async {
+      await tester.pumpWidget(MaterialApp(
+          home: Scaffold(
+              body: SizedBox.expand(
+        child: CustomerTripTrackingMap(
+          bookingPublicId: 'booking-radar',
+          pickup: const Coordinates(21.0287, 105.8524),
+          searchingForDriver: searching,
+          location: null,
+          connectionState: TripRealtimeConnectionState.connected,
+        ),
+      ))));
+      await tester.pump();
+    }
+
+    await show(true);
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(controller.circles.length, 4); // Pickup + three real-point waves.
+    final updates = controller.circleUpdates;
+    expect(updates, greaterThan(0));
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump(const Duration(seconds: 1));
+    expect(controller.circleUpdates, updates);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await show(false); // Confirmed match stops and removes the radar.
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(controller.circles.length, 1);
+    expect(controller.cameraMoves, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('Stationary newer GPS avoids idle marker writes', (tester) async {
     final points = <LatLng>[];
     final first = CustomerLiveLocation(21.1, 105.1, 4, 90, firstFix);
@@ -413,6 +468,157 @@ void main() {
     expect(tester.state(find.byType(MapLibreMap)), same(mapState));
   });
 
+  testWidgets('Static marker redraw leaves exactly one native direction arrow',
+      (tester) async {
+    _installFakeMapLibre(tester);
+    final controller = _RecordingTrackingController();
+    final fix = CustomerLiveLocation(21.03, 105.85, 4, 90, firstFix);
+
+    Future<void> show(Coordinates pickup, Coordinates dropoff) async {
+      await _showNativeTrackingMap(tester,
+          location: fix, pickup: pickup, dropoff: dropoff);
+    }
+
+    await show(const Coordinates(21.0287, 105.8524),
+        const Coordinates(21.0245, 105.8576));
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    expect(map.annotationOrder, contains(AnnotationType.symbol));
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    expect(controller.symbols, hasLength(1));
+    expect(controller.circles, hasLength(3));
+    final mapState = tester.state(find.byType(MapLibreMap));
+
+    await show(const Coordinates(21.029, 105.853),
+        const Coordinates(21.0245, 105.8576));
+    await _flushNativeWrites(tester);
+    expect(controller.symbols, hasLength(1));
+    await show(
+        const Coordinates(21.029, 105.853), const Coordinates(21.025, 105.858));
+    await _flushNativeWrites(tester);
+    expect(controller.symbols, hasLength(1));
+    expect(controller.symbolAdds, 3);
+    expect(controller.symbolClears, greaterThanOrEqualTo(3));
+    expect(controller.circles, hasLength(3));
+    expect(tester.state(find.byType(MapLibreMap)), same(mapState));
+    expect(controller.cameraMoves, 0);
+  });
+
+  testWidgets(
+      'New GPS fixes update arrow position and bearing without duplicates',
+      (tester) async {
+    _installFakeMapLibre(tester);
+    final controller = _RecordingTrackingController();
+    final first = CustomerLiveLocation(21.03, 105.85, 4, 90, firstFix);
+    final next = CustomerLiveLocation(21.0301, 105.8501, 4, 145, newerFix);
+    await _showNativeTrackingMap(tester, location: first);
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    expect(controller.symbols.single.options.textRotate, 90);
+
+    await _showNativeTrackingMap(tester, location: next);
+    await _flushNativeWrites(tester);
+    expect(controller.symbols, hasLength(1));
+    expect(controller.symbolAdds, 1);
+    expect(controller.symbolUpdates, greaterThan(0));
+    expect(controller.symbols.single.options.geometry,
+        const LatLng(21.0301, 105.8501));
+    expect(controller.symbols.single.options.textRotate, 145);
+    expect(controller.cameraMoves, 0);
+
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(21.0302, 105.8502, 4, null,
+            newerFix.add(const Duration(seconds: 5))));
+    await _flushNativeWrites(tester);
+    expect(controller.symbols, isEmpty);
+    expect(controller.symbolRemovals, 1);
+    expect(controller.circles, hasLength(1));
+  });
+
+  for (final terminal in ['CANCELLED', 'COMPLETED']) {
+    testWidgets('$terminal clears an in-flight arrow after static redraw',
+        (tester) async {
+      _installFakeMapLibre(tester);
+      final controller = _RecordingTrackingController();
+      final fix = CustomerLiveLocation(21.03, 105.85, 4, 90, firstFix);
+      await _showNativeTrackingMap(tester,
+          location: fix, pickup: const Coordinates(21.0287, 105.8524));
+      final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+      map.onMapCreated!(controller);
+      map.onStyleLoadedCallback!();
+      await _flushNativeWrites(tester);
+      expect(controller.symbols, hasLength(1));
+
+      controller.delaySymbolAddition = Completer<void>();
+      await _showNativeTrackingMap(tester,
+          location: fix, pickup: const Coordinates(21.029, 105.853));
+      await _flushNativeWrites(tester);
+      expect(controller.symbolAdditionStarted.isCompleted, isTrue);
+      expect(controller.symbols, isEmpty,
+          reason: 'Static redraw must clear the prior native arrow');
+
+      // The parent passes no GPS for either terminal Booking status.
+      await _showNativeTrackingMap(tester,
+          location: null, pickup: const Coordinates(21.029, 105.853));
+      expect(
+          find.byWidgetPredicate((widget) =>
+              widget is ColoredBox && widget.color == const Color(0xFFF8F9FA)),
+          findsOneWidget,
+          reason: 'Native annotations stay covered until deletion completes');
+      controller.delaySymbolAddition!.complete();
+      await _flushNativeWrites(tester);
+      expect(controller.symbols, isEmpty);
+      expect(controller.symbolRemovals, 1,
+          reason: 'A late native add is removed as soon as it returns');
+      expect(controller.circles, hasLength(1));
+      expect(controller.symbolClears, greaterThanOrEqualTo(2));
+      expect(
+          find.byWidgetPredicate((widget) =>
+              widget is ColoredBox && widget.color == const Color(0xFFF8F9FA)),
+          findsNothing);
+      expect(controller.cameraMoves, 0);
+    });
+  }
+
+  testWidgets(
+      'Style reload rebuilds one arrow and disposal stops queued writes',
+      (tester) async {
+    _installFakeMapLibre(tester);
+    final controller = _RecordingTrackingController();
+    final fix = CustomerLiveLocation(21.03, 105.85, 4, 90, firstFix);
+    await _showNativeTrackingMap(tester,
+        location: fix, pickup: const Coordinates(21.0287, 105.8524));
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    expect(controller.symbols, hasLength(1));
+
+    controller.simulateStyleReload();
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    expect(controller.symbols, hasLength(1));
+    expect(controller.symbolAdds, 2);
+
+    controller.delaySymbolAddition = Completer<void>();
+    await _showNativeTrackingMap(tester,
+        location: fix, pickup: const Coordinates(21.029, 105.853));
+    await _flushNativeWrites(tester);
+    expect(controller.symbolAdditionStarted.isCompleted, isTrue);
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.simulateNativeDisposal();
+    final addsAtDisposal = controller.symbolAdds;
+    controller.delaySymbolAddition!.complete();
+    await _flushNativeWrites(tester);
+    expect(controller.symbols, isEmpty);
+    expect(controller.symbolAdds, addsAtDisposal);
+    expect(controller.symbolUpdates, 0);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('Pause, style reload and disposal stop in-flight marker motion',
       (tester) async {
     const channel = MethodChannel('plugins.flutter.io/maplibre_gl');
@@ -491,16 +697,104 @@ class _FakeMapLibrePlatform extends Fake implements MapLibrePlatform {
   void dispose() {}
 }
 
+void _installFakeMapLibre(WidgetTester tester) {
+  const channel = MethodChannel('plugins.flutter.io/maplibre_gl');
+  tester.binding.defaultBinaryMessenger
+      .setMockMethodCallHandler(channel, (_) async => null);
+  addTearDown(() => tester.binding.defaultBinaryMessenger
+      .setMockMethodCallHandler(channel, null));
+  final originalFactory = MapLibrePlatform.createInstance;
+  MapLibrePlatform.createInstance = _FakeMapLibrePlatform.new;
+  addTearDown(() => MapLibrePlatform.createInstance = originalFactory);
+}
+
+Future<void> _showNativeTrackingMap(WidgetTester tester,
+    {required CustomerLiveLocation? location,
+    Coordinates? pickup,
+    Coordinates? dropoff}) async {
+  await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: SizedBox.expand(
+              child: CustomerTripTrackingMap(
+    bookingPublicId: 'booking-symbol-lifecycle',
+    fullBleed: true,
+    location: location,
+    pickup: pickup,
+    dropoff: dropoff,
+    connectionState: TripRealtimeConnectionState.connected,
+  )))));
+  await tester.pump();
+}
+
+Future<void> _flushNativeWrites(WidgetTester tester) async {
+  for (var i = 0; i < 12; i++) {
+    await tester.pump();
+  }
+}
+
 class _RecordingTrackingController extends Fake
     implements MapLibreMapController {
   int cameraMoves = 0;
+  int circleUpdates = 0;
+  int symbolAdds = 0;
+  int symbolUpdates = 0;
+  int symbolRemovals = 0;
+  int symbolClears = 0;
   int _nextCircle = 0;
+  int _nextSymbol = 0;
+  bool _nativeDisposed = false;
   @override
   final circles = <Circle>{};
+  @override
+  final symbols = <Symbol>{};
   @override
   final lines = <Line>{};
   Completer<void>? delayRemoval;
   final removalStarted = Completer<void>();
+  Completer<void>? delaySymbolAddition;
+  final symbolAdditionStarted = Completer<void>();
+
+  void simulateStyleReload() {
+    circles.clear();
+    symbols.clear();
+    lines.clear();
+  }
+
+  void simulateNativeDisposal() {
+    _nativeDisposed = true;
+    simulateStyleReload();
+  }
+
+  @override
+  Future<Symbol> addSymbol(SymbolOptions options,
+      [Map<String, dynamic>? data]) async {
+    final symbol = Symbol('symbol-${_nextSymbol++}', options, data);
+    symbolAdds++;
+    if (delaySymbolAddition != null) {
+      if (!symbolAdditionStarted.isCompleted) symbolAdditionStarted.complete();
+      await delaySymbolAddition!.future;
+    }
+    if (!_nativeDisposed) symbols.add(symbol);
+    return symbol;
+  }
+
+  @override
+  Future<void> updateSymbol(Symbol symbol, SymbolOptions changes) async {
+    symbol.options = symbol.options.copyWith(changes);
+    symbolUpdates++;
+  }
+
+  @override
+  Future<void> removeSymbol(Symbol symbol) async {
+    symbolRemovals++;
+    symbols.remove(symbol);
+  }
+
+  @override
+  Future<void> clearSymbols() async {
+    symbolClears++;
+    symbols.clear();
+  }
 
   @override
   Future<Circle> addCircle(CircleOptions options,
@@ -532,7 +826,9 @@ class _RecordingTrackingController extends Fake
   }
 
   @override
-  Future<void> updateCircle(Circle circle, CircleOptions changes) async {}
+  Future<void> updateCircle(Circle circle, CircleOptions changes) async {
+    circleUpdates++;
+  }
 
   @override
   Future<bool?> animateCamera(CameraUpdate cameraUpdate,

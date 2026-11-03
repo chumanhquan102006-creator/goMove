@@ -14,12 +14,18 @@ import 'package:gomove_mobile/features/customer/domain/repositories/geocoding_re
 import 'package:gomove_mobile/features/driver/data/accepted_booking_store.dart';
 import 'package:gomove_mobile/features/driver/data/location/driver_location_source.dart';
 import 'package:gomove_mobile/features/driver/domain/models/driver_models.dart';
+import 'package:gomove_mobile/features/driver/domain/models/driver_earnings_summary.dart';
+import 'package:gomove_mobile/features/driver/domain/repositories/driver_earnings_repository.dart';
 import 'package:gomove_mobile/features/driver/domain/repositories/driver_repository.dart';
 import 'package:gomove_mobile/features/driver/domain/usecases/driver_usecases.dart';
 import 'package:gomove_mobile/features/driver/presentation/bloc/driver_cubit.dart';
+import 'package:gomove_mobile/features/driver/presentation/bloc/driver_earnings_cubit.dart';
 import 'package:gomove_mobile/features/driver/presentation/bloc/onboarding_cubit.dart';
 import 'package:gomove_mobile/features/driver/presentation/screens/driver_home_screen.dart';
 import 'package:gomove_mobile/features/driver/presentation/screens/driver_accepted_booking_screen.dart';
+import 'package:gomove_mobile/features/review/domain/review_models.dart';
+import 'package:gomove_mobile/features/review/domain/review_repository.dart';
+import 'package:gomove_mobile/features/review/presentation/driver_reputation_cubit.dart';
 import 'package:gomove_mobile/features/trip/data/trip_realtime_client.dart';
 import 'package:gomove_mobile/features/trip/domain/models/trip_models.dart';
 import 'package:gomove_mobile/features/trip/domain/repositories/trip_repository.dart';
@@ -262,6 +268,34 @@ class PreviewDriverCubit extends DriverCubit {
   }
 
   void show(DriverState next) => emit(next);
+}
+
+class MockEarningsRepository extends Mock implements DriverEarningsRepository {}
+
+class MockReviewRepository extends Mock implements ReviewRepository {}
+
+class PreviewEarningsCubit extends DriverEarningsCubit {
+  PreviewEarningsCubit(
+      DriverEarningsState preview, SecureStorageService session)
+      : super(MockEarningsRepository(), session, 'user-A') {
+    emit(preview);
+  }
+
+  @override
+  Future<void> load() async {}
+}
+
+class PreviewReputationCubit extends DriverReputationCubit {
+  PreviewReputationCubit(
+      DriverReputationState preview, SecureStorageService session)
+      : super(MockReviewRepository(), session, 'user-A') {
+    emit(preview);
+  }
+
+  @override
+  Future<void> load() async {}
+
+  void show(DriverReputationState next) => emit(next);
 }
 
 DriverOffer offer(DateTime expiry) => DriverOffer(
@@ -1065,15 +1099,19 @@ void main() {
             .getCenter(find.byKey(const ValueKey('driver-trip-sheet-handle'))),
         const Offset(0, -300));
     await tester.pump(const Duration(milliseconds: 400));
-    await tester.scrollUntilVisible(find.text('Điểm đón và điểm đến'), 80,
-        scrollable: find.byType(Scrollable).first);
+    await tester.scrollUntilVisible(find.text('Điểm đón và điểm đến'), -80,
+        scrollable: find.descendant(
+            of: find.byKey(const ValueKey('driver-trip-sheet-scroll')),
+            matching: find.byType(Scrollable)));
     await tester.ensureVisible(find.text('Điểm đón và điểm đến'));
     await tester.pump();
     await tester.tap(find.text('Điểm đón và điểm đến'));
     await tester.pump(const Duration(milliseconds: 300));
     await tester.scrollUntilVisible(
         find.textContaining('Điểm đón: 21.0287, 105.8524'), 80,
-        scrollable: find.byType(Scrollable).first);
+        scrollable: find.descendant(
+            of: find.byKey(const ValueKey('driver-trip-sheet-scroll')),
+            matching: find.byType(Scrollable)));
     expect(find.textContaining('Điểm đón: 21.0287, 105.8524'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
   });
@@ -1105,15 +1143,109 @@ void main() {
         role: UserRole.driver);
     await tester.pumpWidget(BlocProvider<AuthBloc>(
       create: (_) => sl<AuthBloc>(),
-      child: const MaterialApp(home: DriverHomeScreen(user: user)),
+      child: const MaterialApp(
+        home: MediaQuery(
+          data: MediaQueryData(textScaler: TextScaler.linear(1.3)),
+          child: DriverHomeScreen(user: user),
+        ),
+      ),
     ));
     expect(find.text('Đã duyệt'), findsOneWidget);
     await tester.scrollUntilVisible(find.text('Nhận chuyến'), 180);
     expect(find.textContaining('Giá đã chấp nhận: 16.500 VND'), findsOneWidget);
+    expect(find.text('21.0287, 105.8524'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.byKey(const ValueKey('driver-offer-offer-1'))).dy,
+      lessThan(tester
+          .getTopLeft(find.byKey(const ValueKey('driver-home-status-panel')))
+          .dy),
+    );
     expect(tester.takeException(), isNull);
     final accept = tester
         .widget<FilledButton>(find.widgetWithText(FilledButton, 'Nhận chuyến'));
     expect(accept.onPressed, isNotNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Driver dashboard shows authorized cash, vehicle, GPS and points',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(320, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    AppConfig.reset();
+    await sl.reset();
+    await setupServiceLocator(config: AppConfig.initialize(forceMock: false));
+    final preview = PreviewDriverCubit(
+        DriverState(
+            operatingStatus: 'OFFLINE',
+            approvalStatus: 'APPROVED',
+            locationMessage: 'GPS sẵn sàng',
+            vehicles: repository.vehicleList),
+        DriverUseCases(repository),
+        location,
+        session,
+        store);
+    await sl.unregister<DriverCubit>();
+    sl.registerFactoryParam<DriverCubit, String, void>((_, __) => preview);
+    await sl.unregister<DriverEarningsCubit>();
+    sl.registerFactoryParam<DriverEarningsCubit, String, void>((_, __) =>
+        PreviewEarningsCubit(
+            const DriverEarningsState(
+                summary: DriverEarningsSummary(
+                    paidTripCount: 1,
+                    cashCollectedAmount: '16500.00',
+                    commissionDue: '3300.00',
+                    afterCommissionAmount: '13200.00',
+                    currency: 'VND')),
+            session));
+    await sl.unregister<DriverReputationCubit>();
+    late PreviewReputationCubit reputationPreview;
+    sl.registerFactoryParam<DriverReputationCubit, String, void>((_, __) {
+      reputationPreview = PreviewReputationCubit(
+          const DriverReputationState(
+              reputation: DriverReputation(4.5, 2, 5, 0, 5, [])),
+          session);
+      return reputationPreview;
+    });
+    const user = User(
+        publicId: 'user-A',
+        phoneNumber: '0900000000',
+        fullName: 'Driver A',
+        role: UserRole.driver);
+    await tester.pumpWidget(BlocProvider<AuthBloc>(
+      create: (_) => sl<AuthBloc>(),
+      child: const MaterialApp(home: DriverHomeScreen(user: user)),
+    ));
+    await tester.pump();
+    expect(find.text('Tạm nghỉ'), findsOneWidget);
+    expect(find.text('GPS sẵn sàng'), findsOneWidget);
+    expect(find.textContaining('79A-123.45'), findsWidgets);
+    expect(find.text('1 chuyến đã xác nhận'), findsOneWidget);
+    expect(find.text('Tiền mặt đã thu'), findsOneWidget);
+    expect(find.text('16.500 VND'), findsOneWidget);
+    expect(find.text('Hoa hồng phải nộp'), findsOneWidget);
+    expect(find.text('3.300 VND'), findsOneWidget);
+    expect(find.text('Giá trị sau hoa hồng'), findsOneWidget);
+    expect(find.text('13.200 VND'), findsOneWidget);
+    expect(find.text('4.50 ★ · 2 đánh giá'), findsOneWidget);
+    expect(find.text('5 GoPoints hiện có'), findsOneWidget);
+    expect(
+        tester
+            .widget<FilledButton>(
+                find.widgetWithText(FilledButton, 'Bắt đầu nhận chuyến'))
+            .onPressed,
+        isNotNull);
+    preview.show(preview.state.copy(operatingStatus: 'ONLINE'));
+    expect(preview.state.operatingStatus, 'ONLINE');
+    await tester.pumpAndSettle();
+    expect(find.text('Đang nhận chuyến', skipOffstage: false), findsOneWidget);
+    expect(find.text('Ngừng nhận chuyến'), findsOneWidget);
+    reputationPreview.show(const DriverReputationState(loading: true));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 16));
+    expect(
+        find.text('Đang tải đánh giá…', skipOffstage: false), findsOneWidget);
+    expect(find.text('Chưa có đánh giá'), findsNothing);
+    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 

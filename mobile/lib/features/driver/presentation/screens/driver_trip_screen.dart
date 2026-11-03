@@ -5,10 +5,11 @@ import '../../../../core/config/app_config.dart';
 import '../../../../core/di/injection.dart';
 import '../../../../core/storage/secure_storage_service.dart';
 import '../../../../core/theme/app_motion.dart';
+import '../../../../core/theme/app_colors.dart';
+import '../../../../core/widgets/premium_panel.dart';
 import '../../../customer/presentation/formatters.dart';
 import '../../../customer/domain/models/quote.dart';
 import '../../../customer/domain/repositories/geocoding_repository.dart';
-import '../../../customer/presentation/widgets/customer_map_source.dart';
 import '../../../trip/data/trip_realtime_client.dart';
 import '../../../trip/domain/models/trip_models.dart';
 import '../../../trip/domain/repositories/trip_repository.dart';
@@ -428,38 +429,31 @@ class _DriverAcceptedBookingScreenState
                                                 opacity: value, child: child),
                                           );
                                         },
-                                        child: Card(
-                                            color: Theme.of(context)
-                                                .colorScheme
-                                                .secondaryContainer,
-                                            child: Padding(
-                                                padding:
-                                                    const EdgeInsets.all(16),
-                                                child: Column(
-                                                    crossAxisAlignment:
-                                                        CrossAxisAlignment
-                                                            .start,
-                                                    children: [
-                                                      Text('Biên nhận tiền mặt',
-                                                          style:
-                                                              Theme.of(context)
-                                                                  .textTheme
-                                                                  .titleMedium),
-                                                      const SizedBox(height: 8),
-                                                      Text(
-                                                          'Đã thu: ${vnd(state.receipt!.cashCollectedAmount)}'),
-                                                      Text(
-                                                          'Đã thu lúc: ${_time(state.receipt!.paidAt)}'),
-                                                      Text(
-                                                          'Hoa hồng phải nộp nền tảng: '
-                                                          '${vnd(state.receipt!.commissionAmount)}'),
-                                                      const Text(
-                                                          'Đây là khoản phải thu; không có nghĩa hoa hồng '
-                                                          'đã được nộp cho nền tảng.'),
-                                                      Text(
-                                                          'Tài xế được giải phóng lúc: '
-                                                          '${_time(state.receipt!.driverReleasedAt)}'),
-                                                    ]))),
+                                        child: PremiumPanel(
+                                            tint: const Color(0xFFE7F5EE),
+                                            child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Text('Biên nhận tiền mặt',
+                                                      style: Theme.of(context)
+                                                          .textTheme
+                                                          .titleMedium),
+                                                  const SizedBox(height: 8),
+                                                  Text(
+                                                      'Đã thu: ${vnd(state.receipt!.cashCollectedAmount)}'),
+                                                  Text(
+                                                      'Đã thu lúc: ${_time(state.receipt!.paidAt)}'),
+                                                  Text(
+                                                      'Hoa hồng phải nộp nền tảng: '
+                                                      '${vnd(state.receipt!.commissionAmount)}'),
+                                                  const Text(
+                                                      'Đây là khoản phải thu; không có nghĩa hoa hồng '
+                                                      'đã được nộp cho nền tảng.'),
+                                                  Text(
+                                                      'Tài xế được giải phóng lúc: '
+                                                      '${_time(state.receipt!.driverReleasedAt)}'),
+                                                ])),
                                       ),
                                     const SizedBox(height: 16),
                                     OutlinedButton.icon(
@@ -469,11 +463,6 @@ class _DriverAcceptedBookingScreenState
                                       icon: const Icon(Icons.refresh),
                                       label: const Text('Cập nhật từ máy chủ'),
                                     ),
-                                    const SizedBox(height: 8),
-                                    Text(CustomerMapSource.visibleAttribution,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall),
                                     const SizedBox(height: 8),
                                   ],
                                 ),
@@ -550,37 +539,45 @@ class _DriverAcceptedBookingScreenState
     final scheme = Theme.of(context).colorScheme;
     final completed = state.status == 'COMPLETED';
     final cancelled = state.status == 'CANCELLED';
-    return Card(
+    return PremiumPanel(
       key: ValueKey('driver-trip-status-${state.status ?? 'loading'}'),
-      color: completed ? scheme.secondaryContainer : scheme.primaryContainer,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Icon(completed ? Icons.check_circle_outline : Icons.route_outlined,
-                color: completed
-                    ? scheme.onSecondaryContainer
-                    : scheme.onPrimaryContainer),
-            const SizedBox(width: 10),
-            Expanded(
-                child: Text(_statusLabel(state.status),
-                    style: Theme.of(context).textTheme.titleLarge)),
-          ]),
-          const SizedBox(height: 8),
-          Text(state.status == null
-              ? 'Đang xác minh trạng thái với máy chủ.'
-              : 'Trạng thái chuyến đi do máy chủ xác nhận.'),
-          if (completed && state.payment?.status != 'PAID') ...[
-            const SizedBox(height: 8),
-            const Text(
-                'Chuyến đã hoàn thành. Bạn có thể nhận chuyến mới sau khi tiền mặt được xác nhận.'),
-          ],
-          if (cancelled) ...[
-            const SizedBox(height: 8),
-            Text('Đã hủy lúc: ${_time(state.tracking?.cancelledAt)}.'),
-          ],
+      highlighted: !completed && !cancelled,
+      tint: completed
+          ? const Color(0xFFE7F5EE)
+          : cancelled
+              ? scheme.errorContainer
+              : null,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Icon(
+              completed
+                  ? Icons.check_circle_outline
+                  : cancelled
+                      ? Icons.cancel_outlined
+                      : Icons.route_outlined,
+              color: completed
+                  ? AppColors.success
+                  : cancelled
+                      ? scheme.onErrorContainer
+                      : AppColors.primary),
+          const SizedBox(width: 10),
+          Expanded(
+              child: Text(_statusLabel(state.status),
+                  style: Theme.of(context).textTheme.titleLarge)),
         ]),
-      ),
+        const SizedBox(height: 8),
+        if (state.status == null)
+          const Text('Đang xác minh trạng thái với máy chủ.'),
+        if (completed && state.payment?.status != 'PAID') ...[
+          const SizedBox(height: 8),
+          const Text(
+              'Chuyến đã hoàn thành. Bạn có thể nhận chuyến mới sau khi tiền mặt được xác nhận.'),
+        ],
+        if (cancelled) ...[
+          const SizedBox(height: 8),
+          Text('Đã hủy lúc: ${_time(state.tracking?.cancelledAt)}.'),
+        ],
+      ]),
     );
   }
 
@@ -602,89 +599,84 @@ class _DriverAcceptedBookingScreenState
     );
   }
 
-  Widget _routeCard(BuildContext context, DriverTripState state) => Card(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('Thông tin chuyến đi',
+  Widget _routeCard(BuildContext context, DriverTripState state) =>
+      PremiumPanel(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const PremiumSectionHeading(
+            icon: Icons.alt_route_outlined,
+            title: 'Thông tin chuyến đi',
+          ),
+          if (!_verifiedBooking(state)) ...[
+            const SizedBox(height: 8),
+            const Text('Đang xác minh thông tin chuyến với máy chủ.'),
+          ] else ...[
+            const SizedBox(height: 12),
+            Text('Loại xe: ${_vehicleLabel(widget.offer.vehicleType)}'),
+            const SizedBox(height: 4),
+            Text('Giá đã chấp nhận: ${vnd(widget.offer.finalFare)}',
                 style: Theme.of(context).textTheme.titleMedium),
-            if (!_verifiedBooking(state)) ...[
-              const SizedBox(height: 8),
-              const Text('Đang xác minh thông tin chuyến với máy chủ.'),
-            ] else ...[
-              const SizedBox(height: 4),
-              if (DriverTripMap.hasValidPoints(widget.offer)) ...[
-                const SizedBox(height: 12),
-                ExpansionTile(
-                  tilePadding: EdgeInsets.zero,
-                  childrenPadding: EdgeInsets.zero,
-                  title: const Text('Điểm đón và điểm đến'),
-                  subtitle:
-                      const Text('Tọa độ từ đề nghị chuyến đã được xác minh'),
-                  children: [
-                    _routeLine(
-                        context,
-                        Icons.trip_origin,
-                        'Điểm đón',
-                        state.foreground && !_awaitingFreshTracking
-                            ? _pickupAddress
-                            : null,
-                        '${widget.offer.pickupLatitude}, ${widget.offer.pickupLongitude}'),
-                    const SizedBox(height: 10),
-                    _routeLine(
-                        context,
-                        Icons.location_on_outlined,
-                        'Điểm đến',
-                        state.foreground && !_awaitingFreshTracking
-                            ? _dropoffAddress
-                            : null,
-                        '${widget.offer.dropoffLatitude}, ${widget.offer.dropoffLongitude}'),
-                    if (state.foreground &&
-                        !_awaitingFreshTracking &&
-                        (_pickupAddress != null || _dropoffAddress != null))
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text('© OpenStreetMap contributors',
-                            style: Theme.of(context).textTheme.bodySmall),
-                      ),
-                  ],
-                ),
-              ] else
-                const Padding(
-                  padding: EdgeInsets.only(top: 8),
-                  child: Text('Chưa có vị trí được xác minh cho chuyến này.'),
-                ),
-              const SizedBox(height: 8),
-              const Text(
-                  'Đường màu xanh chỉ hiện khi máy chủ có tuyến đường hợp lệ; nếu không, bản đồ vẫn đánh dấu hai điểm.'),
-              const SizedBox(height: 12),
-              Text('Loại xe: ${_vehicleLabel(widget.offer.vehicleType)}'),
-              const SizedBox(height: 4),
-              Text('Giá đã chấp nhận: ${vnd(widget.offer.finalFare)}',
-                  style: Theme.of(context).textTheme.titleMedium),
+            if (DriverTripMap.hasValidPoints(widget.offer)) ...[
               ExpansionTile(
-                title: const Text('Mã tham chiếu hỗ trợ'),
-                children: [SelectableText(widget.offer.bookingPublicId)],
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: EdgeInsets.zero,
+                title: const Text('Điểm đón và điểm đến'),
+                children: [
+                  _routeLine(
+                      context,
+                      Icons.trip_origin,
+                      'Điểm đón',
+                      state.foreground && !_awaitingFreshTracking
+                          ? _pickupAddress
+                          : null,
+                      '${widget.offer.pickupLatitude}, ${widget.offer.pickupLongitude}'),
+                  const SizedBox(height: 10),
+                  _routeLine(
+                      context,
+                      Icons.location_on_outlined,
+                      'Điểm đến',
+                      state.foreground && !_awaitingFreshTracking
+                          ? _dropoffAddress
+                          : null,
+                      '${widget.offer.dropoffLatitude}, ${widget.offer.dropoffLongitude}'),
+                  if (state.foreground &&
+                      !_awaitingFreshTracking &&
+                      (_pickupAddress != null || _dropoffAddress != null))
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text('© OpenStreetMap contributors',
+                          style: Theme.of(context).textTheme.bodySmall),
+                    ),
+                ],
               ),
-            ],
-          ]),
-        ),
+            ] else
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text('Chưa có vị trí được xác minh cho chuyến này.'),
+              ),
+            ExpansionTile(
+              title: const Text('Mã tham chiếu hỗ trợ'),
+              children: [SelectableText(widget.offer.bookingPublicId)],
+            ),
+          ],
+        ]),
       );
 
-  Widget _customerCard(BuildContext context, CustomerSummary customer) => Card(
+  Widget _customerCard(BuildContext context, CustomerSummary customer) =>
+      PremiumPanel(
         key: const ValueKey('driver-customer-card'),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('Khách hàng', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 6),
-            Text(customer.displayName),
-            if (customer.phone?.trim().isNotEmpty == true)
-              Text('Điện thoại: ${customer.phone}'),
-          ]),
-        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const PremiumSectionHeading(
+            icon: Icons.person_outline,
+            title: 'Khách hàng',
+          ),
+          const SizedBox(height: 10),
+          Text(customer.displayName,
+              style: Theme.of(context).textTheme.titleMedium),
+          if (customer.phone?.trim().isNotEmpty == true) ...[
+            const SizedBox(height: 4),
+            Text('Điện thoại: ${customer.phone}'),
+          ],
+        ]),
       );
 
   Widget _routeLine(BuildContext context, IconData icon, String title,
@@ -701,30 +693,28 @@ class _DriverAcceptedBookingScreenState
         ],
       );
 
-  Widget _gpsCard(BuildContext context, DriverTripState state) => Card(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              Icon(
-                  state.realtime == TripRealtimeConnectionState.connected
-                      ? Icons.wifi
-                      : Icons.wifi_off,
-                  color: Theme.of(context).colorScheme.primary),
-              const SizedBox(width: 10),
-              Expanded(
-                  child: Text(
-                      'Kết nối chuyến đi: ${_realtimeLabel(state.realtime)}',
-                      style: Theme.of(context).textTheme.titleSmall)),
-            ]),
-            const SizedBox(height: 6),
-            const Text(
-                'Khi mất kết nối trực tiếp, thông tin chuyến vẫn được kiểm tra lại.'),
-            if (!state.foreground)
-              const Text('Ứng dụng đang nền: đã dừng gửi GPS chuyến đi.'),
+  Widget _gpsCard(BuildContext context, DriverTripState state) => PremiumPanel(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(
+                state.realtime == TripRealtimeConnectionState.connected
+                    ? Icons.wifi
+                    : Icons.wifi_off,
+                color: state.realtime == TripRealtimeConnectionState.connected
+                    ? AppColors.success
+                    : AppColors.textSecondary),
+            const SizedBox(width: 10),
+            Expanded(
+                child: Text(
+                    'Kết nối chuyến đi: ${_realtimeLabel(state.realtime)}',
+                    style: Theme.of(context).textTheme.titleSmall)),
           ]),
-        ),
+          if (!state.foreground)
+            const Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: Text('Ứng dụng đang nền: đã dừng gửi GPS chuyến đi.'),
+            ),
+        ]),
       );
 
   Widget _paymentCard(BuildContext context, CashPayment payment) {
@@ -738,24 +728,24 @@ class _DriverAcceptedBookingScreenState
       ),
       duration: AppMotion.duration(context, AppMotion.cash),
       curve: AppMotion.standardCurve,
-      builder: (context, color, child) => Card(color: color, child: child),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('Thanh toán tiền mặt',
-              style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-          Text(
-              'Tiền mặt: ${paid ? 'Đã thu' : pending ? 'Chưa xác nhận thu' : 'Đang xác minh'}',
-              style: Theme.of(context).textTheme.titleSmall),
-          const SizedBox(height: 4),
-          Text('Số tiền: ${vnd(payment.amount)}'),
-          if (payment.paidAt != null)
-            Text('Đã thu lúc: ${_time(payment.paidAt)}'),
-          if (pending)
-            const Text('Chỉ xác nhận sau khi đã thực sự nhận tiền từ khách.'),
-        ]),
-      ),
+      builder: (context, color, child) =>
+          PremiumPanel(tint: color, child: child!),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const PremiumSectionHeading(
+          icon: Icons.payments_outlined,
+          title: 'Thanh toán tiền mặt',
+        ),
+        const SizedBox(height: 8),
+        Text(
+            'Tiền mặt: ${paid ? 'Đã thu' : pending ? 'Chưa xác nhận thu' : 'Đang xác minh'}',
+            style: Theme.of(context).textTheme.titleSmall),
+        const SizedBox(height: 4),
+        Text('Số tiền: ${vnd(payment.amount)}'),
+        if (payment.paidAt != null)
+          Text('Đã thu lúc: ${_time(payment.paidAt)}'),
+        if (pending)
+          const Text('Chỉ xác nhận sau khi đã thực sự nhận tiền từ khách.'),
+      ]),
     );
   }
 
@@ -767,27 +757,28 @@ class _DriverAcceptedBookingScreenState
       ('Bắt đầu chuyến', tracking?.tripStartedAt),
       ('Hoàn thành chuyến', tracking?.tripCompletedAt),
     ];
-    return Card(
-        child: Padding(
-            padding: const EdgeInsets.all(14),
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Tiến trình chuyến đi',
-                  style: Theme.of(context).textTheme.titleMedium),
-              for (final step in steps)
-                ListTile(
-                  dense: true,
-                  leading: Icon(
-                      step.$2 == null
-                          ? Icons.radio_button_unchecked
-                          : Icons.check_circle,
-                      color: step.$2 == null
-                          ? Theme.of(context).colorScheme.onSurfaceVariant
-                          : Theme.of(context).colorScheme.primary),
-                  title: Text(step.$1),
-                  subtitle: step.$2 == null ? null : Text(_time(step.$2)),
-                ),
-            ])));
+    return PremiumPanel(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const PremiumSectionHeading(
+        icon: Icons.timeline_outlined,
+        title: 'Tiến trình chuyến đi',
+      ),
+      const SizedBox(height: 8),
+      for (final step in steps)
+        ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(
+              step.$2 == null
+                  ? Icons.radio_button_unchecked
+                  : Icons.check_circle,
+              color: step.$2 == null
+                  ? Theme.of(context).colorScheme.onSurfaceVariant
+                  : Theme.of(context).colorScheme.primary),
+          title: Text(step.$1),
+          subtitle: step.$2 == null ? null : Text(_time(step.$2)),
+        ),
+    ]));
   }
 }
 

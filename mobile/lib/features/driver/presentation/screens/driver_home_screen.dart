@@ -1,9 +1,13 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+
 import '../../../../core/config/app_config.dart';
 import '../../../../core/di/injection.dart';
+import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_motion.dart';
+import '../../../../core/widgets/premium_panel.dart';
 import '../../../auth/domain/entities/user.dart';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../auth/presentation/bloc/auth_event.dart';
@@ -12,8 +16,8 @@ import '../../../customer/presentation/formatters.dart';
 import '../../../review/domain/review_repository.dart';
 import '../../../review/presentation/driver_reputation_cubit.dart';
 import '../../../review/presentation/driver_reputation_screen.dart';
-import '../../domain/repositories/driver_earnings_repository.dart';
 import '../../domain/models/driver_models.dart';
+import '../../domain/repositories/driver_earnings_repository.dart';
 import '../bloc/driver_cubit.dart';
 import '../bloc/driver_earnings_cubit.dart';
 import 'driver_accepted_booking_screen.dart';
@@ -49,6 +53,7 @@ class DriverHomeScreen extends StatelessWidget {
 class _DriverContent extends StatefulWidget {
   final User user;
   const _DriverContent({required this.user});
+
   @override
   State<_DriverContent> createState() => _DriverContentState();
 }
@@ -209,334 +214,513 @@ class _DriverContentState extends State<_DriverContent>
                   }),
             ]),
             body: BlocBuilder<DriverCubit, DriverState>(
-                builder: (context, state) {
-              final cubit = context.read<DriverCubit>();
-              final offer = state.offer;
-              final seconds = offer == null
-                  ? 0
-                  : remainingOfferSeconds(
-                      offer.expiresAt, DateTime.now().toUtc());
-              final canDecide = offer != null &&
-                  seconds > 0 &&
-                  !state.offerActionBusy &&
-                  !state.actionBusy &&
-                  !state.unresolvedDecision &&
-                  state.foreground &&
-                  state.operatingStatus == 'ONLINE';
-              final scheme = Theme.of(context).colorScheme;
-              return ListView(padding: const EdgeInsets.all(16), children: [
-                Text('Xin chào, ${widget.user.fullName}',
-                    style: Theme.of(context).textTheme.headlineSmall),
-                const SizedBox(height: 4),
-                Text('Quản lý trạng thái và chuyến đi của bạn',
-                    style: Theme.of(context)
-                        .textTheme
-                        .bodyMedium
-                        ?.copyWith(color: scheme.onSurfaceVariant)),
-                const SizedBox(height: 16),
-                if (state.loading) const LinearProgressIndicator(),
-                if (state.actionBusy)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 8),
-                    child: Text('Đang cập nhật với máy chủ…'),
-                  ),
-                if (state.error != null)
-                  Card(
-                      color: scheme.errorContainer,
-                      child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Text(state.error!,
-                              style:
-                                  TextStyle(color: scheme.onErrorContainer)))),
-                if (state.notice != null)
-                  Card(
-                      child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Text(state.notice!))),
-                Card(
-                    child: Padding(
-                        padding: const EdgeInsets.all(16),
+              builder: (context, state) {
+                final offer = state.offer;
+                final seconds = offer == null
+                    ? 0
+                    : remainingOfferSeconds(
+                        offer.expiresAt, DateTime.now().toUtc());
+                final canDecide = offer != null &&
+                    seconds > 0 &&
+                    !state.offerActionBusy &&
+                    !state.actionBusy &&
+                    !state.unresolvedDecision &&
+                    state.foreground &&
+                    state.operatingStatus == 'ONLINE';
+                final scheme = Theme.of(context).colorScheme;
+                return ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+                  children: [
+                    Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 720),
                         child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            Text(
-                                state.operatingStatus == 'BUSY'
-                                    ? 'Đang phục vụ chuyến'
-                                    : 'Trạng thái hoạt động',
-                                style: Theme.of(context).textTheme.titleMedium),
-                            const SizedBox(height: 10),
-                            Wrap(spacing: 8, runSpacing: 4, children: [
-                              _statusChip(
-                                  icon: state.operatingStatus == 'ONLINE'
-                                      ? Icons.radio_button_checked
-                                      : Icons.radio_button_off,
-                                  label: _operatingLabel(state.operatingStatus),
-                                  active: state.operatingStatus == 'ONLINE'),
-                              _statusChip(
-                                  icon: state.approvalStatus == 'APPROVED'
-                                      ? Icons.verified_outlined
-                                      : Icons.info_outline,
-                                  label: _approvalLabel(state.approvalStatus),
-                                  active: state.approvalStatus == 'APPROVED'),
-                            ]),
-                            const SizedBox(height: 12),
-                            Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Icon(Icons.two_wheeler_outlined,
-                                      color: scheme.primary),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                      child: Text(
-                                          'Xe đang dùng: ${state.activeVehicle?.licensePlate ?? 'Chưa có'} '
-                                          '(${_vehicleLabel(state.activeVehicle?.vehicleType)})')),
-                                ]),
-                            const SizedBox(height: 8),
-                            Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Icon(Icons.location_on_outlined,
-                                      color: scheme.onSurfaceVariant),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                      child: Text(
-                                          'Vị trí: ${state.locationMessage}')),
-                                ]),
-                            if (!state.foreground)
-                              const Text(
-                                  'Ứng dụng nền: GPS sẽ không còn mới để nhận cuốc.'),
-                            if (state.locationProblem != null)
-                              TextButton(
-                                  onPressed: cubit.openLocationSettings,
-                                  child: const Text('Mở Cài đặt vị trí')),
-                            if (state.approvalStatus != null &&
-                                state.approvalStatus != 'APPROVED' &&
-                                state.operatingStatus != 'ONLINE')
-                              const Padding(
-                                  padding: EdgeInsets.only(top: 8),
-                                  child: Text(
-                                      'Cần được phê duyệt trước khi nhận cuốc.')),
-                            const SizedBox(height: 12),
-                            if (state.operatingStatus != 'BUSY')
-                              SizedBox(
-                                  width: double.infinity,
-                                  child: state.operatingStatus == 'ONLINE'
-                                      ? OutlinedButton.icon(
-                                          onPressed: _canChangeStatus(state)
-                                              ? cubit.goOffline
-                                              : null,
-                                          icon: const Icon(
-                                              Icons.pause_circle_outline),
-                                          label:
-                                              const Text('Ngừng nhận chuyến'))
-                                      : FilledButton.icon(
-                                          onPressed: _canChangeStatus(state)
-                                              ? cubit.goOnline
-                                              : null,
-                                          icon: const Icon(
-                                              Icons.power_settings_new),
-                                          label: const Text(
-                                              'Bắt đầu nhận chuyến'))),
-                          ],
-                        ))),
-                const SizedBox(height: 16),
-                if (state.acceptedOffer != null)
-                  _bookingCard(state.acceptedOffer!),
-                if (offer != null && state.acceptedOffer == null)
-                  TweenAnimationBuilder<double>(
-                    key: ValueKey('driver-offer-${offer.offerPublicId}'),
-                    tween: Tween(begin: 0, end: 1),
-                    duration: AppMotion.duration(context, AppMotion.card),
-                    curve: AppMotion.enterCurve,
-                    builder: (context, value, child) {
-                      if (AppMotion.reduceMotion(context)) return child!;
-                      return Transform.translate(
-                        offset: Offset(0, AppMotion.cardTravel * (1 - value)),
-                        child: Opacity(opacity: value, child: child),
-                      );
-                    },
-                    child: Card(
-                      color: scheme.primaryContainer,
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Đề nghị nhận chuyến',
-                                style: Theme.of(context).textTheme.titleMedium),
-                            Text(
-                                'Thời gian còn ${seconds > 0 ? seconds : 0} giây để phản hồi',
-                                style: Theme.of(context).textTheme.bodyMedium),
-                            const SizedBox(height: 6),
-                            ClipRRect(
-                                borderRadius: BorderRadius.circular(6),
-                                child: LinearProgressIndicator(
-                                    value: (seconds / 15).clamp(0.0, 1.0),
-                                    minHeight: 6,
-                                    semanticsLabel:
-                                        'Thời gian phản hồi đề nghị')),
-                            const SizedBox(height: 12),
-                            _offerDetails(offer),
-                            if (state.offerActionBusy)
-                              const Padding(
-                                padding: EdgeInsets.only(top: 8, bottom: 8),
-                                child: Row(children: [
-                                  SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2),
-                                  ),
-                                  SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                        'Đang gửi quyết định đến máy chủ…'),
-                                  ),
-                                ]),
-                              ),
-                            if (state.unresolvedDecision)
-                              TextButton(
-                                  onPressed: cubit.reconcile,
-                                  child: const Text('Kiểm tra lại kết quả')),
-                            Row(children: [
-                              Expanded(
-                                  child: OutlinedButton(
-                                      onPressed: canDecide
-                                          ? () => cubit.decide(false)
-                                          : null,
-                                      child: const Text('Từ chối'))),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                  child: FilledButton(
-                                      onPressed: canDecide
-                                          ? () => cubit.decide(true)
-                                          : null,
-                                      child: const Text('Nhận chuyến'))),
-                            ]),
+                            Text('Xin chào, ${widget.user.fullName}',
+                                style:
+                                    Theme.of(context).textTheme.headlineSmall),
                             const SizedBox(height: 4),
-                            const Text(
-                                'Thời hạn do máy chủ quyết định. Nếu đề nghị hết hạn, hãy chờ cuốc tiếp theo.'),
+                            Text('Sẵn sàng cho hành trình hôm nay',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodyMedium
+                                    ?.copyWith(color: AppColors.textSecondary)),
+                            const SizedBox(height: 18),
+                            if (state.loading) const LinearProgressIndicator(),
+                            if (state.actionBusy)
+                              const Padding(
+                                padding: EdgeInsets.symmetric(vertical: 8),
+                                child: Text('Đang cập nhật với máy chủ…'),
+                              ),
+                            if (state.error != null) ...[
+                              PremiumPanel(
+                                tint: scheme.errorContainer,
+                                child: Text(state.error!,
+                                    style: TextStyle(
+                                        color: scheme.onErrorContainer)),
+                              ),
+                              const SizedBox(height: 12),
+                            ],
+                            if (state.notice != null) ...[
+                              PremiumPanel(child: Text(state.notice!)),
+                              const SizedBox(height: 12),
+                            ],
+                            // A live offer or accepted trip must be visible
+                            // before the informational dashboard cards.
+                            if (state.acceptedOffer != null) ...[
+                              _bookingPanel(state.acceptedOffer!),
+                              const SizedBox(height: 14),
+                            ],
+                            if (offer != null &&
+                                state.acceptedOffer == null) ...[
+                              _offerPanel(
+                                  context, state, offer, seconds, canDecide),
+                              const SizedBox(height: 14),
+                            ],
+                            _statusPanel(context, state),
+                            const SizedBox(height: 14),
+                            if (sl.isRegistered<DriverEarningsRepository>() &&
+                                !AppConfig.instance.isMock) ...[
+                              _earningsPanel(context),
+                              const SizedBox(height: 14),
+                            ],
+                            if (sl.isRegistered<ReviewRepository>() &&
+                                !AppConfig.instance.isMock) ...[
+                              _reputationPanel(context),
+                              const SizedBox(height: 14),
+                            ],
+                            _vehiclesPanel(context, state),
                           ],
                         ),
                       ),
                     ),
-                  ),
-                const SizedBox(height: 16),
-                Text('Xe của tôi',
-                    style: Theme.of(context).textTheme.titleMedium),
-                if (state.vehicles.isEmpty)
-                  const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 12),
-                      child: Text(
-                          'Chưa có xe. Thêm và kích hoạt xe trước khi trực tuyến.')),
-                for (final vehicle in state.vehicles)
-                  Card(
-                      child: ListTile(
-                          leading: Icon(Icons.directions_car_outlined,
-                              color: vehicle.active
-                                  ? scheme.primary
-                                  : scheme.onSurfaceVariant),
-                          title: Text(
-                              '${vehicle.licensePlate} · ${_vehicleLabel(vehicle.vehicleType)}'),
-                          subtitle: Text(vehicle.active
-                              ? 'Đang kích hoạt'
-                              : 'Chưa kích hoạt'),
-                          trailing: vehicle.active
-                              ? const Icon(Icons.check_circle)
-                              : TextButton(
-                                  onPressed: AppConfig.instance.isMock ||
-                                          state.actionBusy
-                                      ? null
-                                      : () => cubit
-                                          .activateVehicle(vehicle.publicId),
-                                  child: const Text('Kích hoạt')))),
-                OutlinedButton.icon(
-                    onPressed: AppConfig.instance.isMock || state.actionBusy
-                        ? null
-                        : _addVehicle,
-                    icon: const Icon(Icons.add),
-                    label: const Text('Thêm xe')),
-                if (sl.isRegistered<DriverEarningsRepository>() &&
-                    !AppConfig.instance.isMock)
-                  BlocBuilder<DriverEarningsCubit, DriverEarningsState>(
-                    builder: (context, earningsState) {
-                      if (earningsState.sessionEnded) {
-                        return const SizedBox.shrink();
-                      }
-                      final summary = earningsState.summary;
-                      return Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('Tổng kết chuyến đã thu tiền mặt',
-                                  style:
-                                      Theme.of(context).textTheme.titleMedium),
-                              if (earningsState.loading)
-                                const LinearProgressIndicator(),
-                              if (earningsState.error != null)
-                                TextButton(
-                                  onPressed:
-                                      context.read<DriverEarningsCubit>().load,
-                                  child: Text('${earningsState.error} Tải lại'),
-                                ),
-                              if (summary != null) ...[
-                                Text(
-                                    '${summary.paidTripCount} chuyến đã xác nhận'),
-                                Text(
-                                    'Tiền mặt đã thu: ${vnd(summary.cashCollectedAmount)}'),
-                                Text(
-                                    'Hoa hồng ghi nhận: ${vnd(summary.commissionDue)}'),
-                                Text(
-                                    'Giá trị sau hoa hồng: '
-                                    '${vnd(summary.afterCommissionAmount)}',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleMedium),
-                                const Text(
-                                    'Đây là tổng kết ghi nhận, không xác nhận '
-                                    'hoa hồng đã được nộp.'),
-                              ],
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                if (sl.isRegistered<ReviewRepository>() &&
-                    !AppConfig.instance.isMock)
-                  BlocBuilder<DriverReputationCubit, DriverReputationState>(
-                    builder: (context, reputationState) {
-                      if (reputationState.sessionEnded) {
-                        return const SizedBox.shrink();
-                      }
-                      final reputation = reputationState.reputation;
-                      return Card(
-                          child: ListTile(
-                        leading: const Icon(Icons.workspace_premium_outlined),
-                        title: Text(reputation == null ||
-                                reputation.ratingCount == 0 ||
-                                reputation.average == null
-                            ? 'Chưa có đánh giá'
-                            : '${reputation.average!.toStringAsFixed(2)} ★ · '
-                                '${reputation.ratingCount} đánh giá'),
-                        subtitle: Text(reputation == null
-                            ? 'Xem đánh giá và GoPoints của bạn'
-                            : '${reputation.availablePoints} GoPoints hiện có'),
-                        trailing: const Icon(Icons.chevron_right),
-                        onTap: () => Navigator.of(context).push(
-                            AppMotion.immediateRoute<void>(
-                                DriverReputationScreen(
-                                    driverPublicId: widget.user.publicId))),
-                      ));
-                    },
-                  ),
-              ]);
-            }),
+                  ],
+                );
+              },
+            ),
           ),
         ),
       );
+
+  Widget _statusPanel(BuildContext context, DriverState state) {
+    final cubit = context.read<DriverCubit>();
+    final scheme = Theme.of(context).colorScheme;
+    return PremiumPanel(
+      key: const ValueKey('driver-home-status-panel'),
+      highlighted: state.operatingStatus == 'ONLINE',
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        PremiumSectionHeading(
+          icon: state.operatingStatus == 'BUSY'
+              ? Icons.route_outlined
+              : Icons.power_settings_new,
+          title: state.operatingStatus == 'BUSY'
+              ? 'Đang phục vụ chuyến'
+              : 'Trạng thái hoạt động',
+          subtitle: 'Chỉ nhận đề nghị khi tài khoản, xe và GPS hợp lệ',
+        ),
+        const SizedBox(height: 14),
+        Wrap(spacing: 8, runSpacing: 4, children: [
+          _statusChip(
+            icon: state.operatingStatus == 'ONLINE'
+                ? Icons.radio_button_checked
+                : Icons.radio_button_off,
+            label: _operatingLabel(state.operatingStatus),
+            active: state.operatingStatus == 'ONLINE',
+          ),
+          _statusChip(
+            icon: state.approvalStatus == 'APPROVED'
+                ? Icons.verified_outlined
+                : Icons.info_outline,
+            label: _approvalLabel(state.approvalStatus),
+            active: state.approvalStatus == 'APPROVED',
+          ),
+        ]),
+        const SizedBox(height: 14),
+        _infoRow(
+          Icons.two_wheeler_outlined,
+          'Xe đang dùng',
+          state.activeVehicle == null
+              ? 'Chưa có xe hoạt động'
+              : '${state.activeVehicle!.licensePlate} · '
+                  '${_vehicleLabel(state.activeVehicle!.vehicleType)}',
+        ),
+        const SizedBox(height: 10),
+        _infoRow(Icons.location_on_outlined, 'GPS', state.locationMessage),
+        if (!state.foreground) ...[
+          const SizedBox(height: 8),
+          const Text('Ứng dụng nền: GPS sẽ không còn mới để nhận cuốc.'),
+        ],
+        if (state.locationProblem != null)
+          TextButton.icon(
+            onPressed: cubit.openLocationSettings,
+            icon: const Icon(Icons.settings_outlined),
+            label: const Text('Mở Cài đặt vị trí'),
+          ),
+        if (state.approvalStatus != null &&
+            state.approvalStatus != 'APPROVED' &&
+            state.operatingStatus != 'ONLINE') ...[
+          const SizedBox(height: 8),
+          Text('Cần được phê duyệt trước khi nhận cuốc.',
+              style: TextStyle(color: scheme.onSurfaceVariant)),
+        ],
+        if (state.operatingStatus != 'BUSY') ...[
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: state.operatingStatus == 'ONLINE'
+                ? OutlinedButton.icon(
+                    onPressed: _canChangeStatus(state) ? cubit.goOffline : null,
+                    icon: const Icon(Icons.pause_circle_outline),
+                    label: const Text('Ngừng nhận chuyến'),
+                  )
+                : FilledButton.icon(
+                    onPressed: _canChangeStatus(state) ? cubit.goOnline : null,
+                    icon: const Icon(Icons.power_settings_new),
+                    label: const Text('Bắt đầu nhận chuyến'),
+                  ),
+          ),
+        ],
+      ]),
+    );
+  }
+
+  Widget _offerPanel(BuildContext context, DriverState state, DriverOffer offer,
+      int seconds, bool canDecide) {
+    final scheme = Theme.of(context).colorScheme;
+    return TweenAnimationBuilder<double>(
+      key: ValueKey('driver-offer-${offer.offerPublicId}'),
+      tween: Tween(begin: 0, end: 1),
+      duration: AppMotion.duration(context, AppMotion.card),
+      curve: AppMotion.enterCurve,
+      builder: (context, value, child) {
+        if (AppMotion.reduceMotion(context)) return child!;
+        return Transform.translate(
+          offset: Offset(0, AppMotion.cardTravel * (1 - value)),
+          child: Opacity(opacity: value, child: child),
+        );
+      },
+      child: PremiumPanel(
+        highlighted: true,
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const PremiumSectionHeading(
+            icon: Icons.notifications_active_outlined,
+            title: 'Đề nghị nhận chuyến',
+            subtitle: 'Xem hành trình trước khi quyết định',
+          ),
+          const SizedBox(height: 12),
+          Text('Thời gian còn ${seconds > 0 ? seconds : 0} giây để phản hồi',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: seconds > 0 ? scheme.primary : scheme.error,
+                  )),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: LinearProgressIndicator(
+              value: (seconds / 15).clamp(0.0, 1.0),
+              minHeight: 6,
+              semanticsLabel: 'Thời gian phản hồi đề nghị',
+            ),
+          ),
+          const SizedBox(height: 16),
+          _offerDetails(offer),
+          if (seconds == 0) ...[
+            const SizedBox(height: 8),
+            const Text('Đề nghị đã hết hạn. Hãy chờ cuốc tiếp theo.'),
+          ],
+          if (state.offerActionBusy) ...[
+            const SizedBox(height: 10),
+            const Row(children: [
+              SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              SizedBox(width: 8),
+              Expanded(child: Text('Đang gửi quyết định đến máy chủ…')),
+            ]),
+          ],
+          if (state.unresolvedDecision)
+            TextButton(
+              onPressed: context.read<DriverCubit>().reconcile,
+              child: const Text('Kiểm tra lại kết quả'),
+            ),
+          const SizedBox(height: 14),
+          LayoutBuilder(builder: (context, constraints) {
+            final decline = OutlinedButton(
+              onPressed: canDecide
+                  ? () => context.read<DriverCubit>().decide(false)
+                  : null,
+              child: const Text('Từ chối'),
+            );
+            final accept = FilledButton(
+              onPressed: canDecide
+                  ? () => context.read<DriverCubit>().decide(true)
+                  : null,
+              child: const Text('Nhận chuyến'),
+            );
+            if (constraints.maxWidth < 270 ||
+                MediaQuery.textScalerOf(context).scale(14) > 17) {
+              return Column(children: [
+                SizedBox(width: double.infinity, child: accept),
+                const SizedBox(height: 8),
+                SizedBox(width: double.infinity, child: decline),
+              ]);
+            }
+            return Row(children: [
+              Expanded(child: decline),
+              const SizedBox(width: 8),
+              Expanded(child: accept),
+            ]);
+          }),
+        ]),
+      ),
+    );
+  }
+
+  Widget _bookingPanel(DriverOffer offer) => PremiumPanel(
+        key: const ValueKey('driver-home-active-trip-panel'),
+        highlighted: true,
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const PremiumSectionHeading(
+            icon: Icons.route_outlined,
+            title: 'Đang phục vụ chuyến',
+            subtitle: 'Tiếp tục hành trình đã nhận',
+          ),
+          const SizedBox(height: 14),
+          _offerDetails(offer),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: () => Navigator.of(context).push(
+                  AppMotion.immediateRoute<void>(DriverAcceptedBookingScreen(
+                offer: offer,
+                driverCubit: context.read<DriverCubit>(),
+              ))),
+              icon: const Icon(Icons.route_outlined),
+              label: const Text('Xem chuyến đã nhận'),
+            ),
+          ),
+        ]),
+      );
+
+  Widget _earningsPanel(BuildContext context) =>
+      BlocBuilder<DriverEarningsCubit, DriverEarningsState>(
+        builder: (context, state) {
+          if (state.sessionEnded) return const SizedBox.shrink();
+          final summary = state.summary;
+          return PremiumPanel(
+            key: const ValueKey('driver-home-earnings-panel'),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const PremiumSectionHeading(
+                  icon: Icons.payments_outlined,
+                  title: 'Tổng kết tiền mặt',
+                  subtitle: 'Các chuyến đã xác nhận thu tiền',
+                ),
+                if (state.loading) ...[
+                  const SizedBox(height: 14),
+                  const LinearProgressIndicator(),
+                ],
+                if (state.error != null) ...[
+                  const SizedBox(height: 12),
+                  Text(state.error!),
+                  TextButton.icon(
+                    onPressed: context.read<DriverEarningsCubit>().load,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Tải lại'),
+                  ),
+                ],
+                if (summary != null) ...[
+                  const SizedBox(height: 16),
+                  Text('${summary.paidTripCount} chuyến đã xác nhận',
+                      style: Theme.of(context).textTheme.titleSmall),
+                  const SizedBox(height: 12),
+                  _amountRow(
+                      'Tiền mặt đã thu', vnd(summary.cashCollectedAmount)),
+                  _amountRow('Hoa hồng phải nộp', vnd(summary.commissionDue)),
+                  const Divider(height: 24),
+                  _amountRow('Giá trị sau hoa hồng',
+                      vnd(summary.afterCommissionAmount),
+                      emphasized: true),
+                  const SizedBox(height: 10),
+                  Text(
+                    'Đây là tổng kết ghi nhận, không xác nhận hoa hồng đã được nộp.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                  ),
+                ],
+              ],
+            ),
+          );
+        },
+      );
+
+  Widget _reputationPanel(BuildContext context) =>
+      BlocBuilder<DriverReputationCubit, DriverReputationState>(
+        builder: (context, state) {
+          if (state.sessionEnded) return const SizedBox.shrink();
+          final reputation = state.reputation;
+          return PremiumPanel(
+            key: const ValueKey('driver-home-reputation-panel'),
+            padding: EdgeInsets.zero,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(24),
+              onTap: () => Navigator.of(context).push(
+                AppMotion.immediateRoute<void>(DriverReputationScreen(
+                    driverPublicId: widget.user.publicId)),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(18),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const PremiumSectionHeading(
+                      icon: Icons.workspace_premium_outlined,
+                      title: 'Đánh giá và GoPoints',
+                      subtitle: 'Điểm ghi nhận từ những chuyến đã đánh giá',
+                    ),
+                    if (state.loading) ...[
+                      const SizedBox(height: 12),
+                      const LinearProgressIndicator(),
+                    ],
+                    const SizedBox(height: 12),
+                    Row(children: [
+                      Expanded(
+                        child: Text(
+                          reputation == null
+                              ? state.loading
+                                  ? 'Đang tải đánh giá…'
+                                  : state.error != null
+                                      ? 'Chưa tải được đánh giá'
+                                      : 'Đang xác minh đánh giá'
+                              : reputation.ratingCount == 0 ||
+                                      reputation.average == null
+                                  ? 'Chưa có đánh giá'
+                                  : '${reputation.average!.toStringAsFixed(2)} ★ · '
+                                      '${reputation.ratingCount} đánh giá',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                      ),
+                      const Icon(Icons.chevron_right_rounded,
+                          color: AppColors.primary),
+                    ]),
+                    const SizedBox(height: 4),
+                    Text(
+                      reputation == null
+                          ? 'Xem đánh giá và GoPoints của bạn'
+                          : '${reputation.availablePoints} GoPoints hiện có',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      );
+
+  Widget _vehiclesPanel(BuildContext context, DriverState state) {
+    final scheme = Theme.of(context).colorScheme;
+    final cubit = context.read<DriverCubit>();
+    return PremiumPanel(
+      key: const ValueKey('driver-home-vehicles-panel'),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        const PremiumSectionHeading(
+          icon: Icons.directions_car_outlined,
+          title: 'Xe của tôi',
+          subtitle: 'Xe đang hoạt động cần được xác minh để nhận cuốc',
+        ),
+        const SizedBox(height: 12),
+        if (state.vehicles.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child:
+                Text('Chưa có xe. Thêm và kích hoạt xe trước khi trực tuyến.'),
+          ),
+        for (final vehicle in state.vehicles)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.directions_car_outlined,
+                color:
+                    vehicle.active ? scheme.primary : scheme.onSurfaceVariant),
+            title: Text('${vehicle.licensePlate} · '
+                '${_vehicleLabel(vehicle.vehicleType)}'),
+            subtitle:
+                Text(vehicle.active ? 'Đang kích hoạt' : 'Chưa kích hoạt'),
+            trailing: vehicle.active
+                ? const Icon(Icons.check_circle, color: AppColors.success)
+                : TextButton(
+                    onPressed: AppConfig.instance.isMock || state.actionBusy
+                        ? null
+                        : () => cubit.activateVehicle(vehicle.publicId),
+                    child: const Text('Kích hoạt'),
+                  ),
+          ),
+        const SizedBox(height: 4),
+        OutlinedButton.icon(
+          onPressed: AppConfig.instance.isMock || state.actionBusy
+              ? null
+              : _addVehicle,
+          icon: const Icon(Icons.add),
+          label: const Text('Thêm xe'),
+        ),
+      ]),
+    );
+  }
+
+  Widget _offerDetails(DriverOffer offer) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _infoRow(Icons.trip_origin, 'Điểm đón',
+              '${offer.pickupLatitude}, ${offer.pickupLongitude}'),
+          const SizedBox(height: 10),
+          _infoRow(Icons.location_on_outlined, 'Điểm đến',
+              '${offer.dropoffLatitude}, ${offer.dropoffLongitude}'),
+          const SizedBox(height: 12),
+          Text(
+              '${_vehicleLabel(offer.vehicleType)} · '
+              'Giá đã chấp nhận: ${vnd(offer.finalFare)}',
+              style: Theme.of(context).textTheme.titleMedium),
+        ],
+      );
+
+  Widget _infoRow(IconData icon, String label, String value) => Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 20, color: AppColors.primary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label,
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                          color: AppColors.textSecondary,
+                        )),
+                const SizedBox(height: 2),
+                Text(value, style: Theme.of(context).textTheme.bodyMedium),
+              ],
+            ),
+          ),
+        ],
+      );
+
+  Widget _amountRow(String label, String value, {bool emphasized = false}) =>
+      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Expanded(child: Text(label)),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(value,
+              textAlign: TextAlign.end,
+              style: emphasized
+                  ? Theme.of(context).textTheme.titleMedium
+                  : Theme.of(context).textTheme.bodyMedium),
+        ),
+      ]);
 
   bool _canChangeStatus(DriverState state) =>
       !AppConfig.instance.isMock &&
@@ -555,66 +739,15 @@ class _DriverContentState extends State<_DriverContent>
       {required IconData icon, required String label, required bool active}) {
     final scheme = Theme.of(context).colorScheme;
     return Chip(
-        avatar: Icon(icon,
-            size: 18,
-            color:
-                active ? scheme.onPrimaryContainer : scheme.onSurfaceVariant),
-        label: Text(label),
-        backgroundColor:
-            active ? scheme.primaryContainer : scheme.surfaceContainerHighest,
-        side: BorderSide.none);
+      avatar: Icon(icon,
+          size: 18,
+          color: active ? scheme.onPrimaryContainer : scheme.onSurfaceVariant),
+      label: Text(label),
+      backgroundColor:
+          active ? scheme.primaryContainer : scheme.surfaceContainerHighest,
+      side: BorderSide.none,
+    );
   }
-
-  Widget _bookingCard(DriverOffer offer) => Card(
-        color: Theme.of(context).colorScheme.secondaryContainer,
-        child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Đang phục vụ chuyến',
-                    style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 12),
-                _offerDetails(offer),
-                const SizedBox(height: 12),
-                SizedBox(
-                    width: double.infinity,
-                    child: FilledButton.icon(
-                        onPressed: () => Navigator.of(context).push(
-                            AppMotion.immediateRoute<void>(
-                                DriverAcceptedBookingScreen(
-                                    offer: offer,
-                                    driverCubit: context.read<DriverCubit>()))),
-                        icon: const Icon(Icons.route_outlined),
-                        label: const Text('Xem chuyến đã nhận'))),
-              ],
-            )),
-      );
-
-  Widget _offerDetails(DriverOffer offer) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _routeLine(Icons.trip_origin,
-              'Điểm đón: ${offer.pickupLatitude}, ${offer.pickupLongitude}'),
-          const SizedBox(height: 8),
-          _routeLine(Icons.location_on_outlined,
-              'Điểm đến: ${offer.dropoffLatitude}, ${offer.dropoffLongitude}'),
-          const SizedBox(height: 8),
-          Text('Loại xe: ${_vehicleLabel(offer.vehicleType)}'),
-          const SizedBox(height: 4),
-          Text('Giá đã chấp nhận: ${vnd(offer.finalFare)}',
-              style: Theme.of(context).textTheme.titleMedium),
-        ],
-      );
-
-  Widget _routeLine(IconData icon, String label) => Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 20, color: Theme.of(context).colorScheme.primary),
-          const SizedBox(width: 8),
-          Expanded(child: Text(label)),
-        ],
-      );
 }
 
 String _operatingLabel(String? status) => switch (status) {

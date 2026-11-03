@@ -10,6 +10,7 @@ import 'package:gomove_mobile/core/network/auth_interceptor.dart';
 import 'package:gomove_mobile/core/network/token_refresher.dart';
 import 'package:gomove_mobile/core/storage/secure_storage_service.dart';
 import 'package:gomove_mobile/features/admin/data/admin_repository_impl.dart';
+import 'package:gomove_mobile/features/admin/domain/admin_models.dart';
 import 'package:mocktail/mocktail.dart';
 
 class _Session extends Mock implements SecureStorageService {}
@@ -151,5 +152,48 @@ void main() {
             .having((error) => error.errorCode, 'errorCode',
                 'DRIVER_HAS_UNRELEASED_BOOKING')));
     expect(adapter.requests.map((request) => request.method), ['PATCH']);
+  });
+
+  test('Booking parses only existing authorized list fields and optional IDs',
+      () {
+    final booking = AdminBooking.fromJson({
+      'publicId': 'booking-1',
+      'status': 'COMPLETED',
+      'vehicleType': 'MOTORBIKE',
+      'finalFare': '16500.00',
+      'currency': 'VND',
+      'cashStatus': 'VOID',
+      'customerPublicId': 'customer-1',
+      'driverPublicId': 'driver-1',
+      'createdAt': '2026-11-01T08:30:00Z',
+    });
+    expect(booking.customerPublicId, 'customer-1');
+    expect(booking.driverPublicId, 'driver-1');
+    expect(booking.createdAt?.toUtc(), DateTime.utc(2026, 11, 1, 8, 30));
+    expect(booking.cashStatus, 'VOID');
+    expect(booking.currencyCode, 'VND');
+
+    final older = AdminBooking.fromJson({
+      'publicId': 'booking-2',
+      'status': 'REQUESTED',
+      'vehicleType': 'CAR_4_SEAT',
+      'finalFare': 25000,
+    });
+    expect(older.customerPublicId, isNull);
+    expect(older.driverPublicId, isNull);
+    expect(older.createdAt, isNull);
+    expect(older.currencyCode, isNull);
+    expect(older.cashStatus, 'UNAVAILABLE');
+  });
+
+  test('Dashboard rejects missing counters instead of displaying a false zero',
+      () {
+    expect(
+        () => AdminDashboard.fromJson({
+              'customers': 4,
+              'collectiblePendingCashAmount': '0.00',
+              'voidCashAmount': '0.00',
+            }),
+        throwsFormatException);
   });
 }

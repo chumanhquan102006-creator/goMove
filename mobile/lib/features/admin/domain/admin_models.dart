@@ -51,10 +51,20 @@ class AdminDashboard {
       'goPointsAwarded',
       'goPointsDeducted'
     ];
-    return AdminDashboard({
-      for (final field in fields) field: (json[field] as num?)?.toInt() ?? 0,
-    }, json['collectiblePendingCashAmount'].toString(),
-        json['voidCashAmount'].toString());
+    final counts = <String, int>{};
+    for (final field in fields) {
+      final value = json[field];
+      if (value is! num) {
+        throw const FormatException('Số liệu tổng quan không hợp lệ');
+      }
+      counts[field] = value.toInt();
+    }
+    final pending = json['collectiblePendingCashAmount'];
+    final voidAmount = json['voidCashAmount'];
+    if (pending == null || voidAmount == null) {
+      throw const FormatException('Số tiền tổng quan không hợp lệ');
+    }
+    return AdminDashboard(counts, pending.toString(), voidAmount.toString());
   }
 }
 
@@ -184,15 +194,28 @@ class AdminBooking {
   final String status;
   final String vehicleType;
   final String fare;
+  final String? currencyCode;
   final String cashStatus;
+  final String? customerPublicId;
+  final String? driverPublicId;
+  final DateTime? createdAt;
 
   const AdminBooking(
-      this.publicId, this.status, this.vehicleType, this.fare, this.cashStatus);
+      this.publicId, this.status, this.vehicleType, this.fare, this.cashStatus,
+      {this.currencyCode,
+      this.customerPublicId,
+      this.driverPublicId,
+      this.createdAt});
 
   factory AdminBooking.fromJson(Map<String, dynamic> json) => AdminBooking(
       json['publicId'] as String,
       json['status'] as String,
       json['vehicleType'] as String,
       json['finalFare'].toString(),
-      (json['cashStatus'] as String?) ?? 'UNAVAILABLE');
+      (json['cashStatus'] as String?) ?? 'UNAVAILABLE',
+      currencyCode: json['currency'] as String?,
+      customerPublicId: json['customerPublicId'] as String?,
+      driverPublicId: json['driverPublicId'] as String?,
+      createdAt:
+          DateTime.tryParse(json['createdAt']?.toString() ?? '')?.toLocal());
 }

@@ -6,6 +6,7 @@ import '../domain/review_models.dart';
 import '../domain/review_repository.dart';
 
 class AdminQualityState {
+  final String? filter;
   final List<QualityCase> cases;
   final int casesPage;
   final bool hasMoreCases;
@@ -17,7 +18,8 @@ class AdminQualityState {
   final bool sessionEnded;
   final String? error;
   const AdminQualityState(
-      {this.cases = const [],
+      {this.filter,
+      this.cases = const [],
       this.casesPage = 0,
       this.hasMoreCases = false,
       this.loadingMoreCases = false,
@@ -36,6 +38,8 @@ class AdminQualityCubit extends Cubit<AdminQualityState> {
   int _revision = 0;
   int? _generation;
   bool _foreground = true;
+  bool _actionPending = false;
+  String? _caseToVerify;
 
   AdminQualityCubit(this.repository, this.session, this.adminPublicId)
       : super(const AdminQualityState());
@@ -70,6 +74,8 @@ class AdminQualityCubit extends Cubit<AdminQualityState> {
   void invalidateSession() {
     if (isClosed) return;
     _revision++;
+    _actionPending = false;
+    _caseToVerify = null;
     emit(const AdminQualityState(sessionEnded: true));
   }
 
@@ -77,28 +83,67 @@ class AdminQualityCubit extends Cubit<AdminQualityState> {
     if (isClosed || state.sessionEnded) return;
     _foreground = false;
     _revision++;
-    emit(const AdminQualityState());
+    emit(AdminQualityState(
+        filter: state.filter,
+        working: _actionPending,
+        uncertain: _caseToVerify != null));
+  }
+
+  Future<void> setFilter(String? filter) async {
+    if (isClosed ||
+        !_foreground ||
+        state.sessionEnded ||
+        _actionPending ||
+        _caseToVerify != null ||
+        state.working ||
+        state.uncertain ||
+        state.filter == filter) {
+      return;
+    }
+    if (filter != null &&
+        !const {'OPEN', 'WARNED', 'DISPUTED', 'SUSPENDED', 'DISMISSED'}
+            .contains(filter)) {
+      return;
+    }
+    _revision++;
+    emit(AdminQualityState(filter: filter));
+    await load();
   }
 
   Future<void> load() async {
-    if (isClosed || state.sessionEnded || state.working) return;
+    if (isClosed || state.sessionEnded) return;
     _foreground = true;
+    if (_actionPending) return;
+    if (_caseToVerify != null) {
+      await reconcile(_caseToVerify!);
+      return;
+    }
+    if (state.working) return;
+    if (state.uncertain && state.detail != null) {
+      await reconcile(state.detail!.qualityCase.publicId);
+      return;
+    }
+    final filter = state.filter;
     final revision = ++_revision;
-    emit(const AdminQualityState(loading: true));
+    emit(AdminQualityState(filter: filter, loading: true));
     try {
       final generation = await _origin(revision);
       if (generation == null) return;
-      final page = await repository.adminCases(0, null, generation);
+      final page = await repository.adminCases(0, filter, generation);
       if (!await _current(revision, generation)) return;
       emit(AdminQualityState(
-          cases: page.items, casesPage: page.page, hasMoreCases: page.hasNext));
+          filter: filter,
+          cases: page.items,
+          casesPage: page.page,
+          hasMoreCases: page.hasNext));
     } catch (error) {
       if (isClosed || revision != _revision) return;
       if (_accessError(error)) {
         invalidateSession();
         return;
       }
-      emit(const AdminQualityState(error: 'Chưa tải được danh sách rà soát.'));
+      emit(AdminQualityState(
+          filter: filter, error: 'Chưa tải được danh sách rà soát.'));
     }
   }
 
@@ -108,13 +153,17 @@ class AdminQualityCubit extends Cubit<AdminQualityState> {
         !_foreground ||
         state.loading ||
         state.loadingMoreCases ||
+        _actionPending ||
+        _caseToVerify != null ||
         state.working ||
+        state.uncertain ||
         !state.hasMoreCases) {
       return;
     }
     final previous = state;
     final revision = ++_revision;
     emit(AdminQualityState(
+      filter: previous.filter,
       cases: previous.cases,
       casesPage: previous.casesPage,
       hasMoreCases: previous.hasMoreCases,
@@ -125,11 +174,12 @@ class AdminQualityCubit extends Cubit<AdminQualityState> {
     try {
       final generation = await _origin(revision);
       if (generation == null) return;
-      final page =
-          await repository.adminCases(previous.casesPage + 1, null, generation);
+      final page = await repository.adminCases(
+          previous.casesPage + 1, previous.filter, generation);
       if (!await _current(revision, generation)) return;
       final seen = previous.cases.map((item) => item.publicId).toSet();
       emit(AdminQualityState(
+        filter: previous.filter,
         cases: [
           ...previous.cases,
           ...page.items.where((item) => seen.add(item.publicId)),
@@ -148,6 +198,7 @@ class AdminQualityCubit extends Cubit<AdminQualityState> {
       final generation = _generation;
       if (generation != null && !await _current(revision, generation)) return;
       emit(AdminQualityState(
+        filter: previous.filter,
         cases: previous.cases,
         casesPage: previous.casesPage,
         hasMoreCases: previous.hasMoreCases,
@@ -159,9 +210,17 @@ class AdminQualityCubit extends Cubit<AdminQualityState> {
   }
 
   Future<void> open(String publicId) async {
-    if (isClosed || state.sessionEnded || state.working) return;
+    if (isClosed ||
+        state.sessionEnded ||
+        _actionPending ||
+        _caseToVerify != null ||
+        state.working ||
+        state.uncertain) {
+      return;
+    }
     final revision = ++_revision;
     emit(AdminQualityState(
+        filter: state.filter,
         cases: state.cases,
         casesPage: state.casesPage,
         hasMoreCases: state.hasMoreCases,
@@ -173,6 +232,7 @@ class AdminQualityCubit extends Cubit<AdminQualityState> {
       final detail = await repository.adminDetail(publicId, generation);
       if (!await _current(revision, generation)) return;
       emit(AdminQualityState(
+          filter: state.filter,
           cases: state.cases,
           casesPage: state.casesPage,
           hasMoreCases: state.hasMoreCases,
@@ -184,6 +244,7 @@ class AdminQualityCubit extends Cubit<AdminQualityState> {
         return;
       }
       emit(AdminQualityState(
+          filter: state.filter,
           cases: state.cases,
           casesPage: state.casesPage,
           hasMoreCases: state.hasMoreCases,
@@ -195,6 +256,8 @@ class AdminQualityCubit extends Cubit<AdminQualityState> {
     final detail = state.detail;
     if (detail == null ||
         isClosed ||
+        _actionPending ||
+        _caseToVerify != null ||
         state.working ||
         state.uncertain ||
         state.sessionEnded ||
@@ -206,6 +269,7 @@ class AdminQualityCubit extends Cubit<AdminQualityState> {
     final publicId = detail.qualityCase.publicId;
     final revision = ++_revision;
     emit(AdminQualityState(
+        filter: state.filter,
         cases: state.cases,
         casesPage: state.casesPage,
         hasMoreCases: state.hasMoreCases,
@@ -214,10 +278,17 @@ class AdminQualityCubit extends Cubit<AdminQualityState> {
     try {
       final generation = await _origin(revision);
       if (generation == null) return;
+      _actionPending = true;
+      _caseToVerify = publicId;
       final updated = await repository.adminAction(
           publicId, action, note.trim(), generation);
-      if (!await _current(revision, generation)) return;
+      _actionPending = false;
+      if (!await _current(revision, generation)) {
+        await _settleInterruptedAction();
+        return;
+      }
       emit(AdminQualityState(
+          filter: state.filter,
           cases: state.cases,
           casesPage: state.casesPage,
           hasMoreCases: state.hasMoreCases,
@@ -226,12 +297,18 @@ class AdminQualityCubit extends Cubit<AdminQualityState> {
       // An authoritative list/read clears the mutation gate.
       await reconcile(publicId);
     } catch (error) {
-      if (isClosed || revision != _revision) return;
+      _actionPending = false;
+      if (isClosed || state.sessionEnded) return;
+      if (revision != _revision) {
+        await _settleInterruptedAction();
+        return;
+      }
       if (_accessError(error)) {
         invalidateSession();
         return;
       }
       emit(AdminQualityState(
+          filter: state.filter,
           cases: state.cases,
           casesPage: state.casesPage,
           hasMoreCases: state.hasMoreCases,
@@ -243,10 +320,25 @@ class AdminQualityCubit extends Cubit<AdminQualityState> {
     }
   }
 
+  Future<void> _settleInterruptedAction() async {
+    if (isClosed || state.sessionEnded || _caseToVerify == null) return;
+    final publicId = _caseToVerify!;
+    emit(AdminQualityState(filter: state.filter, uncertain: true));
+    if (_foreground) {
+      await reconcile(publicId);
+    }
+  }
+
   Future<void> reconcile(String publicId) async {
-    if (isClosed || state.sessionEnded) return;
+    if (isClosed ||
+        state.sessionEnded ||
+        _actionPending ||
+        (_caseToVerify != null && _caseToVerify != publicId)) {
+      return;
+    }
     final revision = ++_revision;
     emit(AdminQualityState(
+        filter: state.filter,
         cases: state.cases,
         casesPage: state.casesPage,
         hasMoreCases: state.hasMoreCases,
@@ -257,9 +349,11 @@ class AdminQualityCubit extends Cubit<AdminQualityState> {
       final generation = await _origin(revision);
       if (generation == null) return;
       final detail = await repository.adminDetail(publicId, generation);
-      final page = await repository.adminCases(0, null, generation);
+      final page = await repository.adminCases(0, state.filter, generation);
       if (!await _current(revision, generation)) return;
+      if (_caseToVerify == publicId) _caseToVerify = null;
       emit(AdminQualityState(
+          filter: state.filter,
           cases: page.items,
           casesPage: page.page,
           hasMoreCases: page.hasNext,
@@ -271,6 +365,7 @@ class AdminQualityCubit extends Cubit<AdminQualityState> {
         return;
       }
       emit(AdminQualityState(
+          filter: state.filter,
           cases: state.cases,
           casesPage: state.casesPage,
           hasMoreCases: state.hasMoreCases,

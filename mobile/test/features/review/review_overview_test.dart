@@ -309,4 +309,167 @@ void main() {
     expect(cubit.state.cases, isEmpty);
     await cubit.close();
   });
+
+  test('Admin quality filter rejects an older list and carries into pagination',
+      () async {
+    owner = adminId;
+    final oldPage = Completer<ReviewPage<QualityCase>>();
+    final later = QualityCase('case-2', driverId, 'OPEN', 12, 2.7,
+        'Cần rà soát', DateTime.utc(2026, 11, 2));
+    when(() => review.adminCases(any(), any(), any())).thenAnswer((call) {
+      final page = call.positionalArguments[0] as int;
+      final filter = call.positionalArguments[1] as String?;
+      if (filter == null) return oldPage.future;
+      return Future.value(page == 0
+          ? ReviewPage([caseItem], 0, true)
+          : ReviewPage([later], 1, false));
+    });
+    final cubit = AdminQualityCubit(review, session, adminId);
+    final original = cubit.load();
+    await Future<void>.delayed(Duration.zero);
+    final filtered = cubit.setFilter('OPEN');
+    oldPage.complete(const ReviewPage<QualityCase>([], 0, false));
+    await original;
+    await filtered;
+    expect(cubit.state.filter, 'OPEN');
+    expect(cubit.state.cases.map((item) => item.publicId), ['case-1']);
+    await cubit.loadMoreCases();
+    expect(
+        cubit.state.cases.map((item) => item.publicId), ['case-1', 'case-2']);
+    verify(() => review.adminCases(1, 'OPEN', 1)).called(1);
+    cubit.hideForBackground();
+    expect(cubit.state.cases, isEmpty);
+    expect(cubit.state.filter, 'OPEN');
+    await cubit.load();
+    expect(cubit.state.filter, 'OPEN');
+    await cubit.close();
+  });
+
+  test('Uncertain Admin decision needs detail reconciliation before filtering',
+      () async {
+    owner = adminId;
+    var failRead = false;
+    final warned = QualityCase('case-1', driverId, 'WARNED', 10, 2.5,
+        caseItem.reason, caseItem.createdAt);
+    final updated = QualityDetail(warned, detail.evidence,
+        [QualityAction('WARN', 'Đã nhắc', DateTime.utc(2026, 11, 2))]);
+    when(() => review.adminCases(any(), any(), any()))
+        .thenAnswer((_) async => ReviewPage([caseItem], 0, false));
+    when(() => review.adminDetail(any(), any())).thenAnswer((_) async {
+      if (failRead) throw const NetworkException('offline');
+      return updated;
+    });
+    when(() => review.adminAction(any(), any(), any(), any()))
+        .thenAnswer((_) async => updated);
+    final cubit = AdminQualityCubit(review, session, adminId);
+    await cubit.load();
+    await cubit.open(caseItem.publicId);
+    failRead = true;
+    await cubit.act('WARN', 'Đã nhắc');
+    expect(cubit.state.uncertain, isTrue);
+    await cubit.setFilter('DISMISSED');
+    expect(cubit.state.filter, isNull);
+    failRead = false;
+    await cubit.load();
+    expect(cubit.state.uncertain, isFalse);
+    expect(cubit.state.detail?.qualityCase.status, 'WARNED');
+    await cubit.setFilter('DISMISSED');
+    expect(cubit.state.filter, 'DISMISSED');
+    await cubit.close();
+  });
+
+  test('Background during moderation keeps mutation locked until server read',
+      () async {
+    owner = adminId;
+    final pending = Completer<QualityDetail>();
+    var current = detail;
+    when(() => review.adminCases(any(), any(), any()))
+        .thenAnswer((_) async => ReviewPage([current.qualityCase], 0, false));
+    when(() => review.adminDetail(any(), any()))
+        .thenAnswer((_) async => current);
+    when(() => review.adminAction(any(), any(), any(), any()))
+        .thenAnswer((_) => pending.future);
+    final cubit = AdminQualityCubit(review, session, adminId);
+    await cubit.load();
+    await cubit.open(caseItem.publicId);
+    final action = cubit.act('WARN', 'Cần cải thiện');
+    await Future<void>.delayed(Duration.zero);
+    cubit.hideForBackground();
+    expect(cubit.state.cases, isEmpty);
+    expect(cubit.state.detail, isNull);
+    expect(cubit.state.working, isTrue);
+    await cubit.load();
+    await cubit.setFilter('DISMISSED');
+    await cubit.act('WARN', 'Không gửi trùng');
+    expect(cubit.state.working, isTrue);
+    expect(cubit.state.filter, isNull);
+    verify(() => review.adminAction(any(), any(), any(), any())).called(1);
+    final warned = QualityCase('case-1', driverId, 'WARNED', 10, 2.5,
+        caseItem.reason, caseItem.createdAt);
+    current = QualityDetail(warned, detail.evidence,
+        [QualityAction('WARN', 'Cần cải thiện', DateTime.utc(2026, 11, 2))]);
+    pending.complete(current);
+    await action;
+    expect(cubit.state.working, isFalse);
+    expect(cubit.state.uncertain, isFalse);
+    expect(cubit.state.detail?.qualityCase.status, 'WARNED');
+    await cubit.setFilter('DISMISSED');
+    expect(cubit.state.filter, 'DISMISSED');
+    await cubit.close();
+  });
+
+  test('Late moderation result after account replacement reveals no case data',
+      () async {
+    owner = adminId;
+    final pending = Completer<QualityDetail>();
+    stubAdmin();
+    when(() => review.adminAction(any(), any(), any(), any()))
+        .thenAnswer((_) => pending.future);
+    final cubit = AdminQualityCubit(review, session, adminId);
+    await cubit.load();
+    await cubit.open(caseItem.publicId);
+    final action = cubit.act('WARN', 'Cần cải thiện');
+    await Future<void>.delayed(Duration.zero);
+    cubit.hideForBackground();
+    generation = 2;
+    owner = 'user-b';
+    await cubit.load();
+    pending.complete(detail);
+    await action;
+    expect(cubit.state.sessionEnded, isTrue);
+    expect(cubit.state.detail, isNull);
+    expect(cubit.state.cases, isEmpty);
+    await cubit.close();
+  });
+
+  test('Moderation completed in background reconciles on resume', () async {
+    owner = adminId;
+    final pending = Completer<QualityDetail>();
+    var current = detail;
+    when(() => review.adminCases(any(), any(), any()))
+        .thenAnswer((_) async => ReviewPage([current.qualityCase], 0, false));
+    when(() => review.adminDetail(any(), any()))
+        .thenAnswer((_) async => current);
+    when(() => review.adminAction(any(), any(), any(), any()))
+        .thenAnswer((_) => pending.future);
+    final cubit = AdminQualityCubit(review, session, adminId);
+    await cubit.load();
+    await cubit.open(caseItem.publicId);
+    final action = cubit.act('WARN', 'Đã nhắc');
+    await Future<void>.delayed(Duration.zero);
+    cubit.hideForBackground();
+    final warned = QualityCase('case-1', driverId, 'WARNED', 10, 2.5,
+        caseItem.reason, caseItem.createdAt);
+    current = QualityDetail(warned, detail.evidence,
+        [QualityAction('WARN', 'Đã nhắc', DateTime.utc(2026, 11, 2))]);
+    pending.complete(current);
+    await action;
+    expect(cubit.state.detail, isNull);
+    expect(cubit.state.uncertain, isTrue);
+    await cubit.load();
+    expect(cubit.state.uncertain, isFalse);
+    expect(cubit.state.detail?.qualityCase.status, 'WARNED');
+    verify(() => review.adminAction(any(), any(), any(), any())).called(1);
+    await cubit.close();
+  });
 }

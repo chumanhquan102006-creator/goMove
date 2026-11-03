@@ -12,7 +12,8 @@ Core Booking → Dispatch → Trip → CASH remains the functional baseline for 
 | M5.4 | Admin approval and account/activity management | Completed (`d95875c`) |
 | M5.5 | Map-first UI, motion, verified Driver ratings, GoPoints and quality review | Completed (`1c733a6`) |
 | M5.6 Phase 1 | Premium Customer UI/UX and motion | Completed (`8f3cd55`); Nokia T20 and Emulator E2E passed (project-lead report) |
-| M5.6 Phase 2 | Premium Driver UI/UX | Implementation in review; device E2E pending |
+| M5.6 Phase 2 | Premium Driver UI/UX | Completed (`9677c9b`); device E2E passed (project-lead report) |
+| M5.6 Phase 3 | Premium Admin UI/UX | Static code review complete; tester-reported device E2E: 29/29 executed checks passed; Flutter analyze: 0 issues, Flutter tests: 438/438 passed; data-dependent workflows remain untested |
 
 M5.4 financial treatment: V17 converts uncollected CASH placeholders on `CANCELLED` or `NO_DRIVER_AVAILABLE` Bookings to immutable `VOID`. Only a `COMPLETED` Booking with `PENDING` CASH is counted as collectible. `VOID` is neither a paid receipt, refund nor commission debt. Dashboard counters are lifetime totals at query time: Customers are accounts currently in the CUSTOMER role; Drivers are registered Driver profiles; approval and operating counts use current Driver status; active Bookings are all nonterminal statuses; paid CASH counts confirmed payments. Account management is read-only in M5.4. Admin credentials must be provisioned by an explicitly controlled development procedure; public registration never creates an ADMIN account.
 
@@ -25,3 +26,9 @@ M5.6 Phase 1 changes presentation only: floating Customer search entry points, a
 The project lead reports M5.6 Phase 1 E2E passes on Nokia T20 and Android Emulator for Customer Home, full-screen search, sheet gestures, Quote Review, routing and transitions, backend-driven radar and Driver matching, realtime GPS and MapLibre marker movement, Trip lifecycle, CASH PENDING → PAID, and an optional four-star rating with +5 GoPoints.
 
 Future backlog: dedicated, authorized Driver Trip History list. The current Backend exposes a Customer-only Booking history list and an aggregate Driver earnings summary, but no Driver trip-history list API. M5.6 Phase 2 uses the existing earnings summary and current-trip receipt; it does not infer a trip list from local state or Customer endpoints.
+
+M5.6 Phase 3 presents authorized Admin dashboard counters, Driver approvals, read-only accounts, Booking/CASH states and quality cases in a responsive Premium interface. `paidCashPayments` is a count of confirmed CASH payments, not a VND total. The only Admin dashboard money values are collectible completed-trip CASH PENDING and CASH VOID; VOID is not revenue, refund or commission debt. Booking cards expand using Customer/assigned Driver public IDs and creation time already returned by the list API. Quality status filtering uses the existing server parameter; moderation decisions still require notes and authoritative reconciliation, including after a backgrounded in-flight action.
+
+The tester reports 29/29 executed Phase 3 real-device E2E checks passed: Admin Dashboard 6/6; Driver Management 5/5; Accounts, Bookings and CASH 8/8; Quality Moderation UI 4/4; and logout, session and access controls 6/6. Eligible test records were unavailable for Driver approval/rejection, quality case details, quality moderation decisions and the automatic quality-case threshold trigger. These four workflows remain pending dedicated device E2E tests; the UI checks do not establish that their actions passed.
+
+Admin backlog: a dedicated Booking detail API, Booking search or CASH-status filtering, and account edit/disable/role-change operations. The current Admin APIs do not support these controls, so Phase 3 does not display them.

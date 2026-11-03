@@ -44,6 +44,7 @@ class _Repository implements AdminRepository {
   Completer<AdminPage<AdminDriver>>? delayedDrivers;
   Completer<AdminPage<AdminAccount>>? delayedAccounts;
   Completer<AdminPage<AdminBooking>>? delayedBookings;
+  List<AdminBooking>? bookingItems;
 
   AdminDriver get item => AdminDriver(_driverId, 'Tài xế A', '0900000002',
           'GPLX-1', approval, 'OFFLINE', 2, false, const [
@@ -140,10 +141,11 @@ class _Repository implements AdminRepository {
     return AdminPage(
         empty
             ? const []
-            : [
-                const AdminBooking('booking-1', 'COMPLETED', 'MOTORBIKE',
-                    '16500.00', 'PENDING')
-              ],
+            : bookingItems ??
+                [
+                  const AdminBooking('booking-1', 'COMPLETED', 'MOTORBIKE',
+                      '16500.00', 'PENDING')
+                ],
         page,
         20,
         empty ? 0 : 1);
@@ -534,9 +536,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Khách hàng'), findsOneWidget);
     await tester.scrollUntilVisible(
-        find.text('Tiền mặt chờ thu từ chuyến hoàn thành: 16500.00 VND'), 300);
-    expect(find.text('Tiền mặt chờ thu từ chuyến hoàn thành: 16500.00 VND'),
-        findsOneWidget);
+        find.text('CASH PENDING của chuyến hoàn thành'), 300);
+    expect(find.text('CASH PENDING của chuyến hoàn thành'), findsOneWidget);
+    expect(find.text('16.500 VND'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Lượt CASH đã xác nhận'), 300);
+    expect(find.text('Lượt CASH đã xác nhận'), findsOneWidget);
+    expect(find.text('Tiền mặt đã thu'), findsNothing);
     await tester.tap(find.descendant(
         of: find.byType(NavigationBar), matching: find.text('Tài xế')));
     await tester.pumpAndSettle();
@@ -545,10 +550,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('29A-12345'), findsOneWidget);
     await tester.ensureVisible(find.text('Phê duyệt'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Phê duyệt'));
     await tester.pumpAndSettle();
     expect(repository.approvals, isEmpty);
     expect(find.text('Xác nhận thay đổi duyệt tài xế'), findsOneWidget);
+    expect(find.textContaining('từ Chờ duyệt sang Đã duyệt'), findsOneWidget);
     await tester.tap(find.text('Xác nhận'));
     await tester.pumpAndSettle();
     expect(repository.approvals, ['APPROVED']);
@@ -600,5 +607,166 @@ void main() {
             .text,
         isEmpty);
     expect(cubit.state.search, isNull);
+  });
+
+  testWidgets(
+      'Booking cards separate trip and CASH states and reveal server IDs',
+      (tester) async {
+    repository.bookingItems = [
+      AdminBooking('booking-1', 'COMPLETED', 'MOTORBIKE', '16500.00', 'PENDING',
+          currencyCode: 'VND',
+          customerPublicId: 'customer-1',
+          driverPublicId: 'driver-1',
+          createdAt: DateTime(2026, 11, 1, 8, 30)),
+      const AdminBooking(
+          'booking-2', 'COMPLETED', 'CAR_4_SEAT', '20000.00', 'PAID'),
+      const AdminBooking(
+          'booking-3', 'CANCELLED', 'MOTORBIKE', '12000.00', 'VOID'),
+    ];
+    final cubit = AdminCubit(repository, session, _adminId);
+    await tester.pumpWidget(BlocProvider<AuthBloc>.value(
+        value: auth,
+        child: MaterialApp(
+            home: AdminHomeScreen(adminPublicId: _adminId, cubit: cubit))));
+    await tester.pumpAndSettle();
+    await tester.tap(find.descendant(
+        of: find.byType(NavigationBar), matching: find.text('Chuyến')));
+    await tester.pumpAndSettle();
+    expect(find.text('CASH chờ xác nhận'), findsOneWidget);
+    expect(find.textContaining('16.500 VND'), findsOneWidget);
+    expect(find.text('CASH đã xác nhận'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('CASH VOID · không thu'), 250);
+    expect(find.text('CASH VOID · không thu'), findsOneWidget);
+    await tester
+        .ensureVisible(find.byKey(const ValueKey('admin-booking-booking-1')));
+    await tester.tap(find.byKey(const ValueKey('admin-booking-booking-1')));
+    await tester.pumpAndSettle();
+    expect(find.text('customer-1'), findsOneWidget);
+    expect(find.text('driver-1'), findsOneWidget);
+    expect(find.text('01/11/2026 08:30'), findsOneWidget);
+    expect(repository.calls.where((call) => call.startsWith('bookings:')),
+        hasLength(1));
+  });
+
+  testWidgets('Backend currency VND appears on the Admin Booking card',
+      (tester) async {
+    repository.bookingItems = [
+      AdminBooking.fromJson({
+        'publicId': 'booking-vnd',
+        'customerPublicId': 'customer-1',
+        'driverPublicId': null,
+        'status': 'COMPLETED',
+        'vehicleType': 'MOTORBIKE',
+        'finalFare': '16500.00',
+        'currency': 'VND',
+        'cashStatus': 'PENDING',
+        'createdAt': '2026-11-01T08:30:00Z',
+      }),
+    ];
+    final cubit = AdminCubit(repository, session, _adminId);
+    await tester.pumpWidget(BlocProvider<AuthBloc>.value(
+        value: auth,
+        child: MaterialApp(
+            home: AdminHomeScreen(adminPublicId: _adminId, cubit: cubit))));
+    await tester.pumpAndSettle();
+    await tester.tap(find.descendant(
+        of: find.byType(NavigationBar), matching: find.text('Chuyến')));
+    await tester.pumpAndSettle();
+    expect(find.text('Xe máy · 16.500 VND'), findsOneWidget);
+  });
+
+  testWidgets('Account empty, error and retry keep authorized pagination',
+      (tester) async {
+    repository.empty = true;
+    final cubit = AdminCubit(repository, session, _adminId);
+    await tester.pumpWidget(BlocProvider<AuthBloc>.value(
+        value: auth,
+        child: MaterialApp(
+            home: AdminHomeScreen(adminPublicId: _adminId, cubit: cubit))));
+    await tester.pumpAndSettle();
+    await tester.tap(find.descendant(
+        of: find.byType(NavigationBar), matching: find.text('Tài khoản')));
+    await tester.pumpAndSettle();
+    expect(find.text('Không có tài khoản phù hợp'), findsOneWidget);
+    repository.fail = true;
+    await tester.tap(find.byTooltip('Làm mới'));
+    await tester.pumpAndSettle();
+    expect(find.text('Chưa tải được dữ liệu'), findsOneWidget);
+    repository.fail = false;
+    repository.empty = false;
+    await tester.tap(find.text('Thử lại'));
+    await tester.pumpAndSettle();
+    expect(find.text('Khách A'), findsOneWidget);
+    expect(repository.calls.last, 'accounts:0:null:null:7');
+  });
+
+  testWidgets('Approval dialog and Driver PII disappear on background',
+      (tester) async {
+    final cubit = AdminCubit(repository, session, _adminId);
+    await tester.pumpWidget(BlocProvider<AuthBloc>.value(
+        value: auth,
+        child: MaterialApp(
+            home: AdminHomeScreen(adminPublicId: _adminId, cubit: cubit))));
+    await tester.pumpAndSettle();
+    await tester.tap(find.descendant(
+        of: find.byType(NavigationBar), matching: find.text('Tài xế')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Tài xế A'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Từ chối'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Từ chối'));
+    await tester.pumpAndSettle();
+    expect(find.text('Xác nhận thay đổi duyệt tài xế'), findsOneWidget);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pumpAndSettle();
+    expect(find.text('Xác nhận thay đổi duyệt tài xế'), findsNothing);
+    expect(find.text('0900000002'), findsNothing);
+    expect(repository.approvals, isEmpty);
+  });
+
+  testWidgets('Premium Admin layouts fit 320 px and tablet with reduced motion',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final cubit = AdminCubit(repository, session, _adminId);
+    await tester.pumpWidget(BlocProvider<AuthBloc>.value(
+        value: auth,
+        child: MaterialApp(
+          builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(context).copyWith(disableAnimations: true),
+              child: child!),
+          home: AdminHomeScreen(adminPublicId: _adminId, cubit: cubit),
+        )));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.descendant(
+        of: find.byType(NavigationBar), matching: find.text('Tài xế')));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.text('Tài xế A'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Tạm đình chỉ'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.descendant(
+        of: find.byType(NavigationBar), matching: find.text('Tài khoản')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Khách A'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.descendant(
+        of: find.byType(NavigationBar), matching: find.text('Chuyến')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('admin-booking-booking-1')));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    tester.view.physicalSize = const Size(1000, 900);
+    await tester.pump();
+    expect(tester.takeException(), isNull);
   });
 }

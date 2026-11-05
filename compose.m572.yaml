@@ -1,0 +1,89 @@
+name: gomove-m572
+
+services:
+  postgres:
+    image: postgis/postgis@sha256:94146ac37bc61e2322f88016056c5920729cb8c64c8542ed590af8fc2abdac07
+    environment:
+      POSTGRES_DB: gomove_m572
+      POSTGRES_USER: gomove_m572
+      POSTGRES_PASSWORD_FILE: /run/secrets/db-password
+    secrets:
+      - source: m572_db_password
+        target: db-password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - m572
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "gomove_m572", "-d", "gomove_m572"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    stop_grace_period: 30s
+
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend@sha256:55dbfd47d984c2cacd64e32901b4321c86b5ec761438e69aa053dc78698a786f
+    command: ["osrm-routed", "--algorithm", "mld", "/data/hanoi.osrm"]
+    volumes:
+      - type: bind
+        source: ${M572_OSRM_DATA_DIR:?Set M572_OSRM_DATA_DIR to the prepared Hanoi OSRM dataset directory}
+        target: /data
+        read_only: true
+    networks:
+      - m572
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 15s
+
+  backend:
+    image: gomove-m572-backend:local
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: container
+      SPRING_AUTOCONFIGURE_EXCLUDE: org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=65.0 -XX:+ExitOnOutOfMemoryError
+    secrets:
+      - source: m572_db_password
+        target: spring.datasource.password
+      - source: m572_jwt_secret
+        target: JWT_SECRET
+    depends_on:
+      postgres:
+        condition: service_healthy
+      osrm:
+        condition: service_started
+    ports:
+      - "127.0.0.1:18081:8080"
+    networks:
+      - m572
+    read_only: true
+    tmpfs:
+      - /tmp
+    user: "10001:10001"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "java", "-cp", "/app/health", "HealthProbe", "http://127.0.0.1:8080/actuator/health/readiness", "\"status\":\"UP\""]
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+    stop_grace_period: 30s
+
+networks:
+  m572:
+
+volumes:
+  postgres_data:
+
+secrets:
+  m572_db_password:
+    file: ${M572_SECRET_DIR:?Set M572_SECRET_DIR to a private directory outside Git}/db-password.txt
+  m572_jwt_secret:
+    file: ${M572_SECRET_DIR:?Set M572_SECRET_DIR to a private directory outside Git}/jwt-secret.txt

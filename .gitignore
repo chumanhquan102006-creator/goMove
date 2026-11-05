@@ -1,0 +1,2 @@
+# Local M5.7.2 path configuration. Secret files live outside this repository.
+.env.m572

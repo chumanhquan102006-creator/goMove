@@ -1,0 +1,38 @@
+spring:
+  config:
+    import: configtree:/run/secrets/
+  datasource:
+    url: jdbc:postgresql://postgres:5432/gomove_m572
+    username: gomove_m572
+  jpa:
+    show-sql: false
+
+server:
+  shutdown: graceful
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+
+gomove:
+  routing:
+    osrm:
+      base-url: http://osrm:5000
+  realtime:
+    allowed-origins: http://localhost:18081,http://127.0.0.1:18081

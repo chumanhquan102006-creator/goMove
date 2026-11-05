@@ -7,10 +7,10 @@ case "$(docker info --format '{{.Architecture}}')" in
   aarch64|arm64) ;;
   *) echo 'Native ARM64 Docker Engine required' >&2; exit 1 ;;
 esac
-[[ -n "$GITHUB_RUN_ID" && -n "$RUNNER_TEMP" ]] || exit 1
+[[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$RUNNER_TEMP" = /* && "$RUNNER_TEMP" != / ]] || exit 1
 test_root="$RUNNER_TEMP/gomove-c2b-$GITHUB_RUN_ID"
 [[ "$test_root" = "$RUNNER_TEMP"/gomove-c2b-* ]] || exit 1
-mkdir -p "$test_root"
+mkdir "$test_root"
 network="gomove-c2b-$GITHUB_RUN_ID"
 postgres="gomove-c2b-$GITHUB_RUN_ID-postgres"
 osrm="gomove-c2b-$GITHUB_RUN_ID-osrm"
@@ -18,16 +18,23 @@ backend="gomove-c2b-$GITHUB_RUN_ID-backend"
 pg_image="gomove-c2b-postgis:$GITHUB_RUN_ID"
 backend_image="gomove-c2b-backend:$GITHUB_RUN_ID"
 osrm_image="ghcr.io/project-osrm/osrm-backend@sha256:55dbfd47d984c2cacd64e32901b4321c86b5ec761438e69aa053dc78698a786f"
-created_network=false
-created_pg=false
-created_osrm=false
-created_backend=false
+network_id=''
+postgres_id=''
+osrm_id=''
+backend_id=''
 
 cleanup() {
-  if "$created_backend"; then docker stop "$backend" >/dev/null 2>&1 || true; fi
-  if "$created_osrm"; then docker stop "$osrm" >/dev/null 2>&1 || true; fi
-  if "$created_pg"; then docker stop "$postgres" >/dev/null 2>&1 || true; fi
-  if "$created_network"; then docker network rm "$network" >/dev/null 2>&1 || true; fi
+  for container_id in "$backend_id" "$osrm_id" "$postgres_id"; do
+    if [[ -n "$container_id" && "$(docker inspect --format '{{index .Config.Labels "gomove.c2b.run"}}' "$container_id" 2>/dev/null || true)" = "$GITHUB_RUN_ID" ]]; then
+      docker stop "$container_id" >/dev/null 2>&1 || true
+    fi
+  done
+  if [[ -n "$network_id" && "$(docker network inspect --format '{{index .Labels "gomove.c2b.run"}}' "$network_id" 2>/dev/null || true)" = "$GITHUB_RUN_ID" ]]; then
+    docker network rm "$network_id" >/dev/null 2>&1 || true
+  fi
+  if [[ "$(realpath -m "$test_root")" = "$(realpath "$RUNNER_TEMP")/gomove-c2b-$GITHUB_RUN_ID" ]]; then
+    sudo rm -rf -- "$test_root"
+  fi
 }
 trap cleanup EXIT
 
@@ -50,20 +57,29 @@ set -e
 grep -Eq 'configtree|JWT_SECRET|Could not resolve placeholder|Config data resource' "$test_root/missing-config.log"
 echo 'PASS: Production profile fails closed when mandatory configuration is absent.'
 
+umask 077
 secret_dir="$test_root/secrets"
 mkdir -m 0700 "$secret_dir"
 openssl rand -hex 32 > "$secret_dir/db-postgres"
 cp "$secret_dir/db-postgres" "$secret_dir/db-backend"
 openssl rand -hex 48 > "$secret_dir/JWT_SECRET"
 postgres_uid="$(docker run --rm --network none --entrypoint id "$pg_image" -u postgres)"
-sudo chown "$postgres_uid:$postgres_uid" "$secret_dir/db-postgres"
+postgres_gid="$(docker run --rm --network none --entrypoint id "$pg_image" -g postgres)"
+[[ "$postgres_uid" =~ ^[1-9][0-9]*$ && "$postgres_gid" =~ ^[1-9][0-9]*$ ]]
+sudo chown "$postgres_uid:$postgres_gid" "$secret_dir/db-postgres"
 sudo chown 10001:10001 "$secret_dir/db-backend" "$secret_dir/JWT_SECRET"
-chmod 0400 "$secret_dir/db-postgres" "$secret_dir/db-backend" "$secret_dir/JWT_SECRET"
+sudo chmod 0400 "$secret_dir/db-postgres" "$secret_dir/db-backend" "$secret_dir/JWT_SECRET"
+[[ "$(stat -c '%u:%g %a' "$secret_dir/db-postgres")" = "$postgres_uid:$postgres_gid 400" ]]
+[[ "$(stat -c '%u:%g %a' "$secret_dir/db-backend")" = '10001:10001 400' ]]
+[[ "$(stat -c '%u:%g %a' "$secret_dir/JWT_SECRET")" = '10001:10001 400' ]]
+docker run --rm --network none --user "$postgres_uid:$postgres_gid" \
+  --mount "type=bind,source=$secret_dir/db-postgres,target=/run/secrets/db-password,readonly" \
+  --entrypoint sh "$pg_image" -c 'test -r /run/secrets/db-password && test ! -e /run/secrets/spring.datasource.password && test ! -e /run/secrets/JWT_SECRET'
 docker run --rm --network none --user 10001:10001 \
   --mount "type=bind,source=$secret_dir/db-backend,target=/run/secrets/spring.datasource.password,readonly" \
   --mount "type=bind,source=$secret_dir/JWT_SECRET,target=/run/secrets/JWT_SECRET,readonly" \
-  --entrypoint sh "$backend_image" -c 'test -r /run/secrets/spring.datasource.password && test -r /run/secrets/JWT_SECRET'
-echo 'PASS: Non-root Backend UID can read only its synthetic file-backed secrets.'
+  --entrypoint sh "$backend_image" -c 'test -r /run/secrets/spring.datasource.password && test -r /run/secrets/JWT_SECRET && test ! -e /run/secrets/db-password'
+echo 'PASS: Synthetic secret ownership/mode and per-service non-root read access.'
 
 route_dir="$test_root/route"
 mkdir "$route_dir"
@@ -84,15 +100,13 @@ sudo chmod -R a+rX "$route_dir"
 for suffix in cells partition mldgr; do test -r "$route_dir/route.osrm.$suffix"; done
 echo 'PASS: Synthetic fixture preprocesses to an ARM64 MLD dataset (not Hanoi).'
 
-docker network create "$network" >/dev/null
-created_network=true
-docker run --detach --rm --name "$postgres" --network "$network" --network-alias postgres \
+network_id="$(docker network create --label "gomove.c2b.run=$GITHUB_RUN_ID" "$network")"
+postgres_id="$(docker run --detach --rm --name "$postgres" --label "gomove.c2b.run=$GITHUB_RUN_ID" --network "$network_id" --network-alias postgres \
   --tmpfs /var/lib/postgresql/data:rw,size=1024m \
   --env POSTGRES_DB=gomove_prod --env POSTGRES_USER=gomove_prod \
   --env POSTGRES_PASSWORD_FILE=/run/secrets/db-password \
   --mount "type=bind,source=$secret_dir/db-postgres,target=/run/secrets/db-password,readonly" \
-  "$pg_image" >/dev/null
-created_pg=true
+  "$pg_image")"
 for attempt in $(seq 1 90); do
   [[ "$(docker inspect "$postgres" --format '{{.State.Health.Status}}')" = healthy ]] && break
   sleep 2
@@ -100,16 +114,15 @@ done
 [[ "$(docker inspect "$postgres" --format '{{.State.Health.Status}}')" = healthy ]]
 echo 'PASS: Disposable native ARM64 PostgreSQL/PostGIS is healthy.'
 
-docker run --detach --rm --name "$osrm" --network "$network" --network-alias osrm \
+osrm_id="$(docker run --detach --rm --name "$osrm" --label "gomove.c2b.run=$GITHUB_RUN_ID" --network "$network_id" --network-alias osrm \
   --user 10001:10001 --read-only --tmpfs /tmp:rw,size=16m --cap-drop ALL \
   --mount "type=bind,source=$route_dir,target=/data,readonly" \
-  "$osrm_image" osrm-routed --algorithm mld /data/route.osrm >/dev/null
-created_osrm=true
+  "$osrm_image" osrm-routed --algorithm mld /data/route.osrm)"
 docker exec "$osrm" sh -c 'test -r /data/route.osrm.cells && test -r /data/route.osrm.partition && test -r /data/route.osrm.mldgr && kill -0 1'
 echo 'PASS: OSRM non-root process and production-style shallow health probe.'
 
 started="$SECONDS"
-docker run --detach --rm --name "$backend" --network "$network" \
+backend_id="$(docker run --detach --rm --name "$backend" --label "gomove.c2b.run=$GITHUB_RUN_ID" --network "$network_id" \
   --user 10001:10001 --read-only --tmpfs /tmp:rw,size=64m --cap-drop ALL \
   --env SPRING_PROFILES_ACTIVE=prod \
   --env SPRING_AUTOCONFIGURE_EXCLUDE=org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration \
@@ -117,8 +130,7 @@ docker run --detach --rm --name "$backend" --network "$network" \
   --env GOMOVE_PROD_GEOCODING_BASE_URL=https://geocoder.example.invalid \
   --mount "type=bind,source=$secret_dir/db-backend,target=/run/secrets/spring.datasource.password,readonly" \
   --mount "type=bind,source=$secret_dir/JWT_SECRET,target=/run/secrets/JWT_SECRET,readonly" \
-  "$backend_image" >/dev/null
-created_backend=true
+  "$backend_image")"
 ready=false
 for attempt in $(seq 1 90); do
   if docker exec "$backend" java -cp /app/health HealthProbe \

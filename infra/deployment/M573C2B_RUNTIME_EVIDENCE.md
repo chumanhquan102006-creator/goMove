@@ -127,12 +127,15 @@ using only the synthetic fixture. It also prints startup and CPU/memory
 snapshots. All three services have no host port binding.
 Registry manifest inspection confirmed linux/arm64 entries for the pinned
 Maven, Java 21 JRE, PostgreSQL and OSRM base images; runtime compatibility
-still requires the workflow to execute.
+still requires a successful complete workflow run.
 
-The script passed Bash syntax checking, and the workflow passed YAML parsing.
-**GitHub Actions has not run this new workflow** because this patch is neither
-committed nor pushed. Native ARM64 Backend/OSRM results are therefore **NOT
-RUN**. This workflow still cannot validate the private Hanoi dataset, Oracle
+The initial [native ARM64 run 42057152886](https://github.com/chumanhquan102006-creator/goMove/actions/runs/42057152886)
+on commit 16f4960 failed at the secret-file chmod step. Before that failure,
+the log confirmed ARM64 images, Backend UID 10001 and missing-config
+fail-closed. The proposed sudo chmod and ownership/read-access checks in the
+current patch have **not** run on GitHub. Backend readiness, Flyway and OSRM
+runtime on native ARM64 remain **NOT VERIFIED**. This workflow still cannot
+validate the private Hanoi dataset, Oracle
 A1, production digests, real secrets, production backup/restore or public
 HTTPS/WSS. The existing PostGIS image build has unpinned APT dependency
 resolution and needs production provenance/vulnerability review.

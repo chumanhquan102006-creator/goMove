@@ -14,7 +14,8 @@ public abstract class BaseIntegrationTest {
     protected static final PostgreSQLContainer<?> postgres;
 
     static {
-        postgres = new PostgreSQLContainer<>(DockerImageName.parse("postgis/postgis:16-3.5")
+        String image = System.getProperty("gomove.test.postgis-image", "postgis/postgis:16-3.5");
+        postgres = new PostgreSQLContainer<>(DockerImageName.parse(image)
                 .asCompatibleSubstituteFor("postgres"))
                 .withDatabaseName("test")
                 .withUsername("test")

@@ -1,0 +1,84 @@
+name: PostGIS ARM64 spike
+
+on:
+  push:
+    branches:
+      - feature/m5-7-3-postgis-arm64
+
+permissions:
+  contents: read
+
+concurrency:
+  group: postgis-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-arm64:
+    name: PostgreSQL 16 + PostGIS 3.5 native ARM64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 50
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Confirm native ARM64 runner
+        run: |
+          test "$(uname -m)" = aarch64
+          case "$(docker info --format '{{.Architecture}}')" in
+            aarch64|arm64) ;;
+            *) exit 1 ;;
+          esac
+
+      - name: Build isolated ARM64 image
+        run: docker build --progress=plain --platform linux/arm64 -f infra/postgis-arm64/Dockerfile -t gomove-postgis35-spike:arm64 infra/postgis-arm64
+
+      - name: Verify image architecture and PostGIS behavior
+        run: |
+          test "$(docker image inspect gomove-postgis35-spike:arm64 --format '{{.Os}}/{{.Architecture}}')" = linux/arm64
+          container_name="gomove-postgis35-spike-${GITHUB_RUN_ID}"
+          export POSTGRES_PASSWORD="$(openssl rand -hex 32)"
+          docker run --detach --rm --name "$container_name" --network none \
+            --tmpfs /var/lib/postgresql/data:rw,size=512m \
+            --memory 1g --cpus 2 --pids-limit 128 \
+            -e POSTGRES_PASSWORD -e POSTGRES_DB=spike \
+            gomove-postgis35-spike:arm64
+          unset POSTGRES_PASSWORD
+          trap 'docker stop "$container_name" >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 60); do
+            if test "$(docker inspect "$container_name" --format '{{.State.Health.Status}}')" = healthy; then
+              break
+            fi
+            sleep 2
+          done
+          test "$(docker inspect "$container_name" --format '{{.State.Health.Status}}')" = healthy
+          test "$(docker exec "$container_name" uname -m)" = aarch64
+          docker exec -i "$container_name" psql -U postgres -d spike -v ON_ERROR_STOP=1 < infra/postgis-arm64/smoke.sql
+
+      - name: Set up Java 21
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: |
+            backend/pom.xml
+            backend/.mvn/wrapper/maven-wrapper.properties
+          cache-read-only: true
+
+      - name: Run Flyway and spatial integration tests against ARM64 image
+        working-directory: backend
+        run: |
+          chmod +x ./mvnw
+          ./mvnw -B -ntp -Dgomove.test.postgis-image=gomove-postgis35-spike:arm64 \
+            -Dtest=PostGisSanityTest,DriverLocationPostGisIntegrationTest clean test
+
+      - name: Upload Surefire reports on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: arm64-spatial-surefire-${{ github.run_id }}
+          path: backend/target/surefire-reports/
+          if-no-files-found: ignore
+          retention-days: 7

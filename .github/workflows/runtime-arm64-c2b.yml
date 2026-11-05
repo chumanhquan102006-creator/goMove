@@ -1,0 +1,28 @@
+name: C2B native ARM64 runtime smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/m5-7-3-runtime-validation
+
+permissions:
+  contents: read
+
+concurrency:
+  group: c2b-native-arm64
+  cancel-in-progress: true
+
+jobs:
+  native-arm64-runtime:
+    name: Backend, PostGIS and synthetic OSRM on native ARM64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run private ARM64 runtime smoke
+        run: bash infra/deployment/run-c2b-arm64.sh

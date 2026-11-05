@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic public test road. It is not the private prepared Hanoi dataset. -->
+<osm version="0.6" generator="GoMove C2B synthetic fixture">
+  <node id="1" lat="0.000000" lon="0.000000" version="1" />
+  <node id="2" lat="0.000000" lon="0.001000" version="1" />
+  <node id="3" lat="0.000000" lon="0.002000" version="1" />
+  <node id="4" lat="0.001000" lon="0.002000" version="1" />
+  <way id="10" version="1">
+    <nd ref="1" />
+    <nd ref="2" />
+    <nd ref="3" />
+    <nd ref="4" />
+    <tag k="highway" v="residential" />
+    <tag k="name" v="Synthetic Test Road" />
+  </way>
+</osm>

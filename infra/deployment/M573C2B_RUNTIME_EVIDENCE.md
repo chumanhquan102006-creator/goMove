@@ -1,9 +1,10 @@
 # M5.7.3C2B isolated runtime evidence
 
-Status: **partial verification, not production acceptance**. These tests used
-disposable local environments on Windows/Docker Desktop x86_64. No public
-deployment, production Compose, certificate request, private Hanoi map transfer
-or existing database change was made.
+Status: **scoped isolated runtime acceptance, not production acceptance**.
+Local tests used disposable Windows/Docker Desktop x86_64 resources; the
+synthetic Backend/PostGIS/OSRM runtime also passed on a GitHub-hosted native
+ARM64 runner. No public deployment, production Compose, certificate request,
+private Hanoi map transfer or existing database change was made.
 
 Local reproduction from the repository root (only on a machine with a usable
 Docker Engine; each test creates its own disposable resources):
@@ -18,15 +19,17 @@ Docker Engine; each test creates its own disposable resources):
 For backup/restore, run test_c2b_recovery_runtime.py under Ubuntu WSL with
 GOMOVE_C2B_DOCKER pointing to the Windows Docker Desktop CLI. It requires the
 pre-existing local image gomove-postgis35-spike:amd64 and never calls the real
-production Compose source. The ARM64 workflow has not been executed.
+production Compose source. The native ARM64 result is recorded below.
 
 ## Baseline and isolation
 
-- Source commit: b08a9beb23da37d6731907c006a2b8dec9887e07.
-- New local branch: feature/m5-7-3-runtime-validation; changes remain unstaged.
+- Original C2B source commit: b08a9beb23da37d6731907c006a2b8dec9887e07.
+- Verified ARM64 runtime checkpoint: c21cd46 on feature/m5-7-3-runtime-validation.
 - [GitHub CI run 42049581966](https://github.com/chumanhquan102006-creator/goMove/actions/runs/42049581966)
   for the source commit completed successfully: Backend tests, Flutter checks
   and AMD64 Backend image build. That CI run did not execute C2B.
+- [Regular CI run 42060295121](https://github.com/chumanhquan102006-creator/goMove/actions/runs/42060295121)
+  for the accepted checkpoint completed successfully in all three jobs.
 - Local Docker Engine: Linux x86_64, version 29.6.1. Existing GoMove and
   Midterm containers were left running. C2B containers, networks and volumes
   used random names; C2B volumes and networks were label checked before
@@ -85,8 +88,9 @@ permission denied for route.osrm.fileIndex. Repeating with a new, labeled
 Docker Linux volume and explicitly readable files passed. This establishes a
 **dataset file-permission prerequisite** for a future Linux host; it does not
 prove a defect in production Compose. The private, prepared Hanoi MLD dataset
-was never used, copied or uploaded. Native ARM64 OSRM runtime and actual Hanoi
-routing remain **NOT RUN**.
+was never used, copied or uploaded. Native ARM64 routing with this synthetic
+fixture passed in the GitHub run below; actual Hanoi routing remains
+**NOT RUN**.
 
 ## Encrypted backup and isolated restore
 
@@ -115,40 +119,42 @@ the WSL ext4 rerun passed. Encrypted **off-server** transfer/retention and a
 production backup recovery decision remain **BLOCKED** pending approved storage
 and key custody.
 
-## Native ARM64 follow-up
+## Native ARM64 scoped acceptance
 
-The new workflow .github/workflows/runtime-arm64-c2b.yml and script
-infra/deployment/run-c2b-arm64.sh prepare a GitHub-hosted native
-ubuntu-24.04-arm test. It will build current Backend and PostGIS images without
-publishing, pull pinned OSRM, check linux/arm64 architecture, exercise
-missing-prod-config failure, non-root secret-file readability, private Backend
-readiness, real Flyway V18 migration on a fresh disposable DB, and an OSRM route
-using only the synthetic fixture. It also prints startup and CPU/memory
-snapshots. All three services have no host port binding.
-Registry manifest inspection confirmed linux/arm64 entries for the pinned
-Maven, Java 21 JRE, PostgreSQL and OSRM base images; runtime compatibility
-still requires a successful complete workflow run.
+The [native ARM64 run 42060294919](https://github.com/chumanhquan102006-creator/goMove/actions/runs/42060294919)
+completed successfully on GitHub-hosted ubuntu-24.04-arm at checkpoint c21cd46.
+The workflow built the Backend and PostGIS images without publishing and used
+the pinned OSRM image. Its log confirmed:
+
+- Backend, PostgreSQL/PostGIS and OSRM images are linux/arm64; Backend UID 10001.
+- Missing production configuration fails closed. Synthetic secret ownership,
+  mode and per-service non-root read-access probes pass.
+- Disposable PostgreSQL/PostGIS is healthy. Synthetic MLD preprocessing,
+  non-root OSRM health and private HTTP route pass.
+- Backend production readiness is UP after 9 seconds; a fresh isolated
+  database migrated through real Flyway V18 and loaded PostGIS.
+- Backend reached OSRM privately; none of the three test services published
+  a host port.
+- One idle snapshot: Backend CPU 0.38%, memory 392.1 MiB; PostgreSQL CPU
+  0.09%, memory 199 MiB; OSRM CPU 0.00%, memory 2.098 MiB. These are
+  single idle readings on the GitHub runner, **not production sizing evidence**.
 
 The initial [native ARM64 run 42057152886](https://github.com/chumanhquan102006-creator/goMove/actions/runs/42057152886)
-on commit 16f4960 failed at the secret-file chmod step. Before that failure,
-the log confirmed ARM64 images, Backend UID 10001 and missing-config
-fail-closed. The proposed sudo chmod and ownership/read-access checks in the
-current patch have **not** run on GitHub. Backend readiness, Flyway and OSRM
-runtime on native ARM64 remain **NOT VERIFIED**. This workflow still cannot
-validate the private Hanoi dataset, Oracle
-A1, production digests, real secrets, production backup/restore or public
-HTTPS/WSS. The existing PostGIS image build has unpinned APT dependency
-resolution and needs production provenance/vulnerability review.
+on commit 16f4960 failed at secret-file chmod. The successful run above
+supersedes that failure. This scoped test still cannot validate the private
+Hanoi dataset, Oracle A1, approved production image digests, real secrets,
+production backup/restore or public HTTPS/WSS. The existing PostGIS image
+build has unpinned APT dependency resolution and still needs production
+provenance/vulnerability review.
 
 ## Remaining deployment gates
 
-1. Review this patch, then obtain a successful native ARM64 C2B workflow run.
-2. Validate approved Hanoi MLD files and permissions on an isolated ARM64 host
+1. Validate approved Hanoi MLD files and permissions on an isolated ARM64 host
    without uploading the private dataset to GitHub.
-3. Approve production image digests and review vulnerabilities/resource use.
-4. Establish off-server encrypted backup, independent integrity checks and a
+2. Approve production image digests and review vulnerabilities/resource use.
+3. Establish off-server encrypted backup, independent integrity checks and a
    restore rehearsal under an approved recovery plan.
-5. Configure reviewed DNS, firewall, trusted TLS and public HTTPS/WSS; verify
+4. Configure reviewed DNS, firewall, trusted TLS and public HTTPS/WSS; verify
    JWT/STOMP authorization, GPS privacy and abuse controls over Nokia 4G.
-6. Perform representative load and recovery tests. No observed idle snapshot
+5. Perform representative load and Oracle A1 resource tests. No observed idle snapshot
    here establishes production capacity or RPO/RTO.

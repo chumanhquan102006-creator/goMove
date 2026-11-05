@@ -1,0 +1,59 @@
+# A real reviewed DNS name is supplied as M573_PUBLIC_HOSTNAME at deployment.
+# Caddy obtains/renews its certificate only after this stack is explicitly run.
+{$M573_PUBLIC_HOSTNAME} {
+    request_body {
+        max_size 1MB
+    }
+
+    header {
+        Cache-Control "no-store"
+        X-Content-Type-Options "nosniff"
+        Strict-Transport-Security "max-age=31536000"
+    }
+
+    route {
+        @blocked path /actuator /actuator/* /swagger-ui /swagger-ui/* /swagger-ui.html /v3/api-docs /v3/api-docs/*
+        handle @blocked {
+            respond 404
+        }
+
+        handle /ws {
+            reverse_proxy backend:8080 {
+                # No client-supplied proxy headers reach Spring's ForwardedHeaderFilter.
+                header_up -Forwarded
+                header_up -X-Forwarded-Prefix
+                header_up -X-Forwarded-Port
+                header_up -X-Forwarded-Ssl
+                header_up -X-Real-IP
+                header_up X-Forwarded-For {remote_host}
+                header_up X-Forwarded-Proto {scheme}
+                header_up X-Forwarded-Host {host}
+                transport http {
+                    dial_timeout 5s
+                    response_header_timeout 30s
+                }
+            }
+        }
+
+        handle /api/v1/* {
+            reverse_proxy backend:8080 {
+                header_up -Forwarded
+                header_up -X-Forwarded-Prefix
+                header_up -X-Forwarded-Port
+                header_up -X-Forwarded-Ssl
+                header_up -X-Real-IP
+                header_up X-Forwarded-For {remote_host}
+                header_up X-Forwarded-Proto {scheme}
+                header_up X-Forwarded-Host {host}
+                transport http {
+                    dial_timeout 5s
+                    response_header_timeout 30s
+                }
+            }
+        }
+
+        handle {
+            respond 404
+        }
+    }
+}

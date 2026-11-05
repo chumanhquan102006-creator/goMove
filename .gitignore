@@ -1,2 +1,9 @@
 # Local M5.7.2 path configuration. Secret files live outside this repository.
 .env.m572
+
+# Local production preflight files and generated Python bytecode.
+# Real secret files and the Hanoi dataset must live outside this repository.
+infra/deployment/.env.prod
+infra/deployment/*.dump.gpg
+infra/deployment/*.dump.gpg.sha256
+infra/deployment/__pycache__/

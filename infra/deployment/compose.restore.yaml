@@ -1,0 +1,41 @@
+name: gomove-m573-restore-${M573_RESTORE_SUFFIX:?Choose a unique lowercase restore suffix}
+
+# Future restore rehearsal only. No host ports and no production data volume.
+services:
+  postgres:
+    image: ghcr.io/chumanhquan102006-creator/gomove-postgis-arm64@sha256:${M573_POSTGIS_DIGEST:?A reviewed PostGIS ARM64 digest is required}
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: gomove_prod
+      POSTGRES_PASSWORD_FILE: /run/secrets/restore-db-password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    secrets:
+      - source: restore_db_password
+        target: restore-db-password
+    volumes:
+      - restore_data:/var/lib/postgresql/data
+    networks:
+      - restore_private
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+    cpus: "0.5"
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "gomove_prod", "-d", "postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    stop_grace_period: 60s
+
+networks:
+  restore_private:
+    internal: true
+
+volumes:
+  restore_data: {}
+
+secrets:
+  restore_db_password:
+    file: ${M573_RESTORE_DB_PASSWORD_FILE:?Use a separate disposable password file outside Git}

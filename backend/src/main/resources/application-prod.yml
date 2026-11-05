@@ -1,0 +1,47 @@
+spring:
+  config:
+    import: configtree:/run/secrets/
+  datasource:
+    url: jdbc:postgresql://postgres:5432/gomove_prod
+    username: gomove_prod
+  jpa:
+    show-sql: false
+  flyway:
+    enabled: true
+
+server:
+  port: 8080
+  shutdown: graceful
+  forward-headers-strategy: framework
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+management:
+  server:
+    port: 8081
+    address: 127.0.0.1
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+
+gomove:
+  routing:
+    osrm:
+      base-url: http://osrm:5000
+  geocoding:
+    base-url: ${GOMOVE_PROD_GEOCODING_BASE_URL}
+  realtime:
+    allowed-origins: https://${GOMOVE_PROD_PUBLIC_HOSTNAME}

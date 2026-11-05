@@ -1,0 +1,174 @@
+name: gomove-m573
+
+# Offline production template. Unset digests and paths intentionally prevent use.
+# Never point this project at development, Midterm, or M5.7.2 volumes.
+services:
+  caddy:
+    image: caddy@sha256:${M573_CADDY_DIGEST:?A reviewed ARM64 Caddy image digest is required}
+    environment:
+      M573_PUBLIC_HOSTNAME: ${M573_PUBLIC_HOSTNAME:?A reviewed public DNS hostname is required}
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+    volumes:
+      - type: bind
+        source: ./Caddyfile.prod
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+    depends_on:
+      backend:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    mem_limit: 256m
+    cpus: "0.25"
+    pids_limit: 64
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    stop_grace_period: 30s
+
+  backend:
+    image: ghcr.io/chumanhquan102006-creator/gomove-backend@sha256:${M573_BACKEND_DIGEST:?A reviewed ARM64 Backend image digest is required}
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_AUTOCONFIGURE_EXCLUDE: org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
+      GOMOVE_PROD_PUBLIC_HOSTNAME: ${M573_PUBLIC_HOSTNAME:?A reviewed public DNS hostname is required}
+      GOMOVE_PROD_GEOCODING_BASE_URL: ${M573_GEOCODING_BASE_URL:?Set an explicit reviewed HTTPS geocoder URL}
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=65.0 -XX:+ExitOnOutOfMemoryError
+      SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE: 25s
+    secrets:
+      - source: db_password_backend
+        target: spring.datasource.password
+      - source: jwt_secret
+        target: JWT_SECRET
+    depends_on:
+      postgres:
+        condition: service_healthy
+      osrm:
+        condition: service_healthy
+    networks:
+      - edge
+      - data
+      - routing
+    read_only: true
+    tmpfs:
+      - /tmp
+    user: "10001:10001"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 2g
+    cpus: "0.75"
+    pids_limit: 256
+    restart: unless-stopped
+    healthcheck:
+      # The second probe requires a real OSRM route, not merely a listening port.
+      test: ["CMD-SHELL", "java -cp /app/health HealthProbe http://127.0.0.1:8081/actuator/health/readiness '\"status\":\"UP\"' && java -cp /app/health HealthProbe 'http://osrm:5000/route/v1/driving/105.834,21.028;105.84,21.03?overview=false' '\"code\":\"Ok\"'"]
+      interval: 30s
+      timeout: 12s
+      retries: 6
+      start_period: 120s
+    stop_grace_period: 40s
+
+  postgres:
+    # This repository name is a future publishing target, not an approved image.
+    image: ghcr.io/chumanhquan102006-creator/gomove-postgis-arm64@sha256:${M573_POSTGIS_DIGEST:?A reviewed production PostGIS ARM64 digest is required}
+    environment:
+      POSTGRES_DB: gomove_prod
+      POSTGRES_USER: gomove_prod
+      POSTGRES_PASSWORD_FILE: /run/secrets/db-password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    secrets:
+      - source: db_password_postgres
+        target: db-password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - data
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+    cpus: "0.5"
+    pids_limit: 256
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "gomove_prod", "-d", "gomove_prod"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    stop_grace_period: 60s
+
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend@sha256:55dbfd47d984c2cacd64e32901b4321c86b5ec761438e69aa053dc78698a786f
+    command: ["osrm-routed", "--algorithm", "mld", "/data/hanoi.osrm"]
+    volumes:
+      - type: bind
+        source: ${M573_OSRM_DATA_DIR:?An approved, checksummed Hanoi MLD directory is required}
+        target: /data
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - routing
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 3g
+    cpus: "0.5"
+    pids_limit: 128
+    restart: unless-stopped
+    healthcheck:
+      # Shallow local check; Backend healthcheck above verifies HTTP routing.
+      test: ["CMD-SHELL", "test -r /data/hanoi.osrm.cells && test -r /data/hanoi.osrm.partition && test -r /data/hanoi.osrm.mldgr && kill -0 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
+    stop_grace_period: 30s
+
+networks:
+  edge: {}
+  data:
+    internal: true
+  routing:
+    internal: true
+
+volumes:
+  postgres_data:
+    name: gomove-m573-postgres-data
+  caddy_data:
+    name: gomove-m573-caddy-data
+  caddy_config:
+    name: gomove-m573-caddy-config
+
+secrets:
+  db_password_backend:
+    file: ${M573_SECRET_DIR:?Set a private directory outside Git}/db-password-backend.txt
+  db_password_postgres:
+    file: ${M573_SECRET_DIR:?Set a private directory outside Git}/db-password-postgres.txt
+  jwt_secret:
+    file: ${M573_SECRET_DIR:?Set a private directory outside Git}/jwt-secret.txt

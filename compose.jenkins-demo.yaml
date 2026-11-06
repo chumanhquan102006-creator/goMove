@@ -1,0 +1,7 @@
+# Overrides only the backend image and localhost port for the classroom demo.
+# Docker Compose >= 2.24.4 supports !override, including the user's v5.3.0.
+services:
+  backend:
+    image: gomove-jenkins-demo-backend:local
+    ports: !override
+      - "127.0.0.1:18082:8080"

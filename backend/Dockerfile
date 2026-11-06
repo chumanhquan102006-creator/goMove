@@ -4,7 +4,8 @@ COPY .mvn/ .mvn/
 COPY mvnw pom.xml ./
 COPY src/ src/
 COPY docker/ docker/
-RUN chmod +x mvnw \
+RUN sed -i 's/\r$//' mvnw \
+    && chmod +x mvnw \
     && MAVEN_CONFIG= ./mvnw -B -ntp -Dmaven.test.skip=true package \
     && javac -d /tmp/health docker/HealthProbe.java \
     && cp target/gomove-backend-0.0.1-SNAPSHOT.jar /tmp/app.jar

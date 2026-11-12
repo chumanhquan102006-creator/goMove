@@ -241,7 +241,7 @@ class _DriverContentState extends State<_DriverContent>
                                 style:
                                     Theme.of(context).textTheme.headlineSmall),
                             const SizedBox(height: 4),
-                            Text('Sẵn sàng cho hành trình hôm nay',
+                            Text('Chào mừng bạn đến với GoMove!',
                                 style: Theme.of(context)
                                     .textTheme
                                     .bodyMedium

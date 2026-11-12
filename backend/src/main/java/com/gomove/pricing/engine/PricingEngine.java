@@ -27,11 +27,21 @@ public class PricingEngine {
     }
 
     public FareBreakdown calculate(VehicleType vehicleType, RouteEstimate route, BigDecimal discountAmount) {
+        return calculate(vehicleType, route, discountAmount, null);
+    }
+
+    public FareBreakdown calculate(VehicleType vehicleType, RouteEstimate route, BigDecimal discountAmount,
+                                   PeakHourPricingPolicy.Evaluation peakEvaluation) {
         if (vehicleType == null || route == null || discountAmount == null || discountAmount.signum() < 0) {
             throw new IllegalArgumentException("Vehicle type, route and non-negative discount are required");
         }
         PricingProperties.Tariff tariff = properties.getTariffs().get(vehicleType);
         if (tariff == null) throw new IllegalArgumentException("No tariff for vehicle type " + vehicleType);
+
+        BigDecimal tariffMultiplier = tariff.getSurgeMultiplier().setScale(4, RoundingMode.UNNECESSARY);
+        BigDecimal peakMultiplier = peakEvaluation == null
+                ? BigDecimal.ONE.setScale(4) : peakEvaluation.peakMultiplier();
+        BigDecimal effectiveMultiplier = effectiveMultiplier(tariffMultiplier, peakMultiplier);
 
         BigDecimal rawDistanceFare = route.distanceMeters()
                 .multiply(tariff.getPricePerKm()).divide(THOUSAND, MathContext.DECIMAL128);
@@ -39,7 +49,7 @@ public class PricingEngine {
                 .multiply(tariff.getPricePerMinute()).divide(SIXTY, MathContext.DECIMAL128);
         BigDecimal rawSubtotal = tariff.getBaseFare().add(rawDistanceFare)
                 .add(rawTimeFare).add(tariff.getSurcharge());
-        BigDecimal rawSurgeAmount = rawSubtotal.multiply(tariff.getSurgeMultiplier().subtract(BigDecimal.ONE));
+        BigDecimal rawSurgeAmount = rawSubtotal.multiply(effectiveMultiplier.subtract(BigDecimal.ONE));
         BigDecimal surgedSubtotal = rawSubtotal.add(rawSurgeAmount);
         BigDecimal rawFinalFare = surgedSubtotal.subtract(discountAmount);
         BigDecimal finalFare = money(rawFinalFare.setScale(0, RoundingMode.HALF_UP));
@@ -51,7 +61,7 @@ public class PricingEngine {
         BigDecimal surcharge = money(tariff.getSurcharge());
         BigDecimal surgeAmount = money(rawSurgeAmount);
         BigDecimal discount = money(discountAmount);
-        BigDecimal multiplier = tariff.getSurgeMultiplier().setScale(4, RoundingMode.UNNECESSARY);
+        BigDecimal multiplier = effectiveMultiplier;
         BigDecimal displayedSubtotal = baseFare.add(distanceFare).add(timeFare).add(surcharge);
         BigDecimal displayedBeforeAdjustment = displayedSubtotal.add(surgeAmount).subtract(discount);
         // Reconcile independently rounded display lines with the fare rounded from raw values.
@@ -84,6 +94,17 @@ public class PricingEngine {
         snapshot.put("roundingAdjustment", roundingAdjustment.toPlainString());
         snapshot.put("finalFare", finalFare.toPlainString());
         snapshot.put("roundingMode", RoundingMode.HALF_UP.name());
+        if (peakEvaluation != null) {
+            snapshot.put("peakHourPolicyVersion", peakEvaluation.policyVersion());
+            snapshot.put("peakHourEvaluationTimestamp", peakEvaluation.timestamp().toString());
+            snapshot.put("peakHourTimezone", peakEvaluation.timezone());
+            snapshot.put("peakHourMultiplier", peakMultiplier.toPlainString());
+            snapshot.put("configuredPeakHourMultiplier", peakEvaluation.configuredPeakMultiplier().toPlainString());
+            snapshot.put("peakHourApplied", Boolean.toString(peakEvaluation.applied()));
+            snapshot.put("peakHourReason", peakEvaluation.reason());
+            snapshot.put("tariffSurgeMultiplier", tariffMultiplier.toPlainString());
+            snapshot.put("effectiveSurgeMultiplier", effectiveMultiplier.toPlainString());
+        }
 
         return new FareBreakdown(properties.getEngineVersion(), "VND", baseFare, distanceFare,
                 timeFare, surcharge, multiplier, surgeAmount, discount, roundingAdjustment, finalFare,
@@ -96,6 +117,19 @@ public class PricingEngine {
             throw new IllegalArgumentException("Monetary amount exceeds NUMERIC(15,2) storage precision");
         }
         return rounded;
+    }
+
+    private BigDecimal effectiveMultiplier(BigDecimal tariffMultiplier, BigDecimal peakMultiplier) {
+        BigDecimal effective;
+        try {
+            effective = tariffMultiplier.multiply(peakMultiplier).setScale(4, RoundingMode.UNNECESSARY);
+        } catch (ArithmeticException ex) {
+            throw new IllegalArgumentException("Effective surge multiplier must fit NUMERIC(8,4) exactly", ex);
+        }
+        if (effective.signum() <= 0 || effective.precision() - effective.scale() > 4) {
+            throw new IllegalArgumentException("Effective surge multiplier must fit positive NUMERIC(8,4)");
+        }
+        return effective;
     }
 
     private void validateConfiguration() {

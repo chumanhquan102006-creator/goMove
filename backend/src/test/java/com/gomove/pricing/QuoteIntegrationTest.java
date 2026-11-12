@@ -113,7 +113,8 @@ class QuoteIntegrationTest extends BaseIntegrationTest {
         User customer = user(UserRole.CUSTOMER);
         User other = user(UserRole.CUSTOMER);
         String tampered = REQUEST.replace("\"vehicleType\":\"MOTORBIKE\"",
-                "\"vehicleType\":\"MOTORBIKE\",\"customerId\":" + other.getId() + ",\"finalFare\":1");
+                "\"vehicleType\":\"MOTORBIKE\",\"customerId\":" + other.getId()
+                        + ",\"finalFare\":1,\"surgeMultiplier\":99,\"peakHourMultiplier\":99,\"pricingTimestamp\":\"2030-01-01T00:00:00Z\"");
         long before = quotes.count();
 
         mvc.perform(post(PATH).header("Authorization", bearer(customer))
@@ -221,7 +222,13 @@ class QuoteIntegrationTest extends BaseIntegrationTest {
         assertThat(quote.getRoundingAdjustment()).isEqualTo(new BigDecimal("0.00"));
         assertThat(quote.getPricingSnapshot()).containsEntry("pricingEngineVersion", "MVP_V1")
                 .containsEntry("pricePerKm", "4500.00")
-                .containsEntry("finalFare", "35400.00");
+                .containsEntry("finalFare", "35400.00")
+                .containsEntry("peakHourApplied", "false")
+                .containsEntry("peakHourReason", "FEATURE_DISABLED")
+                .containsEntry("peakHourEvaluationTimestamp", FIXED.toString())
+                .containsEntry("peakHourTimezone", "Asia/Ho_Chi_Minh")
+                .containsEntry("tariffSurgeMultiplier", "1.0000")
+                .containsEntry("effectiveSurgeMultiplier", "1.0000");
         assertThat(quote.getIssuedAt()).isEqualTo(FIXED);
         assertThat(quote.getExpiresAt()).isEqualTo(FIXED.plusSeconds(60));
         assertThat(quote.getStatus()).isEqualTo(QuoteStatus.ISSUED);
@@ -268,6 +275,23 @@ class QuoteIntegrationTest extends BaseIntegrationTest {
                 .isInstanceOf(DataIntegrityViolationException.class);
         assertThatThrownBy(() -> jdbc.update("UPDATE quotes SET customer_id=-1 WHERE public_id=?", publicId))
                 .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void quoteUsesPricingTimestampForPolicyAndPostPricingTimestampForTtl() throws Exception {
+        User customer = user(UserRole.CUSTOMER);
+        when(clock.instant()).thenReturn(FIXED, FIXED.plusSeconds(1));
+
+        JsonNode created = mapper.readTree(mvc.perform(post(PATH).header("Authorization", bearer(customer))
+                        .contentType(MediaType.APPLICATION_JSON).content(REQUEST))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).path("data");
+        Quote quote = quotes.findByPublicIdAndCustomerPublicId(UUID.fromString(created.path("quotePublicId").asText()),
+                customer.getPublicId()).orElseThrow();
+
+        assertThat(quote.getIssuedAt()).isEqualTo(FIXED.plusSeconds(1));
+        assertThat(quote.getPricingSnapshot()).containsEntry("peakHourEvaluationTimestamp", FIXED.toString());
+        assertThat(quote.getExpiresAt()).isEqualTo(FIXED.plusSeconds(61));
+        assertThat(quote.getFinalFare()).isEqualByComparingTo(new BigDecimal("35400.00"));
     }
 
     private User user(UserRole role) {

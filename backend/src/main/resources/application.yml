@@ -53,6 +53,20 @@ gomove:
     rate-window: ${GEOCODING_RATE_WINDOW:60s}
   pricing:
     engine-version: MVP_V1
+    peak-hour:
+      enabled: ${GOMOVE_PEAK_HOUR_PRICING_ENABLED:false}
+      policy-version: PEAK_HOUR_V1
+      timezone: Asia/Ho_Chi_Minh
+      multiplier: "1.20"
+      windows:
+        - days: [MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY]
+          start: "07:00"
+          end: "09:00"
+          reason: WEEKDAY_MORNING_PEAK
+        - days: [MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY]
+          start: "17:00"
+          end: "19:00"
+          reason: WEEKDAY_EVENING_PEAK
     # Academic demonstration tariffs in VND; not commercial ride-hailing prices.
     tariffs:
       MOTORBIKE:

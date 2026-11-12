@@ -10,6 +10,7 @@ import com.gomove.pricing.domain.Quote;
 import com.gomove.pricing.domain.RouteEstimate;
 import com.gomove.pricing.engine.FareBreakdown;
 import com.gomove.pricing.engine.PricingEngine;
+import com.gomove.pricing.engine.PeakHourPricingPolicy;
 import com.gomove.pricing.routing.RoutingService;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -23,13 +24,16 @@ public class QuoteApplicationService {
     private final RoutingService routing;
     private final PricingEngine pricing;
     private final QuotePersistenceService persistence;
+    private final PeakHourPricingPolicy peakHourPricing;
     private final Clock clock;
 
     public QuoteApplicationService(RoutingService routing, PricingEngine pricing,
-                                   QuotePersistenceService persistence, Clock clock) {
+                                   QuotePersistenceService persistence, PeakHourPricingPolicy peakHourPricing,
+                                   Clock clock) {
         this.routing = routing;
         this.pricing = pricing;
         this.persistence = persistence;
+        this.peakHourPricing = peakHourPricing;
         this.clock = clock;
     }
 
@@ -38,7 +42,10 @@ public class QuoteApplicationService {
         GeoCoordinate pickup = new GeoCoordinate(request.getPickupLatitude(), request.getPickupLongitude());
         GeoCoordinate dropoff = new GeoCoordinate(request.getDropoffLatitude(), request.getDropoffLongitude());
         RouteEstimate route = routing.calculateRoute(pickup, dropoff);
-        FareBreakdown fare = pricing.calculate(request.getVehicleType(), route);
+        Instant pricingEvaluatedAt = clock.instant();
+        PeakHourPricingPolicy.Evaluation peakEvaluation = peakHourPricing.evaluate(pricingEvaluatedAt);
+        FareBreakdown fare = pricing.calculate(request.getVehicleType(), route,
+                java.math.BigDecimal.ZERO, peakEvaluation);
         Instant issuedAt = clock.instant();
         Quote quote = persistence.create(customerPublicId, pickup, dropoff,
                 request.getVehicleType(), route, fare, issuedAt);

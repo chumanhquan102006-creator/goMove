@@ -11,6 +11,7 @@ import com.gomove.pricing.domain.RouteEstimate;
 import com.gomove.pricing.engine.FareBreakdown;
 import com.gomove.pricing.engine.PricingEngine;
 import com.gomove.pricing.engine.PeakHourPricingPolicy;
+import com.gomove.pricing.weather.WeatherPricingPolicy;
 import com.gomove.pricing.routing.RoutingService;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -25,15 +26,17 @@ public class QuoteApplicationService {
     private final PricingEngine pricing;
     private final QuotePersistenceService persistence;
     private final PeakHourPricingPolicy peakHourPricing;
+    private final WeatherPricingPolicy weatherPricing;
     private final Clock clock;
 
     public QuoteApplicationService(RoutingService routing, PricingEngine pricing,
                                    QuotePersistenceService persistence, PeakHourPricingPolicy peakHourPricing,
-                                   Clock clock) {
+                                   WeatherPricingPolicy weatherPricing, Clock clock) {
         this.routing = routing;
         this.pricing = pricing;
         this.persistence = persistence;
         this.peakHourPricing = peakHourPricing;
+        this.weatherPricing = weatherPricing;
         this.clock = clock;
     }
 
@@ -44,8 +47,10 @@ public class QuoteApplicationService {
         RouteEstimate route = routing.calculateRoute(pickup, dropoff);
         Instant pricingEvaluatedAt = clock.instant();
         PeakHourPricingPolicy.Evaluation peakEvaluation = peakHourPricing.evaluate(pricingEvaluatedAt);
+        WeatherPricingPolicy.Evaluation weatherEvaluation = weatherPricing.evaluate(pricingEvaluatedAt, pickup);
         FareBreakdown fare = pricing.calculate(request.getVehicleType(), route,
-                java.math.BigDecimal.ZERO, peakEvaluation);
+                java.math.BigDecimal.ZERO, peakEvaluation, weatherEvaluation,
+                weatherPricing.maximumCombinedMultiplier());
         Instant issuedAt = clock.instant();
         Quote quote = persistence.create(customerPublicId, pickup, dropoff,
                 request.getVehicleType(), route, fare, issuedAt);

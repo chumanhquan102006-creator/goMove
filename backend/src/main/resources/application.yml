@@ -67,6 +67,25 @@ gomove:
           start: "17:00"
           end: "19:00"
           reason: WEEKDAY_EVENING_PEAK
+    weather:
+      # Optional academic demonstration policy; disabled unless explicitly enabled.
+      enabled: ${GOMOVE_WEATHER_PRICING_ENABLED:false}
+      policy-version: WEATHER_V1
+      provider: OPEN_METEO
+      base-url: https://api.open-meteo.com
+      connect-timeout: 2s
+      read-timeout: 3s
+      maximum-age: 30m
+      expected-interval-seconds: 900
+      no-rain-below-mm: 0.2
+      heavy-rain-from-mm: 2.0
+      rain-multiplier: 1.10
+      heavy-rain-multiplier: 1.15
+      maximum-combined-multiplier: 1.50
+      cache-capacity: 256
+      cache-grid-decimals: 2
+      successful-cache-ttl: 2m
+      failure-cache-ttl: 10s
     # Academic demonstration tariffs in VND; not commercial ride-hailing prices.
     tariffs:
       MOTORBIKE:

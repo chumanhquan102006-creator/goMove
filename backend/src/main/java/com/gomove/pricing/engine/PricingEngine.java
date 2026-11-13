@@ -2,6 +2,7 @@ package com.gomove.pricing.engine;
 
 import com.gomove.pricing.domain.RouteEstimate;
 import com.gomove.vehicle.domain.VehicleType;
+import com.gomove.pricing.weather.WeatherPricingPolicy;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -32,6 +33,13 @@ public class PricingEngine {
 
     public FareBreakdown calculate(VehicleType vehicleType, RouteEstimate route, BigDecimal discountAmount,
                                    PeakHourPricingPolicy.Evaluation peakEvaluation) {
+        return calculate(vehicleType, route, discountAmount, peakEvaluation, null, null);
+    }
+
+    public FareBreakdown calculate(VehicleType vehicleType, RouteEstimate route, BigDecimal discountAmount,
+                                   PeakHourPricingPolicy.Evaluation peakEvaluation,
+                                   WeatherPricingPolicy.Evaluation weatherEvaluation,
+                                   BigDecimal maximumCombinedMultiplier) {
         if (vehicleType == null || route == null || discountAmount == null || discountAmount.signum() < 0) {
             throw new IllegalArgumentException("Vehicle type, route and non-negative discount are required");
         }
@@ -41,7 +49,11 @@ public class PricingEngine {
         BigDecimal tariffMultiplier = tariff.getSurgeMultiplier().setScale(4, RoundingMode.UNNECESSARY);
         BigDecimal peakMultiplier = peakEvaluation == null
                 ? BigDecimal.ONE.setScale(4) : peakEvaluation.peakMultiplier();
-        BigDecimal effectiveMultiplier = effectiveMultiplier(tariffMultiplier, peakMultiplier);
+        BigDecimal preWeatherMultiplier = effectiveMultiplier(tariffMultiplier, peakMultiplier);
+        WeatherComposition weather = weatherEvaluation == null
+                ? WeatherComposition.none(preWeatherMultiplier)
+                : composeWeather(preWeatherMultiplier, weatherEvaluation, maximumCombinedMultiplier);
+        BigDecimal effectiveMultiplier = weather.finalMultiplier();
 
         BigDecimal rawDistanceFare = route.distanceMeters()
                 .multiply(tariff.getPricePerKm()).divide(THOUSAND, MathContext.DECIMAL128);
@@ -54,6 +66,12 @@ public class PricingEngine {
         BigDecimal rawFinalFare = surgedSubtotal.subtract(discountAmount);
         BigDecimal finalFare = money(rawFinalFare.setScale(0, RoundingMode.HALF_UP));
         if (finalFare.signum() <= 0) throw new IllegalArgumentException("Final fare must remain positive");
+        BigDecimal actualWeatherFareDifference = null;
+        if (weatherEvaluation != null) {
+            BigDecimal fareWithoutWeather = money(rawSubtotal.multiply(preWeatherMultiplier)
+                    .subtract(discountAmount).setScale(0, RoundingMode.HALF_UP));
+            actualWeatherFareDifference = money(finalFare.subtract(fareWithoutWeather));
+        }
 
         BigDecimal baseFare = money(tariff.getBaseFare());
         BigDecimal distanceFare = money(rawDistanceFare);
@@ -103,12 +121,99 @@ public class PricingEngine {
             snapshot.put("peakHourApplied", Boolean.toString(peakEvaluation.applied()));
             snapshot.put("peakHourReason", peakEvaluation.reason());
             snapshot.put("tariffSurgeMultiplier", tariffMultiplier.toPlainString());
-            snapshot.put("effectiveSurgeMultiplier", effectiveMultiplier.toPlainString());
+            // Preserve the M1 field's meaning: tariff × peak-hour, before any optional M2 signal.
+            snapshot.put("effectiveSurgeMultiplier", preWeatherMultiplier.toPlainString());
+        }
+        if (weatherEvaluation != null) {
+            snapshot.put("weatherPricingPolicyVersion", weatherEvaluation.policyVersion());
+            snapshot.put("weatherProvider", weatherEvaluation.provider());
+            snapshot.put("weatherEvaluationTimestamp", weatherEvaluation.evaluatedAt().toString());
+            snapshot.put("weatherObservationTimestamp", weatherEvaluation.observedAt() == null
+                    ? "NOT_AVAILABLE" : weatherEvaluation.observedAt().toString());
+            snapshot.put("weatherFreshnessSeconds", weatherEvaluation.observedAt() == null
+                    || weatherEvaluation.evaluatedAt().isBefore(weatherEvaluation.observedAt())
+                    ? "NOT_AVAILABLE" : Long.toString(java.time.Duration.between(
+                            weatherEvaluation.observedAt(), weatherEvaluation.evaluatedAt()).toSeconds()));
+            snapshot.put("weatherMaximumAgeSeconds", Long.toString(weatherEvaluation.maximumAgeSeconds()));
+            snapshot.put("weatherDataStatus", weatherEvaluation.dataStatus());
+            snapshot.put("weatherRainMm", weatherEvaluation.rainMm() == null
+                    ? "NOT_AVAILABLE" : weatherEvaluation.rainMm().toPlainString());
+            snapshot.put("weatherRainUnit", weatherEvaluation.unit());
+            snapshot.put("weatherObservationIntervalSeconds", weatherEvaluation.intervalSeconds() == null
+                    ? "NOT_AVAILABLE" : weatherEvaluation.intervalSeconds().toString());
+            snapshot.put("configuredWeatherMultiplier", weatherEvaluation.multiplier().toPlainString());
+            snapshot.put("requestedWeatherMultiplier", weatherEvaluation.multiplier().toPlainString());
+            // Retained for compatibility: this legacy field is the policy-requested factor, not the applied uplift.
+            snapshot.put("weatherMultiplier", weatherEvaluation.multiplier().toPlainString());
+            snapshot.put("weatherPolicyApplied", Boolean.toString(weatherEvaluation.applied()));
+            BigDecimal actualMultiplierUplift = effectiveMultiplier.subtract(preWeatherMultiplier);
+            if (actualMultiplierUplift.signum() < 0) {
+                throw new IllegalStateException("Weather pricing must not reduce the pre-weather multiplier");
+            }
+            snapshot.put("actualMultiplierUplift", actualMultiplierUplift.toPlainString());
+            snapshot.put("weatherApplied", Boolean.toString(actualMultiplierUplift.signum() > 0));
+            snapshot.put("weatherUpliftStatus", weatherUpliftStatus(weatherEvaluation, weather, actualMultiplierUplift));
+            snapshot.put("actualWeatherFareDifferenceVnd", actualWeatherFareDifference.toPlainString());
+            snapshot.put("weatherReason", weatherEvaluation.reason());
+            snapshot.put("weatherNoRainBelowMm", weatherEvaluation.noRainBelowMm().toPlainString());
+            snapshot.put("weatherHeavyRainFromMm", weatherEvaluation.heavyRainFromMm().toPlainString());
+            snapshot.put("configuredRainMultiplier", weatherEvaluation.configuredRainMultiplier().toPlainString());
+            snapshot.put("configuredHeavyRainMultiplier", weatherEvaluation.configuredHeavyRainMultiplier().toPlainString());
+            snapshot.put("weatherDataAttribution", "Weather data by Open-Meteo.com");
+            snapshot.put("weatherDataLicense", "CC BY 4.0");
+            snapshot.put("preWeatherMultiplier", preWeatherMultiplier.toPlainString());
+            snapshot.put("rawWeatherAdjustedMultiplier", weather.rawRequestedMultiplier().toPlainString());
+            snapshot.put("finalEffectiveMultiplier", effectiveMultiplier.toPlainString());
+            snapshot.put("configuredMaxCombinedMultiplier", weather.maximumCombinedMultiplier().toPlainString());
+            snapshot.put("totalSurgeCapApplied", Boolean.toString(weather.capApplied()));
+            snapshot.putIfAbsent("tariffSurgeMultiplier", tariffMultiplier.toPlainString());
+            snapshot.putIfAbsent("peakHourMultiplier", peakMultiplier.toPlainString());
+            snapshot.putIfAbsent("effectiveSurgeMultiplier", preWeatherMultiplier.toPlainString());
         }
 
         return new FareBreakdown(properties.getEngineVersion(), "VND", baseFare, distanceFare,
                 timeFare, surcharge, multiplier, surgeAmount, discount, roundingAdjustment, finalFare,
                 Collections.unmodifiableMap(snapshot));
+    }
+
+    private String weatherUpliftStatus(WeatherPricingPolicy.Evaluation evaluation, WeatherComposition weather,
+                                       BigDecimal actualMultiplierUplift) {
+        if (evaluation.multiplier().compareTo(BigDecimal.ONE) <= 0) return "NO_UPLIFT_REQUESTED";
+        if (!weather.capApplied()) return "FULLY_APPLIED";
+        return actualMultiplierUplift.signum() > 0 ? "PARTIALLY_CAPPED" : "FULLY_SUPPRESSED_BY_CAP";
+    }
+
+    private WeatherComposition composeWeather(BigDecimal preWeatherMultiplier,
+                                               WeatherPricingPolicy.Evaluation evaluation,
+                                               BigDecimal maximumCombinedMultiplier) {
+        BigDecimal weatherMultiplier = evaluation.multiplier();
+        if (weatherMultiplier == null || weatherMultiplier.compareTo(BigDecimal.ONE) < 0
+                || weatherMultiplier.scale() > 4 || weatherMultiplier.precision() - weatherMultiplier.scale() > 4) {
+            throw new IllegalArgumentException("Weather multiplier must fit positive NUMERIC(8,4) and not reduce fares");
+        }
+        if (maximumCombinedMultiplier == null || maximumCombinedMultiplier.compareTo(BigDecimal.ONE) < 0
+                || maximumCombinedMultiplier.scale() > 4
+                || maximumCombinedMultiplier.precision() - maximumCombinedMultiplier.scale() > 4) {
+            throw new IllegalArgumentException("Maximum combined multiplier must fit NUMERIC(8,4) and be at least 1");
+        }
+        BigDecimal rawRequested = preWeatherMultiplier.multiply(weatherMultiplier);
+        BigDecimal roundedRequested = rawRequested.setScale(4, RoundingMode.HALF_UP);
+        boolean capApplied = weatherMultiplier.compareTo(BigDecimal.ONE) > 0
+                && rawRequested.compareTo(maximumCombinedMultiplier) > 0;
+        BigDecimal finalMultiplier = roundedRequested;
+        if (capApplied) {
+            // The cap suppresses only the incremental weather uplift; it never reduces M1 pricing.
+            finalMultiplier = preWeatherMultiplier.compareTo(maximumCombinedMultiplier) >= 0
+                    ? preWeatherMultiplier : maximumCombinedMultiplier;
+        }
+        return new WeatherComposition(finalMultiplier, rawRequested, maximumCombinedMultiplier, capApplied);
+    }
+
+    private record WeatherComposition(BigDecimal finalMultiplier, BigDecimal rawRequestedMultiplier,
+                                      BigDecimal maximumCombinedMultiplier, boolean capApplied) {
+        static WeatherComposition none(BigDecimal base) {
+            return new WeatherComposition(base, base, base, false);
+        }
     }
 
     private BigDecimal money(BigDecimal value) {

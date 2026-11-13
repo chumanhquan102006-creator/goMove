@@ -18,6 +18,7 @@ import com.gomove.pricing.engine.PeakHourPricingPolicy;
 import com.gomove.pricing.engine.PeakHourPricingProperties;
 import com.gomove.pricing.engine.PricingEngine;
 import com.gomove.pricing.routing.RoutingService;
+import com.gomove.pricing.weather.WeatherPricingPolicy;
 import com.gomove.vehicle.domain.VehicleType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -184,7 +185,8 @@ class PeakHourPricingApiE2ETest extends BaseIntegrationTest {
             clock.set(T1_AFTER_WINDOW_END);
             return fare;
         }).when(pricing).calculate(eq(VehicleType.MOTORBIKE), any(RouteEstimate.class), eq(BigDecimal.ZERO),
-                any(PeakHourPricingPolicy.Evaluation.class));
+                any(PeakHourPricingPolicy.Evaluation.class), any(WeatherPricingPolicy.Evaluation.class),
+                any(BigDecimal.class));
 
         ResponseEntity<JsonNode> created = createQuote(customer, QUOTE_BODY);
 

@@ -115,7 +115,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         const SizedBox(height: 6),
                         Text(
-                          'Ứng dụng di chuyển thông minh cho sinh viên',
+                          'GoMove - Triển khai phiên bản mới thành công!',
                           textAlign: TextAlign.center,
                           style: Theme.of(context)
                               .textTheme

@@ -12,6 +12,8 @@ import com.gomove.pricing.engine.FareBreakdown;
 import com.gomove.pricing.engine.PricingEngine;
 import com.gomove.pricing.engine.PeakHourPricingPolicy;
 import com.gomove.pricing.weather.WeatherPricingPolicy;
+import com.gomove.pricing.demandsupply.DemandSupplyPricingPolicy;
+import com.gomove.pricing.demandsupply.DemandSupplyPricingService;
 import com.gomove.pricing.routing.RoutingService;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -27,16 +29,19 @@ public class QuoteApplicationService {
     private final QuotePersistenceService persistence;
     private final PeakHourPricingPolicy peakHourPricing;
     private final WeatherPricingPolicy weatherPricing;
+    private final DemandSupplyPricingService demandSupplyPricing;
     private final Clock clock;
 
     public QuoteApplicationService(RoutingService routing, PricingEngine pricing,
                                    QuotePersistenceService persistence, PeakHourPricingPolicy peakHourPricing,
-                                   WeatherPricingPolicy weatherPricing, Clock clock) {
+                                   WeatherPricingPolicy weatherPricing, DemandSupplyPricingService demandSupplyPricing,
+                                   Clock clock) {
         this.routing = routing;
         this.pricing = pricing;
         this.persistence = persistence;
         this.peakHourPricing = peakHourPricing;
         this.weatherPricing = weatherPricing;
+        this.demandSupplyPricing = demandSupplyPricing;
         this.clock = clock;
     }
 
@@ -47,9 +52,11 @@ public class QuoteApplicationService {
         RouteEstimate route = routing.calculateRoute(pickup, dropoff);
         Instant pricingEvaluatedAt = clock.instant();
         PeakHourPricingPolicy.Evaluation peakEvaluation = peakHourPricing.evaluate(pricingEvaluatedAt);
+        DemandSupplyPricingPolicy.Evaluation demandSupplyEvaluation = demandSupplyPricing.evaluate(
+                pricingEvaluatedAt, pickup, request.getVehicleType());
         WeatherPricingPolicy.Evaluation weatherEvaluation = weatherPricing.evaluate(pricingEvaluatedAt, pickup);
         FareBreakdown fare = pricing.calculate(request.getVehicleType(), route,
-                java.math.BigDecimal.ZERO, peakEvaluation, weatherEvaluation,
+                java.math.BigDecimal.ZERO, peakEvaluation, demandSupplyEvaluation, weatherEvaluation,
                 weatherPricing.maximumCombinedMultiplier());
         Instant issuedAt = clock.instant();
         Quote quote = persistence.create(customerPublicId, pickup, dropoff,

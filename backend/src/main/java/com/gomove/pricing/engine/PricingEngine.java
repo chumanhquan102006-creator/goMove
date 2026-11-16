@@ -1,6 +1,7 @@
 package com.gomove.pricing.engine;
 
 import com.gomove.pricing.domain.RouteEstimate;
+import com.gomove.pricing.demandsupply.DemandSupplyPricingPolicy;
 import com.gomove.vehicle.domain.VehicleType;
 import com.gomove.pricing.weather.WeatherPricingPolicy;
 import org.springframework.stereotype.Component;
@@ -40,6 +41,15 @@ public class PricingEngine {
                                    PeakHourPricingPolicy.Evaluation peakEvaluation,
                                    WeatherPricingPolicy.Evaluation weatherEvaluation,
                                    BigDecimal maximumCombinedMultiplier) {
+        return calculate(vehicleType, route, discountAmount, peakEvaluation, null,
+                weatherEvaluation, maximumCombinedMultiplier);
+    }
+
+    public FareBreakdown calculate(VehicleType vehicleType, RouteEstimate route, BigDecimal discountAmount,
+                                   PeakHourPricingPolicy.Evaluation peakEvaluation,
+                                   DemandSupplyPricingPolicy.Evaluation demandSupplyEvaluation,
+                                   WeatherPricingPolicy.Evaluation weatherEvaluation,
+                                   BigDecimal maximumCombinedMultiplier) {
         if (vehicleType == null || route == null || discountAmount == null || discountAmount.signum() < 0) {
             throw new IllegalArgumentException("Vehicle type, route and non-negative discount are required");
         }
@@ -49,7 +59,11 @@ public class PricingEngine {
         BigDecimal tariffMultiplier = tariff.getSurgeMultiplier().setScale(4, RoundingMode.UNNECESSARY);
         BigDecimal peakMultiplier = peakEvaluation == null
                 ? BigDecimal.ONE.setScale(4) : peakEvaluation.peakMultiplier();
-        BigDecimal preWeatherMultiplier = effectiveMultiplier(tariffMultiplier, peakMultiplier);
+        BigDecimal preDemandMultiplier = effectiveMultiplier(tariffMultiplier, peakMultiplier);
+        BigDecimal demandSupplyMultiplier = demandSupplyEvaluation == null
+                ? BigDecimal.ONE.setScale(4) : demandMultiplier(demandSupplyEvaluation.requestedMultiplier());
+        BigDecimal preWeatherMultiplier = demandSupplyMultiplier.compareTo(BigDecimal.ONE) == 0
+                ? preDemandMultiplier : applyDemandMultiplier(preDemandMultiplier, demandSupplyMultiplier);
         WeatherComposition weather = weatherEvaluation == null
                 ? WeatherComposition.none(preWeatherMultiplier)
                 : composeWeather(preWeatherMultiplier, weatherEvaluation, maximumCombinedMultiplier);
@@ -66,10 +80,15 @@ public class PricingEngine {
         BigDecimal rawFinalFare = surgedSubtotal.subtract(discountAmount);
         BigDecimal finalFare = money(rawFinalFare.setScale(0, RoundingMode.HALF_UP));
         if (finalFare.signum() <= 0) throw new IllegalArgumentException("Final fare must remain positive");
+        BigDecimal actualDemandFareDifference = null;
+        if (demandSupplyEvaluation != null) {
+            BigDecimal fareWithoutDemand = fareAtMultiplier(rawSubtotal, preDemandMultiplier, discountAmount);
+            BigDecimal fareBeforeWeather = fareAtMultiplier(rawSubtotal, preWeatherMultiplier, discountAmount);
+            actualDemandFareDifference = money(fareBeforeWeather.subtract(fareWithoutDemand));
+        }
         BigDecimal actualWeatherFareDifference = null;
         if (weatherEvaluation != null) {
-            BigDecimal fareWithoutWeather = money(rawSubtotal.multiply(preWeatherMultiplier)
-                    .subtract(discountAmount).setScale(0, RoundingMode.HALF_UP));
+            BigDecimal fareWithoutWeather = fareAtMultiplier(rawSubtotal, preWeatherMultiplier, discountAmount);
             actualWeatherFareDifference = money(finalFare.subtract(fareWithoutWeather));
         }
 
@@ -121,8 +140,51 @@ public class PricingEngine {
             snapshot.put("peakHourApplied", Boolean.toString(peakEvaluation.applied()));
             snapshot.put("peakHourReason", peakEvaluation.reason());
             snapshot.put("tariffSurgeMultiplier", tariffMultiplier.toPlainString());
-            // Preserve the M1 field's meaning: tariff × peak-hour, before any optional M2 signal.
-            snapshot.put("effectiveSurgeMultiplier", preWeatherMultiplier.toPlainString());
+            // Preserve the M1 field's meaning: tariff × peak-hour, before M2 demand or weather.
+            snapshot.put("effectiveSurgeMultiplier", preDemandMultiplier.toPlainString());
+        }
+        if (demandSupplyEvaluation != null) {
+            BigDecimal actualDemandMultiplierUplift = preWeatherMultiplier.subtract(preDemandMultiplier);
+            if (actualDemandMultiplierUplift.signum() < 0) {
+                throw new IllegalStateException("Demand/supply pricing must not reduce the pre-demand multiplier");
+            }
+            snapshot.put("demandSupplyPolicyVersion", demandSupplyEvaluation.policyVersion());
+            snapshot.put("demandSupplyEvaluationTimestamp", demandSupplyEvaluation.evaluationTimestamp().toString());
+            snapshot.put("demandSupplyDataStatus", demandSupplyEvaluation.dataStatus());
+            snapshot.put("demandSupplyReason", demandSupplyEvaluation.reason());
+            snapshot.put("demandSupplySupplyStatus", demandSupplyEvaluation.availableDriverCount() == null
+                    ? "NOT_AVAILABLE" : demandSupplyEvaluation.availableDriverCount() == 0
+                    ? "ZERO_AVAILABLE_SUPPLY" : "AVAILABLE_SUPPLY_PRESENT");
+            snapshot.put("demandCount", countValue(demandSupplyEvaluation.demandCount()));
+            snapshot.put("availableDriverCount", countValue(demandSupplyEvaluation.availableDriverCount()));
+            snapshot.put("eligibleDriverCount", countValue(demandSupplyEvaluation.eligibleDriverCount()));
+            snapshot.put("freshEligibleDriverCount", countValue(demandSupplyEvaluation.freshEligibleDriverCount()));
+            snapshot.put("demandSupplyRadiusMeters", Integer.toString(demandSupplyEvaluation.radiusMeters()));
+            snapshot.put("demandLookbackSeconds", Long.toString(demandSupplyEvaluation.demandLookbackSeconds()));
+            snapshot.put("driverLocationFreshnessSeconds",
+                    Long.toString(demandSupplyEvaluation.driverLocationFreshnessSeconds()));
+            snapshot.put("minimumOutstandingDemand", Integer.toString(demandSupplyEvaluation.minimumDemand()));
+            snapshot.put("demandSupplyLowRatioThreshold", demandSupplyEvaluation.lowRatioThreshold().toPlainString());
+            snapshot.put("demandSupplyHighRatioThreshold", demandSupplyEvaluation.highRatioThreshold().toPlainString());
+            snapshot.put("effectiveSupplyForRatio", countValue(demandSupplyEvaluation.effectiveSupplyForRatio()));
+            snapshot.put("requestedDemandSupplyMultiplier", demandSupplyMultiplier.toPlainString());
+            snapshot.put("actualDemandMultiplierUplift", actualDemandMultiplierUplift.toPlainString());
+            snapshot.put("demandSupplyApplied", Boolean.toString(actualDemandMultiplierUplift.signum() > 0));
+            snapshot.put("demandSupplyMultiplierStatus", actualDemandMultiplierUplift.signum() > 0
+                    ? "APPLIED" : "NO_UPLIFT");
+            snapshot.put("preDemandMultiplier", preDemandMultiplier.toPlainString());
+            snapshot.put("preWeatherMultiplier", preWeatherMultiplier.toPlainString());
+            snapshot.put("actualDemandFareDifferenceVnd", actualDemandFareDifference.toPlainString());
+            snapshot.put("finalEffectiveMultiplier", effectiveMultiplier.toPlainString());
+            snapshot.put("configuredDemandSupplyModerateMultiplier",
+                    demandSupplyEvaluation.moderateMultiplier().toPlainString());
+            snapshot.put("configuredDemandSupplyHighMultiplier",
+                    demandSupplyEvaluation.highMultiplier().toPlainString());
+            snapshot.put("configuredDemandSupplyMaximumMultiplier",
+                    demandSupplyEvaluation.maximumMultiplier().toPlainString());
+            snapshot.putIfAbsent("tariffSurgeMultiplier", tariffMultiplier.toPlainString());
+            snapshot.putIfAbsent("peakHourMultiplier", peakMultiplier.toPlainString());
+            snapshot.putIfAbsent("effectiveSurgeMultiplier", preDemandMultiplier.toPlainString());
         }
         if (weatherEvaluation != null) {
             snapshot.put("weatherPricingPolicyVersion", weatherEvaluation.policyVersion());
@@ -168,12 +230,36 @@ public class PricingEngine {
             snapshot.put("totalSurgeCapApplied", Boolean.toString(weather.capApplied()));
             snapshot.putIfAbsent("tariffSurgeMultiplier", tariffMultiplier.toPlainString());
             snapshot.putIfAbsent("peakHourMultiplier", peakMultiplier.toPlainString());
-            snapshot.putIfAbsent("effectiveSurgeMultiplier", preWeatherMultiplier.toPlainString());
+            snapshot.putIfAbsent("effectiveSurgeMultiplier", preDemandMultiplier.toPlainString());
         }
 
         return new FareBreakdown(properties.getEngineVersion(), "VND", baseFare, distanceFare,
                 timeFare, surcharge, multiplier, surgeAmount, discount, roundingAdjustment, finalFare,
                 Collections.unmodifiableMap(snapshot));
+    }
+
+    private BigDecimal fareAtMultiplier(BigDecimal rawSubtotal, BigDecimal multiplier, BigDecimal discountAmount) {
+        return money(rawSubtotal.multiply(multiplier).subtract(discountAmount).setScale(0, RoundingMode.HALF_UP));
+    }
+
+    private String countValue(Long value) {
+        return value == null ? "NOT_AVAILABLE" : value.toString();
+    }
+
+    private BigDecimal demandMultiplier(BigDecimal value) {
+        if (value == null || value.compareTo(BigDecimal.ONE) < 0 || value.scale() > 4
+                || value.precision() - value.scale() > 4) {
+            throw new IllegalArgumentException("Demand/supply multiplier must fit NUMERIC(8,4) and not reduce fares");
+        }
+        return value.setScale(4, RoundingMode.UNNECESSARY);
+    }
+
+    private BigDecimal applyDemandMultiplier(BigDecimal preDemandMultiplier, BigDecimal multiplier) {
+        BigDecimal result = preDemandMultiplier.multiply(multiplier).setScale(4, RoundingMode.HALF_UP);
+        if (result.signum() <= 0 || result.precision() - result.scale() > 4) {
+            throw new IllegalArgumentException("Demand-adjusted multiplier must fit positive NUMERIC(8,4)");
+        }
+        return result;
     }
 
     private String weatherUpliftStatus(WeatherPricingPolicy.Evaluation evaluation, WeatherComposition weather,

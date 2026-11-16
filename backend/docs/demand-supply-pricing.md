@@ -1,0 +1,35 @@
+# Demand/supply pricing (M2B)
+
+M2B adds Flyway migration V19 to create a partial GiST index on `bookings.pickup_location` for outstanding unassigned bookings. No public API contract changes are introduced.
+
+## Inputs and eligibility
+
+- Demand is counted from `bookings` in `REQUESTED` or `SEARCHING_DRIVER`, with no assigned Driver or Vehicle, matching the requested vehicle category, a `created_at` within the configured lookback ending at the pricing evaluation timestamp, and a PostGIS `ST_DWithin` pickup radius. Quotes that were not booked, cancelled/completed trips, assigned rides, old/future requests, and idempotency retries are not counted.
+- Supply is counted as distinct approved, online Drivers with an active matching Vehicle, a Driver location whose update is within the configured freshness interval and not later than the evaluation timestamp, and a point inside the same geographic radius. Drivers with a pending offer or an unreleased assigned Booking are excluded, matching the existing sequential Dispatch eligibility rules.
+- Coordinates are passed to PostGIS in longitude/latitude order. The adapter returns aggregate counts only; no Driver IDs, Customer PII, or raw location points enter the pricing snapshot.
+
+## Consistency and bounded work
+
+The provider reads demand, nearby eligible supply, and nearby GPS quality in one read-only `REPEATABLE_READ` transaction with a one-second transaction timeout. Demand uses a bounded time window and PostGIS geography `ST_DWithin`; the supply aggregation uses the same indexed spatial predicate and reports fresh nearby Drivers separately from known local candidates. A known nearby point with a stale or future timestamp produces `LOCATION_DATA_UNRELIABLE` / `STALE_OR_FUTURE_GPS_NEAR_PICKUP` and no demand uplift. Stale GPS outside the pickup radius is irrelevant to this Quote. It does not materialize matching entities or issue per-row queries. If PostgreSQL or a transaction query fails, the policy records `METRICS_UNAVAILABLE` / `DATABASE_QUERY_FAILED` and applies the identity multiplier rather than treating failure as zero supply.
+
+An online Driver with no `driver_locations` row is not Dispatch-eligible and cannot be spatially assigned to this pickup; such a row is excluded from nearby eligible supply rather than treated as a global data-quality failure. This distinction is intentional: zero known eligible nearby supply is a successful query result, while a known stale nearby GPS point is explicitly marked unreliable. A database/query failure remains a separate unavailable status.
+
+The snapshot stores aggregate counts and a reason only, never Driver-level location data. The supply predicate uses the `idx_driver_locations_current_location_gist` geography GiST index created by V8. V19 adds `idx_bookings_m2b_open_pickup_gist`, a partial geography GiST index on `bookings.pickup_location` for only `REQUESTED` / `SEARCHING_DRIVER` rows that have neither an assigned Driver nor Vehicle. The V19 predicate matches the corresponding literal status and `IS NULL` predicates in the demand query, so PostgreSQL can prove that rows visible to the query are within the partial index. Existing dispatch/time and booking-status indexes remain unchanged.
+
+The partial index excludes completed, cancelled, assigned, and otherwise closed rides, reducing its size and spatial candidates for this demand query. It adds write work when a Booking enters or leaves the indexed open/unassigned state, and when indexed pickup data changes; this trade-off should be revisited if lifecycle volume or query plans change.
+
+An isolated PostGIS Testcontainers benchmark seeded 30,000 historical completed rows and 2,000 open/unassigned rows, including 1,500 recent rows and 20 nearby rows. In the focused PostGIS test run, `EXPLAIN (ANALYZE, BUFFERS)` without the new index used a Bitmap Heap Scan combined from `idx_bookings_status_created` and `uq_bookings_id_assigned_driver`; it estimated 1 row and returned 20, removed 1,480 rows by filter, touched 256 shared buffers (6 reads), and reported 17.253 ms execution. With V19 present, PostgreSQL selected `idx_bookings_m2b_open_pickup_gist` in an Index Scan; it estimated 1 row and returned 20, touched 22 shared-hit buffers, and reported 0.107 ms execution. The same test in the full regression run returned 20 rows in both plans: baseline 2.735 ms / 214 shared-hit buffers versus indexed 0.068 ms / 22 shared-hit buffers, with the new GiST index selected. The observed improvement supports this index for the tested distribution, but these are synthetic, cached test runs—not production workload or capacity results. Data distribution, table size and hardware can change the plan and timings.
+
+V19 uses ordinary transactional `CREATE INDEX`. On a large populated production table, index construction may hold a lock that blocks writes, so schedule and measure this migration during an approved maintenance window. If production availability requires online construction, use a separately reviewed deployment strategy based on `CREATE INDEX CONCURRENTLY` outside a transaction (for example, a dedicated non-transactional Flyway migration), validate the resulting index before application rollout, and ensure the migration will not try to create the same index again. That online strategy is guidance only; this change does not alter production deployment configuration. A one-second transaction timeout bounds query work; validate plans under representative production volumes before enabling M2B beyond the academic deployment.
+
+## Policy and fare composition
+
+Defaults are: 5,000 m radius, 5-minute demand lookback, 30-second GPS freshness, minimum demand 3, ratio tiers at 2.0 and 4.0, multipliers 1.1000 and 1.2000, and maximum M2B multiplier 1.2000. The ratio uses `demand / max(availableSupply, 1)` with exact integer/`BigDecimal` comparisons. Counts below the minimum and unreliable/unavailable input use 1.0000.
+
+The composition remains tariff × M1 peak × M2B demand × M2A weather. M1's `effectiveSurgeMultiplier` remains tariff × peak. M2B VND attribution compares the HALF_UP-rounded fare before and after demand; the M2A weather attribution compares the post-demand fare with the final weather-adjusted fare. Existing fare display components and rounding reconciliation remain unchanged. The Quote stores the complete immutable snapshot, and Booking copies the accepted Quote fare/snapshot without reevaluation.
+
+## Verification boundary
+
+Policy and engine unit tests use fixed values. PostGIS integration tests exercise the real aggregate adapter against Testcontainers. Quote/Booking API integration tests use Spring Security/JWT, JPA/Flyway and the actual persistence/Booking flow, with deterministic routing and a fixed metrics provider so monetary assertions do not depend on unrelated database fixtures. They are API integration tests with stubbed routing/metrics, not live OSRM or mobile E2E.
+
+The policy is academic demonstration logic, not a commercial fare recommendation. It remains opt-in until separately reviewed and explicitly enabled.

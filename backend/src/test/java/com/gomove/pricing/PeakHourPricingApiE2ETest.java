@@ -9,6 +9,7 @@ import com.gomove.auth.infrastructure.JwtTokenProvider;
 import com.gomove.booking.domain.Booking;
 import com.gomove.booking.domain.BookingRepository;
 import com.gomove.common.BaseIntegrationTest;
+import com.gomove.pricing.demandsupply.DemandSupplyPricingPolicy;
 import com.gomove.pricing.domain.GeoCoordinate;
 import com.gomove.pricing.domain.Quote;
 import com.gomove.pricing.domain.QuoteRepository;
@@ -51,6 +52,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -185,8 +187,8 @@ class PeakHourPricingApiE2ETest extends BaseIntegrationTest {
             clock.set(T1_AFTER_WINDOW_END);
             return fare;
         }).when(pricing).calculate(eq(VehicleType.MOTORBIKE), any(RouteEstimate.class), eq(BigDecimal.ZERO),
-                any(PeakHourPricingPolicy.Evaluation.class), any(WeatherPricingPolicy.Evaluation.class),
-                any(BigDecimal.class));
+                any(PeakHourPricingPolicy.Evaluation.class), isNull(DemandSupplyPricingPolicy.Evaluation.class),
+                any(WeatherPricingPolicy.Evaluation.class), any(BigDecimal.class));
 
         ResponseEntity<JsonNode> created = createQuote(customer, QUOTE_BODY);
 

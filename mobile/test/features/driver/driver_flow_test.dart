@@ -66,16 +66,24 @@ class PassiveSubscription implements TripRealtimeSubscription {
 
 class MemoryAcceptedStore implements AcceptedBookingStore {
   final values = <String, AcceptedBookingRecord>{};
+  Object? writeError;
+  Object? clearError;
+  Future<void> Function(AcceptedBookingRecord)? beforeWrite;
+  void Function(AcceptedBookingRecord)? onWrite;
   @override
   Future<AcceptedBookingRecord?> read(String userPublicId) async =>
       values[userPublicId];
   @override
   Future<void> write(String userPublicId, AcceptedBookingRecord record) async {
+    if (writeError != null) throw writeError!;
+    if (beforeWrite != null) await beforeWrite!(record);
     values[userPublicId] = record;
+    onWrite?.call(record);
   }
 
   @override
   Future<void> clear(String userPublicId) async {
+    if (clearError != null) throw clearError!;
     values.remove(userPublicId);
   }
 }
@@ -154,6 +162,8 @@ class FakeDriverRepository implements DriverRepository {
   DriverCoordinates? lastPoint;
   Object? statusError;
   Object? acceptError;
+  Object? trackingError;
+  Future<BookingTracking> Function()? trackingResponse;
   Future<DriverProfile> Function()? onboardResponse;
   Future<List<DriverOffer>> Function()? offerResponse;
   Future<OfferDecision> Function()? acceptResponse;
@@ -243,6 +253,8 @@ class FakeDriverRepository implements DriverRepository {
   @override
   Future<BookingTracking> tracking(String bookingPublicId, int session) async {
     trackingCalls++;
+    if (trackingError != null) throw trackingError!;
+    if (trackingResponse != null) return trackingResponse!();
     return trackingValue;
   }
 }
@@ -330,6 +342,7 @@ void main() {
     generation = 1;
     when(() => session.getSession()).thenAnswer(
         (_) async => AuthSessionSnapshot(generation, 'access', 'refresh'));
+    when(() => session.getUserPublicId()).thenAnswer((_) async => 'user-A');
     when(() => session.isCurrentSession(any())).thenAnswer(
         (call) async => call.positionalArguments.first == generation);
     cubit = DriverCubit(
@@ -345,6 +358,22 @@ void main() {
   });
 
   tearDown(() async => cubit.close());
+
+  Future<void> restartDriver({String user = 'user-A'}) async {
+    await cubit.close();
+    when(() => session.getUserPublicId()).thenAnswer((_) async => user);
+    cubit = DriverCubit(
+        useCases: DriverUseCases(repository),
+        location: location,
+        session: session,
+        acceptedStore: store,
+        userPublicId: user,
+        isMock: false,
+        now: () => now,
+        pollInterval: const Duration(hours: 1),
+        heartbeatInterval: const Duration(hours: 1));
+    await cubit.initialize();
+  }
 
   test('GPS validates order, bounds and optional accuracy/bearing', () {
     expect(
@@ -758,12 +787,19 @@ void main() {
       () async {
     repository.offers = [offer(now.add(const Duration(seconds: 15)))];
     final pending = Completer<OfferDecision>();
-    repository.acceptResponse = () => pending.future;
+    final sent = Completer<void>();
+    repository.acceptResponse = () {
+      sent.complete();
+      return pending.future;
+    };
     await cubit.initialize();
     await cubit.goOnline();
     final first = cubit.decide(true);
+    await sent.future;
     await cubit.decide(true);
     expect(repository.acceptCalls, 1);
+    expect(store.values['user-A']?.pendingAcceptance, isTrue);
+    expect(cubit.state.acceptedOffer, isNull);
     pending.complete(const OfferDecision('offer-1', 'ACCEPTED'));
     await first;
     expect(cubit.state.operatingStatus, 'BUSY');
@@ -834,6 +870,295 @@ void main() {
     expect(cubit.state.notice, contains('hết hạn'));
   });
 
+  test('M3B storage failure prevents the accept HTTP request', () async {
+    repository.offers = [offer(now.add(const Duration(seconds: 15)))];
+    await cubit.initialize();
+    await cubit.goOnline();
+    store.writeError = StateError('storage unavailable');
+
+    await cubit.decide(true);
+
+    expect(repository.acceptCalls, 0);
+    expect(store.values, isEmpty);
+    expect(cubit.state.acceptedOffer, isNull);
+    expect(cubit.state.offerActionBusy, isFalse);
+    expect(cubit.state.error, contains('chưa gửi yêu cầu'));
+  });
+
+  test('M3B termination before HTTP leaves intent but no phantom trip',
+      () async {
+    repository.offers = [offer(now.add(const Duration(seconds: 15)))];
+    await cubit.initialize();
+    await cubit.goOnline();
+    Future<void>? closing;
+    store.onWrite = (record) {
+      if (record.pendingAcceptance) closing = cubit.close();
+    };
+
+    await cubit.decide(true);
+    await closing;
+    store.onWrite = null;
+    repository.trackingError =
+        const ServerException(message: 'masked', statusCode: 404);
+    await restartDriver();
+
+    expect(repository.acceptCalls, 0);
+    expect(cubit.state.acceptedOffer, isNull);
+    expect(cubit.state.unresolvedDecision, isTrue);
+    expect(store.values['user-A']?.pendingAcceptance, isTrue);
+    await cubit.goOnline();
+    await cubit.goOffline();
+    expect(repository.statusCalls, 1);
+  });
+
+  test('M3B termination before confirmed persistence preserves durable intent',
+      () async {
+    repository.offers = [offer(now.add(const Duration(seconds: 15)))];
+    await cubit.initialize();
+    await cubit.goOnline();
+    final confirming = Completer<void>();
+    final diskWrite = Completer<void>();
+    store.beforeWrite = (record) async {
+      if (!record.pendingAcceptance) {
+        confirming.complete();
+        await diskWrite.future;
+      }
+    };
+    final deciding = cubit.decide(true);
+    await confirming.future;
+    expect(cubit.state.acceptedOffer?.bookingPublicId, 'booking-1');
+    await cubit.close();
+    diskWrite.completeError(StateError('process terminated before disk write'));
+    await deciding;
+    expect(store.values['user-A']?.pendingAcceptance, isTrue);
+    store.beforeWrite = null;
+    repository.trackingValue =
+        const BookingTracking('booking-1', 'DRIVER_ACCEPTED', 'driver-1');
+
+    await restartDriver();
+
+    expect(cubit.state.acceptedOffer?.bookingPublicId, 'booking-1');
+    expect(store.values['user-A']?.pendingAcceptance, isFalse);
+    expect(store.values, hasLength(1));
+    expect(repository.acceptCalls, 1);
+  });
+
+  test(
+      'M3B unavailable backend retains intent and duplicate recovery is read-only',
+      () async {
+    repository.offers = [offer(now.add(const Duration(seconds: 15)))];
+    await cubit.initialize();
+    await cubit.goOnline();
+    repository.acceptError = const NetworkException();
+    repository.trackingError = const NetworkException();
+    await cubit.decide(true);
+    await restartDriver();
+    expect(cubit.state.acceptedOffer, isNull);
+    expect(store.values['user-A']?.pendingAcceptance, isTrue);
+    repository.trackingError = null;
+    final requested = Completer<void>();
+    final tracking = Completer<BookingTracking>();
+    repository.trackingResponse = () {
+      requested.complete();
+      return tracking.future;
+    };
+    final callsBefore = repository.trackingCalls;
+    final first = cubit.reconcile();
+    await requested.future;
+    await cubit.reconcile();
+    expect(repository.trackingCalls, callsBefore + 1);
+    tracking.complete(
+        const BookingTracking('booking-1', 'DRIVER_ACCEPTED', 'driver-1'));
+    await first;
+
+    expect(cubit.state.acceptedOffer?.bookingPublicId, 'booking-1');
+    expect(store.values['user-A']?.pendingAcceptance, isFalse);
+    expect(repository.acceptCalls, 1);
+  });
+
+  test('M3B authoritative rejected accept and masked tracking resolve intent',
+      () async {
+    repository.offers = [offer(now.add(const Duration(seconds: 15)))];
+    await cubit.initialize();
+    await cubit.goOnline();
+    repository.offers = [];
+    repository.acceptError = const ServerException(
+        message: 'expired', errorCode: 'OFFER_EXPIRED', statusCode: 409);
+    repository.trackingError =
+        const ServerException(message: 'masked', statusCode: 404);
+
+    await cubit.decide(true);
+
+    expect(store.values, isEmpty);
+    expect(cubit.state.unresolvedDecision, isFalse);
+    expect(cubit.state.acceptedOffer, isNull);
+    expect(cubit.state.notice, contains('hết hạn'));
+    expect(repository.acceptCalls, 1);
+  });
+
+  test('M3B expired local intent and absent offer do not prove non-acceptance',
+      () async {
+    store.values['user-A'] = AcceptedBookingRecord(
+        'driver-1', offer(now.subtract(const Duration(minutes: 1))),
+        pendingAcceptance: true);
+    repository.trackingError =
+        const ServerException(message: 'masked', statusCode: 404);
+
+    await cubit.initialize();
+    await cubit.reconcile();
+    await cubit.decide(true);
+
+    expect(store.values['user-A']?.pendingAcceptance, isTrue);
+    expect(cubit.state.acceptedOffer, isNull);
+    expect(cubit.state.unresolvedDecision, isTrue);
+    expect(repository.acceptCalls, 0);
+    expect(repository.offerCalls, 0);
+  });
+
+  test(
+      'M3B server cancellation clears pending intent; storage failure is retryable',
+      () async {
+    store.values['user-A'] = AcceptedBookingRecord(
+        'driver-1', offer(now.add(const Duration(seconds: 15))),
+        pendingAcceptance: true);
+    repository.trackingValue =
+        const BookingTracking('booking-1', 'CANCELLED', 'driver-1');
+    store.clearError = StateError('storage unavailable');
+    await cubit.initialize();
+    expect(store.values['user-A'], isNotNull);
+    expect(cubit.state.unresolvedDecision, isTrue);
+    store.clearError = null;
+
+    await cubit.reconcile();
+
+    expect(store.values, isEmpty);
+    expect(cubit.state.offer, isNull);
+    expect(cubit.state.acceptedOffer, isNull);
+    expect(cubit.state.unresolvedDecision, isFalse);
+    expect(repository.acceptCalls, 0);
+    expect(repository.gpsCalls, 0);
+  });
+
+  for (final mismatch in [
+    const BookingTracking('booking-2', 'DRIVER_ACCEPTED', 'driver-1'),
+    const BookingTracking('booking-1', 'DRIVER_ACCEPTED', 'driver-2'),
+  ]) {
+    test(
+        'M3B pending intent rejects mismatched ${mismatch.bookingPublicId}/${mismatch.driverPublicId}',
+        () async {
+      store.values['user-A'] = AcceptedBookingRecord(
+          'driver-1', offer(now.add(const Duration(seconds: 15))),
+          pendingAcceptance: true);
+      repository.trackingValue = mismatch;
+
+      await cubit.initialize();
+
+      expect(cubit.state.acceptedOffer, isNull);
+      expect(store.values['user-A']?.pendingAcceptance, isTrue);
+      expect(repository.gpsCalls, 0);
+    });
+  }
+
+  test('M3B late recovery from a logged-out account cannot promote intent',
+      () async {
+    store.values['user-A'] = AcceptedBookingRecord(
+        'driver-1', offer(now.add(const Duration(seconds: 15))),
+        pendingAcceptance: true);
+    final requested = Completer<void>();
+    final response = Completer<BookingTracking>();
+    repository.trackingResponse = () {
+      requested.complete();
+      return response.future;
+    };
+    final initializing = cubit.initialize();
+    await requested.future;
+    generation++;
+    when(() => session.getUserPublicId()).thenAnswer((_) async => 'user-B');
+    response.complete(
+        const BookingTracking('booking-1', 'DRIVER_ACCEPTED', 'driver-1'));
+    await initializing;
+    expect(cubit.state.acceptedOffer, isNull);
+    expect(store.values['user-A']?.pendingAcceptance, isTrue);
+    final previousCalls = repository.trackingCalls;
+
+    await restartDriver(user: 'user-B');
+
+    expect(cubit.state.acceptedOffer, isNull);
+    expect(repository.trackingCalls, previousCalls);
+    expect(store.values['user-B'], isNull);
+    expect(store.values['user-A']?.pendingAcceptance, isTrue);
+  });
+
+  test('M3B authenticated account mismatch cannot read the stored handoff',
+      () async {
+    store.values['user-A'] = AcceptedBookingRecord(
+        'driver-1', offer(now.add(const Duration(seconds: 15))),
+        pendingAcceptance: true);
+    when(() => session.getUserPublicId()).thenAnswer((_) async => 'user-B');
+
+    await cubit.initialize();
+    await cubit.goOnline();
+
+    expect(cubit.state.acceptedOffer, isNull);
+    expect(repository.trackingCalls, 0);
+    expect(repository.vehicleCalls, 0);
+    expect(repository.statusCalls, 0);
+    expect(store.values['user-A']?.pendingAcceptance, isTrue);
+  });
+
+  test('M3B completed pending acceptance restores settlement without GPS',
+      () async {
+    store.values['user-A'] = AcceptedBookingRecord(
+        'driver-1', offer(now.add(const Duration(seconds: 15))),
+        pendingAcceptance: true);
+    repository.trackingValue =
+        const BookingTracking('booking-1', 'COMPLETED', 'driver-1');
+
+    await cubit.initialize();
+
+    expect(cubit.state.acceptedOffer?.bookingPublicId, 'booking-1');
+    expect(cubit.state.completedAwaitingSettlement, isTrue);
+    expect(store.values['user-A']?.pendingAcceptance, isFalse);
+    expect(repository.gpsCalls, 0);
+    expect(repository.acceptCalls, 0);
+  });
+
+  test('M3B committed acceptance survives restart before response', () async {
+    repository.offers = [offer(now.add(const Duration(seconds: 15)))];
+    await cubit.initialize();
+    await cubit.goOnline();
+    final sent = Completer<void>();
+    final response = Completer<OfferDecision>();
+    repository.acceptResponse = () {
+      sent.complete();
+      return response.future;
+    };
+    final deciding = cubit.decide(true);
+    await sent.future;
+    // The server has committed, but this process never receives the reply.
+    repository.trackingValue =
+        const BookingTracking('booking-1', 'DRIVER_ACCEPTED', 'driver-1');
+    await cubit.close();
+    response.complete(const OfferDecision('offer-1', 'ACCEPTED'));
+    await deciding;
+    cubit = DriverCubit(
+        useCases: DriverUseCases(repository),
+        location: location,
+        session: session,
+        acceptedStore: store,
+        userPublicId: 'user-A',
+        isMock: false,
+        now: () => now,
+        pollInterval: const Duration(hours: 1),
+        heartbeatInterval: const Duration(hours: 1));
+
+    await cubit.initialize();
+
+    expect(cubit.state.acceptedOffer?.bookingPublicId, 'booking-1');
+    expect(cubit.state.operatingStatus, 'BUSY');
+    expect(repository.acceptCalls, 1);
+  });
+
   test('Lost accept response reconciles only matching server assignment',
       () async {
     repository.offers = [offer(now.add(const Duration(seconds: 15)))];
@@ -890,13 +1215,20 @@ void main() {
     await cubit.initialize();
     await cubit.goOnline();
     final pending = Completer<OfferDecision>();
-    repository.acceptResponse = () => pending.future;
+    final sent = Completer<void>();
+    repository.acceptResponse = () {
+      sent.complete();
+      return pending.future;
+    };
     final first = cubit.decide(true);
+    await sent.future;
     generation = 2;
     pending.complete(const OfferDecision('offer-1', 'ACCEPTED'));
     await first;
     expect(cubit.state.acceptedOffer, isNull);
-    expect(store.values['user-A'], isNull);
+    // The old account retains its durable intent, never a confirmed handoff.
+    expect(store.values['user-A']?.pendingAcceptance, isTrue);
+    expect(store.values['user-B'], isNull);
   });
 
   test('Stored assignment is scoped to Driver account and revalidated',

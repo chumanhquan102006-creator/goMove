@@ -238,6 +238,7 @@ class _TripRealtimeSubscription implements TripRealtimeSubscription {
   TripRealtimeConnectionState _state = TripRealtimeConnectionState.connecting;
   DateTime? _lastSentSampleAt;
   int _epoch = 0;
+  int? _subscribedEpoch;
   int _failureCount = 0;
   String? _connectedToken;
   bool _stopped = false;
@@ -346,9 +347,10 @@ class _TripRealtimeSubscription implements TripRealtimeSubscription {
   }
 
   Future<void> _connected(int epoch) async {
-    if (!_currentEpoch(epoch)) return;
+    if (!_currentEpoch(epoch) || _subscribedEpoch == epoch) return;
     final transport = _transport;
     if (transport == null || !transport.connected) return;
+    _subscribedEpoch = epoch;
     try {
       if (!await session.isCurrentSession(sessionGeneration)) {
         _stop();

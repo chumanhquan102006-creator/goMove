@@ -80,6 +80,7 @@ class _Transport implements TripStompTransport {
   String? subscribedDestination;
   void Function(String?)? onBody;
   int unsubscribed = 0;
+  int subscriptions = 0;
   final sent = <(String, String)>[];
 
   _Transport(this.config);
@@ -95,6 +96,7 @@ class _Transport implements TripStompTransport {
   @override
   void Function() subscribe(
       String destination, void Function(String?) callback) {
+    subscriptions++;
     subscribedDestination = destination;
     onBody = callback;
     return () {
@@ -223,6 +225,120 @@ void main() {
     expect(received.length, 2);
     expect(received.last, isA<TripDriverLocationEvent>());
     await listener.cancel();
+    await subscription.dispose();
+  });
+
+  test('M3B duplicate CONNECTED callbacks share one reconciliation and topic',
+      () async {
+    final h = _Harness();
+    final gate = Completer<void>();
+    var reconciliations = 0;
+    final subscription = h.client.listen(
+        bookingPublicId: bookingA,
+        sessionGeneration: 1,
+        driver: true,
+        reconcileBeforeEvents: () async {
+          reconciliations++;
+          await gate.future;
+        });
+    await _settle();
+    final transport = h.transports.single;
+    transport.connect();
+    transport.connect();
+    await _settle();
+    final subscriptionsBeforeReady = transport.subscriptions;
+    final reconciliationsBeforeReady = reconciliations;
+    gate.complete();
+    await _settle();
+    transport.connect();
+    await _settle();
+    await subscription.dispose();
+
+    expect(subscriptionsBeforeReady, 1);
+    expect(reconciliationsBeforeReady, 1);
+    expect(transport.subscriptions, 1);
+    expect(reconciliations, 1);
+    expect(transport.unsubscribed, 1);
+  });
+
+  for (final driver in [false, true]) {
+    test(
+        'M3B failed reconciliation blocks frames and GPS until retry (driver=$driver)',
+        () async {
+      final h = _Harness();
+      final gate = Completer<void>();
+      var calls = 0;
+      final subscription = h.client.listen(
+          bookingPublicId: bookingA,
+          sessionGeneration: 1,
+          driver: driver,
+          reconcileBeforeEvents: () async {
+            calls++;
+            if (calls == 1) await gate.future;
+          });
+      final events = <TripRealtimeEvent>[];
+      final listener = subscription.events.listen(events.add);
+      await _settle();
+      final first = h.transports.single;
+      first.connect();
+      await _settle();
+      first.message(_status(bookingA, 'DRIVER_ARRIVED'));
+      expect(
+          await subscription.sendLocation(const DriverCoordinates(0, 0),
+              sampledAt: h.now),
+          isFalse);
+      gate.completeError(TimeoutException('REST timeout'));
+      await _settle();
+      expect(first.active, isFalse);
+      expect(events, isEmpty);
+      expect(subscription.state, isNot(TripRealtimeConnectionState.connected));
+      for (var i = 0; i < 100 && h.transports.length < 2; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      }
+      expect(h.transports, hasLength(2));
+      final second = h.transports.last;
+      second.connect();
+      await _settle();
+      expect(subscription.state, TripRealtimeConnectionState.connected);
+      expect(events, isEmpty); // Failed epoch's buffered frames were discarded.
+      second.message(_status(bookingA, 'PASSENGER_ONBOARD'));
+      await _settle();
+      expect(events, hasLength(1));
+      expect((events.single as TripStatusChangedEvent).status,
+          'PASSENGER_ONBOARD');
+      expect(
+          await subscription.sendLocation(const DriverCoordinates(0, 0),
+              sampledAt: h.now),
+          driver);
+      expect(second.subscriptions, 1);
+      await listener.cancel();
+      await subscription.dispose();
+    });
+  }
+
+  test('M3B account switch while REST is pending cannot enable transport',
+      () async {
+    final h = _Harness();
+    final gate = Completer<void>();
+    final subscription = h.client.listen(
+        bookingPublicId: bookingA,
+        sessionGeneration: 1,
+        driver: true,
+        reconcileBeforeEvents: () => gate.future);
+    await _settle();
+    final transport = h.transports.single;
+    transport.connect();
+    await _settle();
+    h.session.generation++;
+    gate.complete();
+    await _settle();
+
+    expect(subscription.state, TripRealtimeConnectionState.disconnected);
+    expect(transport.active, isFalse);
+    expect(
+        await subscription.sendLocation(const DriverCoordinates(0, 0),
+            sampledAt: h.now),
+        isFalse);
     await subscription.dispose();
   });
 

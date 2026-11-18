@@ -136,6 +136,7 @@ CashReceipt _receipt(String id) => CashReceipt(
 
 class _Realtime implements TripRealtimeClient {
   _Subscription? latest;
+  Future<void> Function()? reconcile;
   int listens = 0;
   @override
   TripRealtimeSubscription listen(
@@ -144,6 +145,7 @@ class _Realtime implements TripRealtimeClient {
       required bool driver,
       required Future<void> Function() reconcileBeforeEvents}) {
     listens++;
+    reconcile = reconcileBeforeEvents;
     latest = _Subscription();
     return latest!;
   }
@@ -230,6 +232,220 @@ void main() {
   });
 
   tearDown(() async => cubit.close());
+
+  test('M3B cached tracking cannot satisfy failed reconnect reconciliation',
+      () async {
+    await cubit.initialize();
+    expect(cubit.state.tracking, isNotNull);
+    repository.trackingReply = (_) async => throw const NetworkException();
+
+    await expectLater(realtime.reconcile!(), throwsStateError);
+
+    expect(cubit.state.realtime, isNot(TripRealtimeConnectionState.connected));
+    expect(location.calls, 0);
+  });
+
+  test('M3B successful fresh reconciliation enables one GPS stream', () async {
+    await cubit.initialize();
+    final callsBefore = repository.trackingCalls;
+    await realtime.reconcile!();
+    final connected = cubit.stream
+        .firstWhere((s) => s.realtime == TripRealtimeConnectionState.connected);
+    realtime.latest!.connect();
+    realtime.latest!.connect();
+    await connected;
+    await Future<void>.delayed(Duration.zero);
+
+    expect(repository.trackingCalls, callsBefore + 1);
+    expect(realtime.listens, 1);
+    expect(location.calls, 1);
+    expect(realtime.latest!.sends, 1);
+  });
+
+  test('M3B successful earlier poll cannot mask a failed queued reconciliation',
+      () async {
+    await cubit.initialize();
+    final cached = cubit.state.tracking!;
+    final requested = Completer<void>();
+    final oldResponse = Completer<TrackingSnapshot>();
+    repository.trackingReply = (_) {
+      requested.complete();
+      return oldResponse.future;
+    };
+    final oldPoll = cubit.refresh();
+    await requested.future;
+    final reconnect = expectLater(realtime.reconcile!(), throwsStateError);
+    await Future<void>.delayed(Duration.zero);
+    repository.trackingReply = (_) async => throw const NetworkException();
+    oldResponse.complete(cached);
+
+    expect(await oldPoll, isTrue);
+    await reconnect;
+
+    expect(cubit.state.realtime, isNot(TripRealtimeConnectionState.connected));
+    expect(location.calls, 0);
+    expect(realtime.listens, 1);
+  });
+
+  test('M3B failed earlier poll does not poison a successful queued retry',
+      () async {
+    await cubit.initialize();
+    final requested = Completer<void>();
+    final oldResponse = Completer<TrackingSnapshot>();
+    repository.trackingReply = (_) {
+      requested.complete();
+      return oldResponse.future;
+    };
+    final oldPoll = cubit.refresh();
+    await requested.future;
+    final reconnect = realtime.reconcile!();
+    await Future<void>.delayed(Duration.zero);
+    repository.trackingReply = null;
+    oldResponse.completeError(const NetworkException());
+
+    expect(await oldPoll, isFalse);
+    await reconnect;
+
+    expect(repository.trackingCalls, 3);
+    expect(realtime.listens, 1);
+    expect(cubit.state.error, isNull);
+  });
+
+  test('M3B a failed payment read also fails fresh reconciliation', () async {
+    await cubit.initialize();
+    repository.paymentReply = (_) async => throw const NetworkException();
+
+    await expectLater(realtime.reconcile!(), throwsStateError);
+
+    expect(cubit.state.realtime, isNot(TripRealtimeConnectionState.connected));
+    expect(location.calls, 0);
+  });
+
+  test('M3B reconnect succeeds after a failed REST request is retried',
+      () async {
+    await cubit.initialize();
+    repository.trackingReply = (_) async => throw const NetworkException();
+    await expectLater(realtime.reconcile!(), throwsStateError);
+    repository.trackingReply = null;
+
+    await realtime.reconcile!();
+
+    expect(cubit.state.error, isNull);
+    expect(realtime.listens, 1);
+  });
+
+  test('M3B HTTP 401 during reconciliation invalidates cached trip access',
+      () async {
+    await cubit.initialize();
+    repository.trackingReply = (_) async =>
+        throw const ServerException(message: 'expired', statusCode: 401);
+
+    await expectLater(realtime.reconcile!(), throwsStateError);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(cubit.state.sessionEnded, isTrue);
+    expect(cubit.state.tracking, isNull);
+    expect(cubit.state.payment, isNull);
+    expect(realtime.latest!.disposed, isTrue);
+    expect(location.calls, 0);
+  });
+
+  test('M3B logout invalidates a late reconnect REST response', () async {
+    await cubit.initialize();
+    final cached = cubit.state.tracking!;
+    final requested = Completer<void>();
+    final response = Completer<TrackingSnapshot>();
+    repository.trackingReply = (_) {
+      requested.complete();
+      return response.future;
+    };
+    final reconnect = expectLater(realtime.reconcile!(), throwsStateError);
+    await requested.future;
+    generation++;
+    response.complete(cached);
+    await reconnect;
+
+    expect(cubit.state.sessionEnded, isTrue);
+    expect(cubit.state.tracking, isNull);
+    expect(location.calls, 0);
+  });
+
+  test('M3B changing Booking invalidates the previous reconciliation callback',
+      () async {
+    await cubit.initialize();
+    final cached = cubit.state.tracking!;
+    final requested = Completer<void>();
+    final response = Completer<TrackingSnapshot>();
+    repository.trackingReply = (_) {
+      requested.complete();
+      return response.future;
+    };
+    final reconnect = expectLater(realtime.reconcile!(), throwsStateError);
+    await requested.future;
+    final old = realtime.latest!;
+    await cubit.close();
+    repository.trackingReply = null;
+    cubit = DriverTripCubit(
+        bookingPublicId: 'booking-2',
+        repository: repository,
+        session: session,
+        realtime: realtime,
+        location: location,
+        pollInterval: const Duration(hours: 1),
+        gpsInterval: const Duration(hours: 1));
+    await cubit.initialize();
+    response.complete(cached);
+    await reconnect;
+
+    expect(old.disposed, isTrue);
+    expect(cubit.state.tracking?.bookingPublicId, 'booking-2');
+    expect(realtime.listens, 2);
+    expect(location.calls, 0);
+  });
+
+  test('M3B disposed reconnect callback cannot fetch or reopen a new channel',
+      () async {
+    await cubit.initialize();
+    final oldCallback = realtime.reconcile!;
+    await cubit.pause();
+    await cubit.resume();
+    final callsBefore = repository.trackingCalls;
+
+    await expectLater(oldCallback(), throwsStateError);
+
+    expect(repository.trackingCalls, callsBefore);
+    expect(realtime.listens, 2);
+    expect(location.calls, 0);
+  });
+
+  test('M3B terminal event defeats a pending reconnect and stale live tracking',
+      () async {
+    await cubit.initialize();
+    final cached = cubit.state.tracking!;
+    final requested = Completer<void>();
+    final response = Completer<TrackingSnapshot>();
+    repository.trackingReply = (_) {
+      requested.complete();
+      return response.future;
+    };
+    final reconnect = expectLater(realtime.reconcile!(), throwsStateError);
+    await requested.future;
+    final terminal = cubit.stream.firstWhere((s) => s.status == 'COMPLETED');
+    realtime.latest!.event(TripStatusChangedEvent(
+        'booking-1', 'COMPLETED', DateTime.utc(2026, 11, 17)));
+    await terminal;
+    repository.status = 'COMPLETED';
+    repository.trackingReply = null;
+    response.complete(cached);
+    await reconnect;
+    await Future<void>.delayed(Duration.zero);
+
+    expect(cubit.state.status, 'COMPLETED');
+    expect(cubit.state.tracking?.allowsLiveLocation ?? false, isFalse);
+    expect(realtime.latest!.disposed, isTrue);
+    expect(location.calls, 0);
+    expect(realtime.listens, 1);
+  });
 
   test('Driver map validates both offer points and creates point markers only',
       () {

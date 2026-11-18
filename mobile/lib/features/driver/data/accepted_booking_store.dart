@@ -5,7 +5,9 @@ import '../domain/models/driver_models.dart';
 class AcceptedBookingRecord {
   final String driverPublicId;
   final DriverOffer offer;
-  const AcceptedBookingRecord(this.driverPublicId, this.offer);
+  final bool pendingAcceptance;
+  const AcceptedBookingRecord(this.driverPublicId, this.offer,
+      {this.pendingAcceptance = false});
 }
 
 abstract class AcceptedBookingStore {
@@ -32,8 +34,15 @@ class SecureAcceptedBookingStore implements AcceptedBookingStore {
     if (value['userPublicId'] != userPublicId) {
       throw const FormatException('Booking không thuộc tài khoản này');
     }
+    final pending = value.containsKey('pendingAcceptance')
+        ? value['pendingAcceptance']
+        : false;
+    if (pending is! bool) {
+      throw const FormatException('Trạng thái bàn giao không hợp lệ');
+    }
     return AcceptedBookingRecord(value['driverPublicId'] as String,
-        DriverOffer.fromJson(value['offer'] as Map<String, dynamic>));
+        DriverOffer.fromJson(value['offer'] as Map<String, dynamic>),
+        pendingAcceptance: pending);
   }
 
   @override
@@ -43,6 +52,7 @@ class SecureAcceptedBookingStore implements AcceptedBookingStore {
           value: jsonEncode({
             'userPublicId': userPublicId,
             'driverPublicId': record.driverPublicId,
+            'pendingAcceptance': record.pendingAcceptance,
             'offer': record.offer.toJson(),
           }));
 

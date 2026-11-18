@@ -117,7 +117,7 @@ class DriverTripCubit extends Cubit<DriverTripState> {
   int _participantRevision = 0;
   int _connectionRevision = 0;
   bool _syncing = false;
-  Completer<void>? _queuedRefresh;
+  Completer<bool>? _queuedRefresh;
   bool _queuedRefreshManual = false;
   int _confirmedOperationRevision = 0;
   bool _cancelledCleanupComplete = false;
@@ -203,13 +203,14 @@ class DriverTripCubit extends Cubit<DriverTripState> {
     await _connect();
   }
 
-  Future<void> refresh({bool manual = false}) async {
+  /// True only after current-session tracking and payment have been applied.
+  /// Queued callers receive their queued read's result, not an earlier poll's.
+  Future<bool> refresh({bool manual = false}) async {
     final revision = _revision;
-    if (_generation == null || !await _current(revision)) return;
+    if (_generation == null || !await _current(revision)) return false;
     if (_syncing) {
       _queuedRefreshManual |= manual;
-      await (_queuedRefresh ??= Completer<void>()).future;
-      return;
+      return (_queuedRefresh ??= Completer<bool>()).future;
     }
     _syncing = true;
     final participantRevision = _participantRevision;
@@ -217,8 +218,11 @@ class DriverTripCubit extends Cubit<DriverTripState> {
     try {
       final tracking =
           await _repository.tracking(bookingPublicId, _generation!);
-      if (!await _current(revision)) return;
-      if (confirmedAtStart != _confirmedOperationRevision) return;
+      if (!await _current(revision)) return false;
+      if (confirmedAtStart != _confirmedOperationRevision) return false;
+      if (tracking.bookingPublicId != bookingPublicId) {
+        throw const FormatException('Tracking không khớp Booking');
+      }
       // A terminal event is delivered after the Backend commits. A REST read
       // started earlier (or a delayed response) cannot reopen that trip.
       if (isTerminalTripStatus(state.status ?? '') &&
@@ -227,15 +231,15 @@ class DriverTripCubit extends Cubit<DriverTripState> {
             tracking: state.tracking?.withoutPrivateLiveData(),
             payment: null,
             loading: false));
-        return;
+        return false;
       }
       final payment = tracking.status == 'CANCELLED'
           ? null
           : await _repository.payment(bookingPublicId, _generation!);
-      if (!await _current(revision)) return;
+      if (!await _current(revision)) return false;
       // A poll started before a confirmed POST must not overwrite its newer
       // transition or PAID receipt with the poll's older REST snapshot.
-      if (confirmedAtStart != _confirmedOperationRevision) return;
+      if (confirmedAtStart != _confirmedOperationRevision) return false;
       final status = tracking.status;
       emit(state.copy(
           tracking:
@@ -267,14 +271,16 @@ class DriverTripCubit extends Cubit<DriverTripState> {
           _subscription == null) {
         await _connect();
       }
+      return true;
     } catch (error) {
       if (await _current(revision)) {
         if (_accessError(error)) {
           _endAccess(error);
-          return;
+          return false;
         }
         emit(state.copy(loading: false, error: _message(error)));
       }
+      return false;
     } finally {
       _syncing = false;
       final queued = _queuedRefresh;
@@ -282,7 +288,8 @@ class DriverTripCubit extends Cubit<DriverTripState> {
       _queuedRefresh = null;
       _queuedRefreshManual = false;
       if (queued != null) {
-        unawaited(refresh(manual: queuedManual).then((_) => queued.complete(),
+        unawaited(refresh(manual: queuedManual).then(
+            (success) => queued.complete(success),
             onError: (Object error, StackTrace stack) =>
                 queued.completeError(error, stack)));
       }
@@ -482,8 +489,18 @@ class DriverTripCubit extends Cubit<DriverTripState> {
         sessionGeneration: _generation!,
         driver: true,
         reconcileBeforeEvents: () async {
-          await refresh();
-          if (!await _current(revision) || state.tracking == null) {
+          if (connectionRevision != _connectionRevision ||
+              !state.foreground ||
+              !await _current(revision)) {
+            throw StateError('Kết nối tracking không còn hiệu lực');
+          }
+          final refreshed = await refresh();
+          if (!refreshed ||
+              !await _current(revision) ||
+              connectionRevision != _connectionRevision ||
+              !state.foreground ||
+              isTerminalTripStatus(state.status ?? '') ||
+              state.tracking?.allowsLiveLocation != true) {
             throw StateError('Không thể đối chiếu tracking');
           }
         });
@@ -601,8 +618,6 @@ class DriverTripCubit extends Cubit<DriverTripState> {
       if (kDebugMode) {
         debugPrint(
             'GoMoveGPS source=trip-STOMP result=${sent ? 'transport_sent' : 'skipped'} '
-            'lat=${point.latitude} lon=${point.longitude} '
-            'sampledAt=${point.sampledAt!.toUtc().toIso8601String()} '
             'ageMs=${DateTime.now().toUtc().difference(point.sampledAt!.toUtc()).inMilliseconds} '
             'connection=${subscription.state}');
       }

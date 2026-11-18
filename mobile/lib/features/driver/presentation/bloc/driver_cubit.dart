@@ -174,6 +174,16 @@ class DriverCubit extends Cubit<DriverState> {
     _generation = (await _session.getSession()).generation;
     emit(state.copy(loading: true, error: null));
     try {
+      final authenticatedUser = await _session.getUserPublicId();
+      if (!await _current(revision)) return;
+      if (authenticatedUser != userPublicId) {
+        _generation = null;
+        _stopForeground();
+        emit(state.copy(
+            loading: false,
+            error: 'Tài khoản đã thay đổi. Mở lại màn hình tài xế.'));
+        return;
+      }
       try {
         final vehicles = await _useCases.vehicles(_sessionId);
         if (!await _current(revision)) return;
@@ -187,6 +197,17 @@ class DriverCubit extends Cubit<DriverState> {
       if (!await _current(revision)) return;
       final saved = await _acceptedStore.read(userPublicId);
       if (saved == null || !await _current(revision)) return;
+      if (saved.pendingAcceptance) {
+        _stopForeground();
+        emit(state.copy(
+            driverPublicId: saved.driverPublicId,
+            offer: saved.offer,
+            unresolvedDecision: true,
+            notice:
+                'Đang đối chiếu quyết định nhận chuyến đã lưu với máy chủ.'));
+        await reconcile();
+        return;
+      }
       final tracking =
           await _useCases.tracking(saved.offer.bookingPublicId, _sessionId);
       if (!await _current(revision)) return;
@@ -234,7 +255,9 @@ class DriverCubit extends Cubit<DriverState> {
           _startBusyLocation();
           await _uploadLocation(revision);
         }
-      } else if (tracking.status == 'CANCELLED') {
+      } else if (tracking.bookingPublicId == saved.offer.bookingPublicId &&
+          tracking.driverPublicId == saved.driverPublicId &&
+          tracking.status == 'CANCELLED') {
         await _acceptedStore.clear(userPublicId);
         if (!await _current(revision)) return;
         emit(state.copy(
@@ -312,6 +335,7 @@ class DriverCubit extends Cubit<DriverState> {
   Future<void> goOnline() async {
     if (state.actionBusy ||
         state.offerActionBusy ||
+        state.unresolvedDecision ||
         state.operatingStatus == 'BUSY' ||
         _generation == null ||
         isMock) {
@@ -341,6 +365,7 @@ class DriverCubit extends Cubit<DriverState> {
   Future<void> goOffline() async {
     if (state.actionBusy ||
         state.offerActionBusy ||
+        state.unresolvedDecision ||
         state.operatingStatus != 'ONLINE' ||
         _generation == null) {
       return;
@@ -546,8 +571,7 @@ class DriverCubit extends Cubit<DriverState> {
       if (rejection != null) {
         if (kDebugMode) {
           debugPrint('GoMoveGPS source=profile-REST result=skipped '
-              'reason=$rejection lat=${point.latitude} lon=${point.longitude} '
-              'sampledAt=${sampledAt?.toIso8601String()} '
+              'reason=$rejection '
               'ageMs=${age?.inMilliseconds} '
               'operating=${state.operatingStatus} tripChannel=$_tripChannelActive');
         }
@@ -563,8 +587,6 @@ class DriverCubit extends Cubit<DriverState> {
       _lastUploadedSampleAt = sampledAt;
       if (kDebugMode) {
         debugPrint('GoMoveGPS source=profile-REST result=sent '
-            'lat=${point.latitude} lon=${point.longitude} '
-            'sampledAt=${sampledAt!.toIso8601String()} '
             'ageMs=${age!.inMilliseconds} '
             'operating=${state.operatingStatus} tripChannel=$_tripChannelActive');
       }
@@ -667,6 +689,41 @@ class DriverCubit extends Cubit<DriverState> {
     final revision = _revision;
     _offerRevision++;
     emit(state.copy(offerActionBusy: true, error: null));
+    if (accept) {
+      final driverId = state.driverPublicId;
+      if (driverId == null || !await _current(revision)) {
+        if (await _current(revision)) {
+          emit(state.copy(
+              offerActionBusy: false, error: 'Chưa xác minh ID tài xế.'));
+        }
+        return;
+      }
+      _stopForeground();
+      try {
+        // One account-scoped key is written before HTTP and later promoted in
+        // place. A lost response or process death leaves a recoverable hint.
+        await _acceptedStore.write(userPublicId,
+            AcceptedBookingRecord(driverId, offer, pendingAcceptance: true));
+      } catch (_) {
+        if (await _current(revision)) {
+          emit(state.copy(
+              offerActionBusy: false,
+              error: 'Không lưu được ý định nhận chuyến; chưa gửi yêu cầu.'));
+          if (state.foreground && state.operatingStatus == 'ONLINE') {
+            _startForeground();
+          }
+        }
+        return;
+      }
+      if (!await _current(revision)) return;
+      if (!_now().isBefore(offer.expiresAt)) {
+        // This process knows no request was sent. A restarted process cannot
+        // infer that from the clock or a masked tracking 404.
+        await _resolveIntent(
+            offer, revision, 'Đề nghị đã hết hạn trước khi gửi.');
+        return;
+      }
+    }
     try {
       final decision = accept
           ? await _useCases.accept(offer.offerPublicId, _sessionId)
@@ -687,7 +744,19 @@ class DriverCubit extends Cubit<DriverState> {
       }
     } catch (error) {
       if (!await _current(revision)) return;
-      if (error is ServerException && error.statusCode == 409) {
+      if (accept) {
+        emit(state.copy(
+            offerActionBusy: false,
+            unresolvedDecision: true,
+            error:
+                'Chưa xác minh kết quả nhận chuyến. Không gửi lại quyết định.'));
+        if (_authError(error)) {
+          _stopForeground();
+        } else {
+          await _reconcile(
+              rejected: error is ServerException && error.statusCode == 409);
+        }
+      } else if (error is ServerException && error.statusCode == 409) {
         emit(state.copy(
             offer: null,
             offerActionBusy: false,
@@ -742,18 +811,32 @@ class DriverCubit extends Cubit<DriverState> {
     }
   }
 
-  Future<void> reconcile() async {
-    final offer = state.offer;
-    if (offer == null || _generation == null || _reconciling) return;
+  Future<void> reconcile() => _reconcile();
+
+  Future<void> _reconcile({bool rejected = false}) async {
+    if (_generation == null || _reconciling) return;
     final revision = _revision;
     _reconciling = true;
+    DriverOffer? offer;
     try {
+      final saved = await _acceptedStore.read(userPublicId);
+      if (!await _current(revision)) return;
+      offer = state.offer ?? saved?.offer;
+      if (offer == null) return;
+      final driverId = saved?.driverPublicId ?? state.driverPublicId;
+      if (driverId == null ||
+          saved != null &&
+              (saved.offer.offerPublicId != offer.offerPublicId ||
+                  saved.offer.bookingPublicId != offer.bookingPublicId)) {
+        throw const FormatException(
+            'Bàn giao không khớp quyết định đang kiểm tra');
+      }
       final tracking =
           await _useCases.tracking(offer.bookingPublicId, _sessionId);
       if (!await _current(revision)) return;
       if (tracking.bookingPublicId == offer.bookingPublicId &&
           tracking.driverPublicId != null &&
-          tracking.driverPublicId == state.driverPublicId &&
+          tracking.driverPublicId == driverId &&
           const {
             'DRIVER_ACCEPTED',
             'DRIVER_ARRIVED',
@@ -761,18 +844,39 @@ class DriverCubit extends Cubit<DriverState> {
             'IN_PROGRESS',
             'COMPLETED'
           }.contains(tracking.status)) {
+        emit(state.copy(driverPublicId: driverId));
         await _confirmAccepted(offer, revision,
             completed: tracking.status == 'COMPLETED');
         return;
       }
+      if (tracking.bookingPublicId == offer.bookingPublicId &&
+          tracking.driverPublicId == driverId &&
+          tracking.status == 'CANCELLED') {
+        await _resolveIntent(
+            offer, revision, 'Máy chủ xác nhận chuyến đã bị hủy.');
+        return;
+      }
+      if (rejected && tracking.bookingPublicId == offer.bookingPublicId) {
+        await _resolveIntent(
+            offer, revision, 'Đề nghị đã hết hạn hoặc không còn khả dụng.');
+        return;
+      }
       // A missing active offer alone cannot prove whether a decision committed.
-      await _useCases.activeOffers(_sessionId);
       if (await _current(revision)) {
         emit(state.copy(
             error:
                 'Chưa xác minh được kết quả. Kiểm tra lại sau; không gửi lại quyết định.'));
       }
     } catch (error) {
+      if (rejected &&
+          offer != null &&
+          error is ServerException &&
+          error.statusCode == 404 &&
+          await _current(revision)) {
+        await _resolveIntent(
+            offer, revision, 'Đề nghị đã hết hạn hoặc không còn khả dụng.');
+        return;
+      }
       if (await _current(revision)) {
         emit(state.copy(
             error: 'Không thể xác minh kết quả. Không gửi lại quyết định.'));
@@ -780,6 +884,40 @@ class DriverCubit extends Cubit<DriverState> {
       }
     } finally {
       _reconciling = false;
+    }
+  }
+
+  Future<void> _resolveIntent(
+      DriverOffer offer, int revision, String notice) async {
+    try {
+      final saved = await _acceptedStore.read(userPublicId);
+      if (!await _current(revision)) return;
+      if (saved != null &&
+          (saved.offer.offerPublicId != offer.offerPublicId ||
+              saved.offer.bookingPublicId != offer.bookingPublicId)) {
+        return;
+      }
+      await _acceptedStore.clear(userPublicId);
+      if (!await _current(revision)) return;
+      emit(state.copy(
+          offer: null,
+          offerActionBusy: false,
+          unresolvedDecision: false,
+          error: null,
+          notice: notice));
+      if (state.foreground && state.operatingStatus == 'ONLINE') {
+        _startForeground();
+        await pollOnce();
+      }
+    } catch (_) {
+      if (await _current(revision)) {
+        _stopForeground();
+        emit(state.copy(
+            offerActionBusy: false,
+            unresolvedDecision: true,
+            error:
+                'Chưa cập nhật được bàn giao trên thiết bị. Kiểm tra lại kết quả.'));
+      }
     }
   }
 
@@ -801,7 +939,9 @@ class DriverCubit extends Cubit<DriverState> {
     final revision = _revision;
     if (!await _current(revision)) return;
     emit(state.copy(foreground: true));
-    if (state.operatingStatus == 'ONLINE') {
+    if (state.unresolvedDecision) {
+      await reconcile();
+    } else if (state.operatingStatus == 'ONLINE') {
       // No GET /drivers/me: revalidate ONLINE by asking the server again.
       await goOnline();
       if (state.unresolvedDecision) await reconcile();

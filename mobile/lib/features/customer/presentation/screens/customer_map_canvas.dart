@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:math' show Point;
 
-import 'package:flutter/foundation.dart' show Factory;
+import 'package:flutter/foundation.dart'
+    show Factory, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/gestures.dart'
     show
         EagerGestureRecognizer,
@@ -15,6 +17,29 @@ import '../../../trip/domain/models/road_route.dart';
 import '../../../trip/presentation/widgets/road_route_line.dart';
 import '../../domain/models/quote.dart';
 import '../widgets/customer_map_source.dart';
+import '../widgets/customer_location_picker_overlay.dart';
+
+/// A camera-only boundary: no controller, account identity or network client
+/// escapes the canvas. The epoch is local and is never sent to tile providers.
+class CustomerMapPickerBinding {
+  final int epoch;
+  final Coordinates? initialPoint;
+  final bool pickup;
+  final bool suspended;
+  final double panelHeight;
+  final ValueChanged<int> onMoving;
+  final void Function(int revision, Coordinates point) onIdle;
+  final VoidCallback onUnavailable;
+  const CustomerMapPickerBinding(
+      {required this.epoch,
+      required this.initialPoint,
+      required this.pickup,
+      required this.suspended,
+      required this.panelHeight,
+      required this.onMoving,
+      required this.onIdle,
+      required this.onUnavailable});
+}
 
 /// A small seam for widget tests; production always uses [CustomerMapCanvas].
 typedef CustomerMapBuilder = Widget Function(
@@ -22,6 +47,7 @@ typedef CustomerMapBuilder = Widget Function(
   Coordinates? pickup,
   Coordinates? dropoff,
   ValueChanged<Coordinates> onTap,
+  CustomerMapPickerBinding? picker,
 );
 
 class CustomerMapCanvas extends StatefulWidget {
@@ -32,6 +58,7 @@ class CustomerMapCanvas extends StatefulWidget {
   final RoadRoute? route;
   final double attributionTop;
   final bool scrollablePreview;
+  final CustomerMapPickerBinding? picker;
 
   const CustomerMapCanvas({
     super.key,
@@ -42,6 +69,7 @@ class CustomerMapCanvas extends StatefulWidget {
     this.route,
     this.attributionTop = 12,
     this.scrollablePreview = false,
+    this.picker,
   });
 
   @override
@@ -73,6 +101,23 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
   bool _markerUpdateFailed = false;
   bool _cameraUpdateFailed = false;
   bool _routeUpdateFailed = false;
+  final _creditKey = GlobalKey();
+  final _moving = ValueNotifier<bool>(false);
+  CameraPosition? _cameraBeforePicker;
+  Size _mapSize = Size.zero;
+  double _creditHeight = 0;
+  EdgeInsets _insets = EdgeInsets.zero;
+  int _cameraRevision = 0;
+  int _commandRevision = 0;
+  bool _layoutPending = false;
+  bool _configuring = false;
+  bool _idleDuringCommand = false;
+  bool _positioning = false;
+  bool _waitingForIdle = false;
+  bool _pickerCameraActive = false;
+  int? _positionedEpoch;
+  Timer? _cameraTimeout;
+  Future<void> _cameraCommands = Future<void>.value();
 
   @override
   void initState() {
@@ -89,11 +134,15 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
       _styleTimeout = Timer(const Duration(seconds: 12), () {
         if (mounted && !_styleLoaded) {
           setState(() => _mapUnavailable = true);
+          final picker = widget.picker;
+          if (picker != null) _pickerUnavailable(picker.epoch);
         }
       });
       return true;
     } catch (_) {
       if (mounted) setState(() => _setupFailed = true);
+      final picker = widget.picker;
+      if (mounted && picker != null) _pickerUnavailable(picker.epoch);
       return false;
     }
   }
@@ -102,7 +151,9 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
   void didUpdateWidget(covariant CustomerMapCanvas oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!_samePoint(widget.pickup, oldWidget.pickup) ||
-        !_samePoint(widget.dropoff, oldWidget.dropoff)) {
+        !_samePoint(widget.dropoff, oldWidget.dropoff) ||
+        (widget.picker == null) != (oldWidget.picker == null) ||
+        widget.picker?.pickup != oldWidget.picker?.pickup) {
       _markerDebounce?.cancel();
       _markerDebounce =
           Timer(const Duration(milliseconds: 180), _queueMarkerSync);
@@ -111,6 +162,25 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
         !_samePoint(widget.pickup, oldWidget.pickup) ||
         !_samePoint(widget.dropoff, oldWidget.dropoff)) {
       _queueRouteSync();
+    }
+    if (widget.picker?.epoch != oldWidget.picker?.epoch ||
+        widget.picker?.suspended != oldWidget.picker?.suspended ||
+        widget.picker?.panelHeight != oldWidget.picker?.panelHeight) {
+      _queuePickerCamera();
+    }
+  }
+
+  double? _deviceScale;
+  EdgeInsets? _safeArea;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final media = MediaQuery.of(context);
+    if (_deviceScale != media.devicePixelRatio || _safeArea != media.padding) {
+      _deviceScale = media.devicePixelRatio;
+      _safeArea = media.padding;
+      if (widget.picker != null) _queuePickerCamera();
     }
   }
 
@@ -121,6 +191,10 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
   void dispose() {
     _styleTimeout?.cancel();
     _markerDebounce?.cancel();
+    _cameraTimeout?.cancel();
+    _commandRevision++;
+    _controller?.removeListener(_onCameraStatus);
+    _moving.dispose();
     _controller = null; // MapLibreMap owns and disposes its controller.
     super.dispose();
   }
@@ -138,6 +212,246 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
     _markerDebounce?.cancel();
     _queueMarkerSync();
     _queueRouteSync();
+    _queuePickerCamera();
+  }
+
+  bool _pickerCurrent(int epoch, int revision) =>
+      mounted &&
+      widget.picker?.epoch == epoch &&
+      widget.picker?.suspended == false &&
+      _styleLoaded &&
+      !_mapUnavailable &&
+      revision == _cameraRevision;
+
+  void _onMapCreated(MapLibreMapController controller) {
+    if (!mounted) return;
+    _controller?.removeListener(_onCameraStatus);
+    _controller = controller;
+    controller.addListener(_onCameraStatus);
+  }
+
+  void _onCameraStatus() {
+    if (_controller?.isCameraMoving == true) _onCameraMoving();
+  }
+
+  void _onCameraMoving() {
+    if (!mounted) return;
+    final picker = widget.picker;
+    if (picker == null ||
+        picker.suspended ||
+        !_styleLoaded ||
+        _mapUnavailable) {
+      return;
+    }
+    if (_moving.value) return;
+    _moving.value = true;
+    picker.onMoving(++_cameraRevision);
+  }
+
+  void _onCameraIdle() {
+    if (!mounted) return;
+    if (_configuring) {
+      _idleDuringCommand = true;
+      return;
+    }
+    final picker = widget.picker;
+    if (picker == null || picker.suspended) return;
+    if (_positioning && !_waitingForIdle) return;
+    _moving.value = false;
+    unawaited(_readPinLocation(picker.epoch, _cameraRevision));
+  }
+
+  Future<void> _readPinLocation(int epoch, int revision) async {
+    final controller = _controller;
+    if (controller == null ||
+        !_pickerCurrent(epoch, revision) ||
+        controller.isCameraMoving ||
+        _mapSize.isEmpty) {
+      return;
+    }
+    final pin = _pinOffset;
+    if (pin == null) {
+      _pickerUnavailable(epoch);
+      return;
+    }
+    try {
+      final camera = await controller
+          .queryCameraPosition()
+          .timeout(const Duration(seconds: 3));
+      if (!mounted ||
+          !_pickerCurrent(epoch, revision) ||
+          controller.isCameraMoving) {
+        return;
+      }
+      if (camera == null ||
+          !camera.zoom.isFinite ||
+          !camera.bearing.isFinite ||
+          !camera.tilt.isFinite ||
+          !Coordinates(camera.target.latitude, camera.target.longitude)
+              .isValid) {
+        _pickerUnavailable(epoch);
+        return;
+      }
+      // 0.27.1 Android passes x/y straight to native Projection (physical px).
+      // iOS uses UIKit points; web uses CSS pixels. Padding itself is logical.
+      final scale = !kIsWeb && defaultTargetPlatform == TargetPlatform.android
+          ? MediaQuery.devicePixelRatioOf(context)
+          : 1.0;
+      final location = await controller
+          .toLatLng(Point<double>(pin.dx * scale, pin.dy * scale))
+          .timeout(const Duration(seconds: 3));
+      if (!_pickerCurrent(epoch, revision) || controller.isCameraMoving) return;
+      final point = Coordinates(location.latitude, location.longitude);
+      if (!point.isValid) {
+        _pickerUnavailable(epoch);
+        return;
+      }
+      _cameraTimeout?.cancel();
+      if (_positioning) setState(() => _positioning = false);
+      widget.picker!.onIdle(revision, point);
+    } catch (_) {
+      if (_pickerCurrent(epoch, revision)) _pickerUnavailable(epoch);
+    }
+  }
+
+  Offset? get _pinOffset {
+    final width = _mapSize.width - _insets.horizontal;
+    final height = _mapSize.height - _insets.vertical;
+    if (width <= 0 || height < 48) return null;
+    return Offset(_insets.left + width / 2, _insets.top + height / 2);
+  }
+
+  void _pickerUnavailable(int epoch) {
+    if (!mounted || widget.picker?.epoch != epoch || widget.picker!.suspended) {
+      return;
+    }
+    _cameraTimeout?.cancel();
+    if (_positioning) setState(() => _positioning = false);
+    widget.picker?.onUnavailable();
+  }
+
+  void _measureViewport() {
+    if (_layoutPending) return;
+    _layoutPending = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _layoutPending = false;
+      if (!mounted) return;
+      final credit = _creditKey.currentContext?.findRenderObject();
+      final height =
+          credit is RenderBox && credit.hasSize ? credit.size.height : 0.0;
+      if (height != _creditHeight) {
+        _creditHeight = height;
+        _queuePickerCamera();
+      }
+    });
+  }
+
+  void _queuePickerCamera() {
+    final command = ++_commandRevision;
+    _cameraRevision++;
+    _cameraTimeout?.cancel();
+    _waitingForIdle = false;
+    final picker = widget.picker;
+    if (picker != null && picker.suspended) return;
+    if (picker == null && !_pickerCameraActive) return;
+    if (!_styleLoaded || _controller == null) {
+      if (picker != null && (_setupFailed || _mapUnavailable)) {
+        WidgetsBinding.instance
+            .addPostFrameCallback((_) => _pickerUnavailable(picker.epoch));
+      }
+      return;
+    }
+    if (picker != null) {
+      _pickerCameraActive = true;
+      final safe = MediaQuery.paddingOf(context);
+      _insets = EdgeInsets.fromLTRB(
+          safe.left,
+          widget.attributionTop + _creditHeight + 12,
+          safe.right,
+          picker.panelHeight + 12);
+      picker.onMoving(_cameraRevision);
+      _cameraTimeout = Timer(
+          const Duration(seconds: 5), () => _pickerUnavailable(picker.epoch));
+      _positioning = true;
+    } else {
+      _insets = EdgeInsets.zero;
+      _positioning = true;
+      _positionedEpoch = null;
+    }
+    // Run after layout and serialize platform commands. Obsolete queued work
+    // cannot move a newer picker or restore a camera after another entry.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || command != _commandRevision) return;
+      setState(() {});
+      _cameraCommands = _cameraCommands.then((_) async {
+        if (!mounted || command != _commandRevision) return;
+        final controller = _controller!;
+        _configuring = true;
+        _idleDuringCommand = false;
+        try {
+          if (picker != null && _cameraBeforePicker == null) {
+            final before = await controller
+                .queryCameraPosition()
+                .timeout(const Duration(seconds: 3));
+            if (!mounted || command != _commandRevision) return;
+            _cameraBeforePicker = before;
+          }
+          if (!mounted || command != _commandRevision) return;
+          await controller
+              .setPadding(
+                  left: _insets.left,
+                  top: _insets.top,
+                  right: _insets.right,
+                  bottom: _insets.bottom)
+              .timeout(const Duration(seconds: 3));
+          if (!mounted || command != _commandRevision) return;
+          if (picker == null) {
+            final before = _cameraBeforePicker;
+            _cameraBeforePicker = null;
+            if (before != null) {
+              await controller
+                  .moveCamera(CameraUpdate.newCameraPosition(before))
+                  .timeout(const Duration(seconds: 3));
+            }
+          } else if (_positionedEpoch != picker.epoch) {
+            final seed = picker.initialPoint;
+            _idleDuringCommand = false;
+            if (seed?.isValid == true) {
+              final update = CameraUpdate.newLatLngZoom(
+                  LatLng(seed!.latitude, seed.longitude), 16);
+              if (AppMotion.reduceMotion(context)) {
+                await controller.moveCamera(update);
+              } else {
+                await controller.animateCamera(update,
+                    duration: AppMotion.pageEnter);
+              }
+            } else if (_cameraBeforePicker != null) {
+              await controller.moveCamera(
+                  CameraUpdate.newCameraPosition(_cameraBeforePicker!));
+            }
+            _positionedEpoch = picker.epoch;
+          }
+        } finally {
+          _configuring = false;
+        }
+        if (!mounted || command != _commandRevision) return;
+        if (picker == null) {
+          _pickerCameraActive = false;
+          setState(() => _positioning = false);
+        }
+        _waitingForIdle = true;
+        // A platform idle event, never the animation Future, authorizes sampling.
+        if (_idleDuringCommand) _onCameraIdle();
+      }).catchError((Object _) {
+        _configuring = false;
+        if (mounted && command == _commandRevision && picker != null) {
+          _pickerUnavailable(picker.epoch);
+        } else if (mounted && command == _commandRevision) {
+          setState(() => _positioning = false);
+        }
+      });
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   void _queueRouteSync() {
@@ -172,7 +486,7 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
       await controller.clearCircles();
       if (!mounted) return;
       final pickup = widget.pickup;
-      if (pickup != null) {
+      if (pickup != null && widget.picker?.pickup != true) {
         await controller.addCircle(CircleOptions(
           geometry: LatLng(pickup.latitude, pickup.longitude),
           // An outlined ring distinguishes pickup from the filled destination.
@@ -184,7 +498,7 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
       }
       if (!mounted) return;
       final dropoff = widget.dropoff;
-      if (dropoff != null) {
+      if (dropoff != null && (widget.picker == null || widget.picker!.pickup)) {
         await controller.addCircle(CircleOptions(
           geometry: LatLng(dropoff.latitude, dropoff.longitude),
           circleRadius: 11,
@@ -280,48 +594,83 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
                   textAlign: TextAlign.center),
             ));
           }
-          return Stack(
-            fit: StackFit.expand,
-            children: [
-              MapLibreMap(
-                initialCameraPosition:
-                    const CameraPosition(target: _hanoi, zoom: 14),
-                styleString: CustomerMapSource.styleUrl,
-                myLocationEnabled: false,
-                logoEnabled: true,
-                annotationOrder: const [
-                  AnnotationType.line,
-                  AnnotationType.circle
-                ],
-                gestureRecognizers: widget.scrollablePreview
-                    ? _scrollPreviewGestures
-                    : _mapGestures,
-                onMapCreated: (controller) => _controller = controller,
-                onStyleLoadedCallback: _onStyleLoaded,
-                onMapClick: (_, position) {
-                  if (!_styleLoaded || _mapUnavailable) return;
-                  widget.onTap(
-                    Coordinates(position.latitude, position.longitude),
-                  );
-                },
-              ),
-              if (_mapUnavailable)
-                const AbsorbPointer(
-                  child: ColoredBox(
-                    color: Color(0xDDF8F9FA),
-                    child: Center(
-                      child: Padding(
-                        padding: EdgeInsets.all(16),
-                        child: Text(
-                          'Nền bản đồ tạm thời không tải được.',
-                          textAlign: TextAlign.center,
+          return LayoutBuilder(builder: (context, constraints) {
+            final size = constraints.biggest;
+            if (_mapSize != size) {
+              _mapSize = size;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted && widget.picker != null) _queuePickerCamera();
+              });
+            }
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                MapLibreMap(
+                  initialCameraPosition:
+                      const CameraPosition(target: _hanoi, zoom: 14),
+                  styleString: CustomerMapSource.styleUrl,
+                  myLocationEnabled: false,
+                  logoEnabled: true,
+                  logoViewMargins: widget.picker == null
+                      ? null
+                      : Point(12.0, widget.picker!.panelHeight + 12),
+                  attributionButtonMargins: widget.picker == null
+                      ? null
+                      : Point(12.0, widget.picker!.panelHeight + 12),
+                  trackCameraPosition: !widget.scrollablePreview,
+                  annotationOrder: const [
+                    AnnotationType.line,
+                    AnnotationType.circle
+                  ],
+                  gestureRecognizers: widget.scrollablePreview
+                      ? _scrollPreviewGestures
+                      : _mapGestures,
+                  onMapCreated: _onMapCreated,
+                  onStyleLoadedCallback: _onStyleLoaded,
+                  onCameraMove: (_) => _onCameraMoving(),
+                  onCameraIdle: _onCameraIdle,
+                  onMapClick: (_, position) {
+                    if (!_styleLoaded ||
+                        _mapUnavailable ||
+                        widget.picker != null) {
+                      return;
+                    }
+                    widget.onTap(
+                      Coordinates(position.latitude, position.longitude),
+                    );
+                  },
+                ),
+                if (widget.picker != null && _pinOffset != null)
+                  Positioned(
+                      left: _pinOffset!.dx - 20,
+                      top: _pinOffset!.dy - 48,
+                      child: ValueListenableBuilder<bool>(
+                          valueListenable: _moving,
+                          builder: (_, moving, __) => CustomerLocationPin(
+                              key: const ValueKey('location-picker-pin'),
+                              pickup: widget.picker!.pickup,
+                              moving: moving))),
+                if (_positioning || widget.picker?.suspended == true)
+                  const Positioned.fill(
+                      child: AbsorbPointer(child: SizedBox.expand())),
+                if (_mapUnavailable)
+                  const AbsorbPointer(
+                    child: ColoredBox(
+                      color: Color(0xDDF8F9FA),
+                      child: Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(16),
+                          child: Text(
+                            'Nền bản đồ tạm thời không tải được.',
+                            textAlign: TextAlign.center,
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
-            ],
-          );
+              ],
+            );
+          });
         },
       );
 
@@ -329,25 +678,28 @@ class _CustomerMapCanvasState extends State<CustomerMapCanvas> {
   Widget build(BuildContext context) {
     if (widget.fullScreen) {
       final scheme = Theme.of(context).colorScheme;
+      _measureViewport();
       return Stack(fit: StackFit.expand, children: [
         _mapSurface(),
-        Positioned(
-          top: 12,
-          right: 12,
-          child: FloatingActionButton.small(
-            heroTag: 'customer-fit-points',
-            tooltip: 'Xem 2 điểm',
-            onPressed: _styleLoaded && !_mapUnavailable ? _fitPoints : null,
-            backgroundColor: scheme.surface,
-            foregroundColor: scheme.primary,
-            child: const Icon(Icons.zoom_out_map),
+        if (widget.picker == null)
+          Positioned(
+            top: 12,
+            right: 12,
+            child: FloatingActionButton.small(
+              heroTag: 'customer-fit-points',
+              tooltip: 'Xem 2 điểm',
+              onPressed: _styleLoaded && !_mapUnavailable ? _fitPoints : null,
+              backgroundColor: scheme.surface,
+              foregroundColor: scheme.primary,
+              child: const Icon(Icons.zoom_out_map),
+            ),
           ),
-        ),
         Positioned(
           top: widget.attributionTop,
           left: 12,
           right: 76,
           child: DecoratedBox(
+            key: _creditKey,
             decoration: BoxDecoration(
               color: scheme.surface.withAlpha(238),
               borderRadius: BorderRadius.circular(12),

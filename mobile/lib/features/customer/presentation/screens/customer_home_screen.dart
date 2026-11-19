@@ -20,11 +20,13 @@ import '../../domain/repositories/geocoding_repository.dart';
 import '../bloc/booking_cubit.dart';
 import '../bloc/customer_active_booking_cubit.dart';
 import '../bloc/quote_cubit.dart';
+import '../bloc/location_picker_cubit.dart';
 import 'booking_status_screen.dart';
 import 'customer_map_canvas.dart';
 import 'quote_review_screen.dart';
 import 'trip_history_screen.dart';
 import '../widgets/customer_premium_widgets.dart';
+import '../widgets/customer_location_picker_overlay.dart';
 
 class CustomerHomeScreen extends StatelessWidget {
   final User user;
@@ -102,7 +104,9 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
   String? _coordinateError;
   bool _mapVisible = true;
   bool _searchRouteOpen = false;
-  bool _choosingOnMap = false;
+  late final LocationPickerCubit _picker;
+  StreamSubscription<LocationPickerState>? _pickerSubscription;
+  double _pickerPanelHeight = 0;
   bool _keyboardWasOpen = false;
   String? _dismissedPaidBookingId;
   double _sheetMinSize = .34;
@@ -111,8 +115,6 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
   bool _authInvalidated = false;
   final _pickupPlace = _PlaceSelection();
   final _dropoffPlace = _PlaceSelection();
-  int _pickupReverseRevision = 0;
-  int _dropoffReverseRevision = 0;
   bool _settingCoordinates = false;
 
   _PlaceSelection _selection(_MapTarget target) =>
@@ -128,6 +130,25 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _picker = LocationPickerCubit(
+      session: sl.isRegistered<SecureStorageService>()
+          ? sl<SecureStorageService>()
+          : null,
+      geocoding:
+          !AppConfig.instance.isMock && sl.isRegistered<GeocodingRepository>()
+              ? sl<GeocodingRepository>()
+              : null,
+      customerPublicId: widget.user.publicId,
+      isCurrentAccount: () => mounted && _isCurrentAccount,
+    );
+    var previousPicker = _picker.state;
+    _pickerSubscription = _picker.stream.listen((next) {
+      final rebuild = previousPicker.isOpen != next.isOpen ||
+          previousPicker.epoch != next.epoch ||
+          previousPicker.cameraEnabled != next.cameraEnabled;
+      previousPicker = next;
+      if (mounted && rebuild) setState(() {});
+    });
     _pickupLat.addListener(_onPickupCoordinateEdited);
     _pickupLon.addListener(_onPickupCoordinateEdited);
     _dropoffLat.addListener(_onDropoffCoordinateEdited);
@@ -152,11 +173,6 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
       selection.attribution = null;
       selection.labelPoint = null;
       selection.message = 'Chưa có địa chỉ được xác minh cho tọa độ này.';
-      if (target == _MapTarget.pickup) {
-        _pickupReverseRevision++;
-      } else {
-        _dropoffReverseRevision++;
-      }
     });
     selection.refresh();
   }
@@ -165,9 +181,11 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _foreground = state == AppLifecycleState.resumed;
     if (state == AppLifecycleState.resumed && _isCurrentAccount) {
+      unawaited(_picker.resume());
       context.read<CustomerActiveBookingCubit>().restore();
       if (mounted) setState(() {});
     } else if (state != AppLifecycleState.resumed) {
+      _picker.suspend();
       for (final selection in [_pickupPlace, _dropoffPlace]) {
         selection.debounce?.cancel();
         selection.revision++;
@@ -179,14 +197,14 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
         }
         selection.refresh();
       }
-      _pickupReverseRevision++;
-      _dropoffReverseRevision++;
     }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    unawaited(_pickerSubscription?.cancel());
+    unawaited(_picker.close());
     _pickupLat.removeListener(_onPickupCoordinateEdited);
     _pickupLon.removeListener(_onPickupCoordinateEdited);
     _dropoffLat.removeListener(_onDropoffCoordinateEdited);
@@ -206,10 +224,9 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
   }
 
   Future<void> _openSearchFromMap(_MapTarget target) async {
-    if (!_foreground || !_isCurrentAccount) return;
+    if (!_foreground || !_isCurrentAccount || _picker.state.isOpen) return;
     setState(() {
       _mapTarget = target;
-      _choosingOnMap = false;
       _searchRouteOpen = true;
     });
     Object? result;
@@ -257,12 +274,49 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
   }
 
   void _chooseOnMap(_MapTarget target) {
-    if (!_isCurrentAccount) return;
-    setState(() {
-      _mapTarget = target;
-      _choosingOnMap = true;
-    });
-    if (_sheetController.isAttached) _sheetController.jumpTo(_sheetMinSize);
+    if (!_foreground ||
+        !_isCurrentAccount ||
+        context.read<QuoteCubit>().state.loading ||
+        context.read<BookingCubit>().state.loading) {
+      return;
+    }
+    FocusScope.of(context).unfocus();
+    _mapTarget = target;
+    _pickerPanelHeight = 0;
+    unawaited(_picker.enter(
+        target == _MapTarget.pickup
+            ? LocationPickerTarget.pickup
+            : LocationPickerTarget.dropoff,
+        _pointFor(target)));
+  }
+
+  Future<void> _confirmMapPoint() async {
+    final confirmed = await _picker.confirm();
+    if (confirmed == null || !mounted || !_foreground || !_isCurrentAccount) {
+      return;
+    }
+    _setPoint(
+        confirmed.target == LocationPickerTarget.pickup
+            ? _MapTarget.pickup
+            : _MapTarget.dropoff,
+        confirmed.point,
+        label: confirmed.address?.label,
+        attribution: confirmed.address?.attribution);
+  }
+
+  CustomerMapPickerBinding? get _pickerBinding {
+    final state = _picker.state;
+    if (!state.isOpen) return null;
+    return CustomerMapPickerBinding(
+        epoch: state.epoch,
+        initialPoint: state.point,
+        pickup: state.target == LocationPickerTarget.pickup,
+        suspended: !state.cameraEnabled || _pickerPanelHeight <= 0,
+        panelHeight: _pickerPanelHeight,
+        onMoving: (revision) => _picker.cameraMoving(state.epoch, revision),
+        onIdle: (revision, point) =>
+            _picker.cameraIdle(state.epoch, revision, point),
+        onUnavailable: () => _picker.unavailable(state.epoch));
   }
 
   String _floatingPlaceLabel(_MapTarget target, Coordinates? point) {
@@ -424,16 +478,6 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
       _isCurrentAccount &&
       revision == selection.revision;
 
-  bool _canUseReverse(_MapTarget target, int revision, Coordinates point) =>
-      mounted &&
-      _foreground &&
-      _isCurrentAccount &&
-      revision ==
-          (target == _MapTarget.pickup
-              ? _pickupReverseRevision
-              : _dropoffReverseRevision) &&
-      _samePoint(_pointFor(target), point);
-
   Future<bool> _sessionStillCurrent(
       SecureStorageService session, int generation) async {
     try {
@@ -459,11 +503,9 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
       if (target == _MapTarget.pickup) {
         _pickupLat.text = point.latitude.toString();
         _pickupLon.text = point.longitude.toString();
-        _pickupReverseRevision++;
       } else {
         _dropoffLat.text = point.latitude.toString();
         _dropoffLon.text = point.longitude.toString();
-        _dropoffReverseRevision++;
       }
     } finally {
       _settingCoordinates = false;
@@ -476,8 +518,9 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
       selected.label = label;
       selected.attribution = attribution;
       selected.labelPoint = label == null ? null : point;
-      selected.message =
-          label == null ? 'Đang tìm địa chỉ cho điểm đã chọn…' : null;
+      selected.message = label == null
+          ? 'Chưa xác minh được địa chỉ; tọa độ đã chọn vẫn được giữ.'
+          : null;
     });
     selected.refresh();
   }
@@ -577,78 +620,6 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
     }
   }
 
-  Future<void> _reverseSelected(_MapTarget target, Coordinates point) async {
-    final revision = target == _MapTarget.pickup
-        ? _pickupReverseRevision
-        : _dropoffReverseRevision;
-    if (!_canUseReverse(target, revision, point)) return;
-    if (!sl.isRegistered<GeocodingRepository>() ||
-        !sl.isRegistered<SecureStorageService>() ||
-        AppConfig.instance.isMock) {
-      if (mounted) {
-        setState(() => _selection(target).message =
-            'Chưa có địa chỉ cho điểm này; tọa độ đã chọn vẫn được giữ.');
-        _selection(target).refresh();
-      }
-      return;
-    }
-    int? requestGeneration;
-    try {
-      final session = sl<SecureStorageService>();
-      final snapshot = await session.getSession();
-      requestGeneration = snapshot.generation;
-      if (!_canUseReverse(target, revision, point) ||
-          snapshot.accessToken == null) {
-        return;
-      }
-      final result = await sl<GeocodingRepository>()
-          .reverse(point, sessionGeneration: snapshot.generation);
-      if (!_canUseReverse(target, revision, point)) {
-        return;
-      }
-      final current = await _sessionStillCurrent(session, snapshot.generation);
-      if (!current || !_canUseReverse(target, revision, point)) {
-        return;
-      }
-      final validResult =
-          result != null && _samePoint(result.coordinates, point);
-      setState(() {
-        final selected = _selection(target);
-        selected.label = validResult ? result.label : null;
-        selected.attribution = validResult ? result.attribution : null;
-        selected.labelPoint = validResult ? point : null;
-        selected.message = validResult
-            ? null
-            : 'Chưa tìm được địa chỉ cho điểm này; tọa độ đã chọn vẫn được giữ.';
-      });
-      _selection(target).refresh();
-    } catch (_) {
-      if (!_canUseReverse(target, revision, point)) {
-        return;
-      }
-      if (requestGeneration != null &&
-          !await _sessionStillCurrent(
-              sl<SecureStorageService>(), requestGeneration)) {
-        return;
-      }
-      if (!_canUseReverse(target, revision, point)) {
-        return;
-      }
-      setState(() => _selection(target).message =
-          'Không thể xác minh địa chỉ lúc này; tọa độ đã chọn vẫn được giữ.');
-      _selection(target).refresh();
-    }
-  }
-
-  void _selectMapPoint(Coordinates point) {
-    if (!_isCurrentAccount || !point.isValid) return;
-    FocusScope.of(context).unfocus();
-    final target = _mapTarget;
-    _choosingOnMap = false;
-    _setPoint(target, point);
-    unawaited(_reverseSelected(target, point));
-  }
-
   Widget _pointSummary(
       String label, Coordinates? point, Color color, _MapTarget target) {
     final selected = _mapTarget == target;
@@ -669,10 +640,7 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
         ),
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
-          onTap: () => setState(() {
-            _mapTarget = target;
-            _choosingOnMap = true;
-          }),
+          onTap: () => _chooseOnMap(target),
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Row(children: [
@@ -834,7 +802,11 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
   }
 
   void _request() {
-    if (!_isCurrentAccount || context.read<QuoteCubit>().state.loading) return;
+    if (!_isCurrentAccount ||
+        _picker.state.isOpen ||
+        context.read<QuoteCubit>().state.loading) {
+      return;
+    }
     // The fields live in a lazy sheet ListView and may be offscreen/unmounted
     // while the primary action stays visible. Validate the controller values
     // themselves so a collapsed sheet can still request the intended Quote.
@@ -867,6 +839,7 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
         auth.user.publicId != widget.user.publicId) {
       if (!_authInvalidated) {
         _authInvalidated = true;
+        _picker.cancel();
         for (final selected in [_pickupPlace, _dropoffPlace]) {
           selected.debounce?.cancel();
           selected.revision++;
@@ -878,8 +851,6 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
           selected.labelPoint = null;
           selected.message = null;
         }
-        _pickupReverseRevision++;
-        _dropoffReverseRevision++;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
           _pickupPlace.query.clear();
@@ -938,624 +909,700 @@ class _CustomerHomeContentState extends State<_CustomerHomeContent>
           }
         }),
       ],
-      child: Scaffold(
-        appBar: AppBar(
-            title: LayoutBuilder(
-              builder: (context, size) => Row(children: [
-                if (size.maxWidth >= 180) ...[
-                  const Icon(Icons.near_me_rounded, color: AppColors.primary),
-                  const SizedBox(width: 8),
-                ],
-                const Text('GoMove'),
-                if (size.maxWidth >= 220) ...[
-                  const SizedBox(width: 10),
-                  Expanded(
-                      child: Text('Chào ${widget.user.fullName}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.bodySmall)),
-                ],
-              ]),
-            ),
-            actions: [
-              BlocBuilder<CustomerActiveBookingCubit,
-                  CustomerActiveBookingState>(
-                builder: (context, state) => IconButton(
-                  key: const ValueKey('customer-recover-booking'),
-                  tooltip: 'Tìm lại chuyến bằng mã',
-                  icon: const Icon(Icons.manage_search_rounded),
-                  onPressed: state.loading || state.sessionEnded
-                      ? null
-                      : _recoverExistingBooking,
-                ),
-              ),
-              IconButton(
-                tooltip: 'Lịch sử chuyến đi',
-                icon: const Icon(Icons.history),
-                onPressed: AppConfig.instance.isMock || !_isCurrentAccount
-                    ? null
-                    : _openHistory,
-              ),
-              IconButton(
-                tooltip: 'Đăng xuất',
-                icon: const Icon(Icons.logout),
-                onPressed: () =>
-                    context.read<AuthBloc>().add(const AuthLogoutRequested()),
-              )
-            ]),
-        body: LayoutBuilder(builder: (context, constraints) {
-          final keyboardOpen = View.of(context).viewInsets.bottom > 0;
-          _sheetMinSize = keyboardOpen
-              ? .58
-              : (248 / constraints.maxHeight).clamp(.28, .48).toDouble();
-          _sheetMaxSize = keyboardOpen ? .98 : .92;
-          if (keyboardOpen != _keyboardWasOpen) {
-            _keyboardWasOpen = keyboardOpen;
-            if (keyboardOpen && routeCurrent) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted && _sheetController.isAttached) {
-                  _sheetController.jumpTo(_sheetMaxSize);
-                }
-              });
-            }
-          }
-          return Stack(children: [
-            Positioned.fill(
-              child: _mapVisible && (routeCurrent || _searchRouteOpen)
-                  ? (widget.mapBuilder
-                          ?.call(context, pickup, dropoff, _selectMapPoint) ??
-                      CustomerMapCanvas(
-                        pickup: pickup,
-                        dropoff: dropoff,
-                        onTap: _selectMapPoint,
-                        fullScreen: true,
-                      ))
-                  : const ColoredBox(color: Colors.transparent),
-            ),
-            if (_choosingOnMap)
-              Positioned(
-                top: 72,
-                left: 12,
-                right: 72,
-                child: Material(
-                  color: Theme.of(context).colorScheme.surface,
-                  elevation: 3,
-                  borderRadius: BorderRadius.circular(14),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Row(children: [
-                      const Icon(Icons.touch_app_rounded),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(_mapTarget == _MapTarget.pickup
-                            ? 'Chạm bản đồ để chọn điểm đón'
-                            : 'Chạm bản đồ để chọn điểm đến'),
-                      ),
-                      IconButton(
-                        tooltip: 'Đóng chọn trên bản đồ',
-                        onPressed: () => setState(() => _choosingOnMap = false),
-                        icon: const Icon(Icons.close_rounded),
-                      ),
-                    ]),
-                  ),
-                ),
-              ),
-            Align(
-              alignment: Alignment.bottomCenter,
-              child: DraggableScrollableSheet(
-                key: const ValueKey('customer-booking-sheet'),
-                controller: _sheetController,
-                expand: false,
-                minChildSize: _sheetMinSize,
-                initialChildSize: _sheetMinSize,
-                maxChildSize: _sheetMaxSize,
-                snap: !AppMotion.reduceMotion(context),
-                snapSizes: [
-                  _sheetMinSize,
-                  (_sheetMinSize + _sheetMaxSize) / 2,
-                ],
-                builder: (context, sheetScrollController) => Material(
-                  elevation: 12,
-                  color: Theme.of(context).colorScheme.surface,
-                  clipBehavior: Clip.antiAlias,
-                  borderRadius:
-                      const BorderRadius.vertical(top: Radius.circular(24)),
-                  child: Column(children: [
-                    GestureDetector(
-                      key: const ValueKey('customer-booking-sheet-grip'),
-                      behavior: HitTestBehavior.opaque,
-                      onVerticalDragUpdate: (details) =>
-                          _dragSheet(details, constraints.maxHeight),
-                      onVerticalDragEnd: _settleSheet,
-                      child: SizedBox(
-                        width: double.infinity,
-                        height: 38,
-                        child: Center(
-                          child: Container(
-                            key:
-                                const ValueKey('customer-booking-sheet-handle'),
-                            width: 44,
-                            height: 5,
-                            decoration: BoxDecoration(
-                              color:
-                                  Theme.of(context).colorScheme.outlineVariant,
-                              borderRadius: BorderRadius.circular(3),
-                            ),
+      child: PopScope(
+          canPop: !_picker.state.isOpen,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop && _picker.state.isOpen) _picker.cancel();
+          },
+          child: Scaffold(
+            appBar: _picker.state.isOpen
+                ? AppBar(
+                    leading: IconButton(
+                        tooltip: 'Hủy chọn vị trí',
+                        icon: const Icon(Icons.arrow_back_rounded),
+                        onPressed: _picker.cancel),
+                    title: Text(
+                        _mapTarget == _MapTarget.pickup
+                            ? 'Chọn điểm đón'
+                            : 'Chọn điểm đến',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis),
+                  )
+                : AppBar(
+                    title: LayoutBuilder(
+                      builder: (context, size) => Row(children: [
+                        if (size.maxWidth >= 180) ...[
+                          const Icon(Icons.near_me_rounded,
+                              color: AppColors.primary),
+                          const SizedBox(width: 8),
+                        ],
+                        const Flexible(
+                            child: Text('GoMove',
+                                maxLines: 1, overflow: TextOverflow.ellipsis)),
+                        if (size.maxWidth >= 220) ...[
+                          const SizedBox(width: 10),
+                          Expanded(
+                              child: Text('Chào ${widget.user.fullName}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style:
+                                      Theme.of(context).textTheme.bodySmall)),
+                        ],
+                      ]),
+                    ),
+                    actions: [
+                        BlocBuilder<CustomerActiveBookingCubit,
+                            CustomerActiveBookingState>(
+                          builder: (context, state) => IconButton(
+                            key: const ValueKey('customer-recover-booking'),
+                            tooltip: 'Tìm lại chuyến bằng mã',
+                            icon: const Icon(Icons.manage_search_rounded),
+                            onPressed: state.loading || state.sessionEnded
+                                ? null
+                                : _recoverExistingBooking,
                           ),
                         ),
-                      ),
-                    ),
-                    if (!keyboardOpen)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                        child: Row(children: [
-                          Expanded(
-                              child: CustomerFloatingPlaceField(
-                            key: const ValueKey('floating-pickup-search'),
-                            label: 'Điểm đón',
-                            value:
-                                _floatingPlaceLabel(_MapTarget.pickup, pickup),
-                            icon: Icons.trip_origin,
-                            selected: _mapTarget == _MapTarget.pickup,
-                            compact: true,
-                            onTap: () => _openSearchFromMap(_MapTarget.pickup),
-                          )),
-                          const SizedBox(width: 8),
-                          Expanded(
-                              child: CustomerFloatingPlaceField(
-                            key: const ValueKey('floating-dropoff-search'),
-                            label: 'Điểm đến',
-                            value: _floatingPlaceLabel(
-                                _MapTarget.dropoff, dropoff),
-                            icon: Icons.location_on_rounded,
-                            selected: _mapTarget == _MapTarget.dropoff,
-                            compact: true,
-                            onTap: () => _openSearchFromMap(_MapTarget.dropoff),
-                          )),
-                        ]),
-                      ),
-                    Expanded(
-                      child: ListView(
-                        key: const ValueKey('customer-booking-sheet-scroll'),
-                        controller: sheetScrollController,
-                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
-                        children: [
-                          BlocBuilder<CustomerActiveBookingCubit,
-                                  CustomerActiveBookingState>(
-                              builder: (context, state) {
-                            final booking = state.booking;
-                            return Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  if (state.loading)
-                                    const LinearProgressIndicator(
-                                        semanticsLabel: 'Đang xác minh chuyến'),
-                                  if (!state.loading &&
-                                      state.isActive &&
-                                      booking != null)
-                                    AppMotion.entrance(
-                                        context,
-                                        DecoratedBox(
-                                          decoration: BoxDecoration(
-                                            color: AppColors.paleBlue,
-                                            borderRadius:
-                                                BorderRadius.circular(16),
-                                          ),
-                                          child: Padding(
-                                            padding: const EdgeInsets.all(12),
-                                            child: Row(children: [
-                                              const Icon(Icons.near_me_rounded,
-                                                  color: AppColors.primary),
-                                              const SizedBox(width: 10),
-                                              Expanded(
-                                                child: Text(
-                                                  booking.status == 'COMPLETED'
-                                                      ? 'Chờ xác nhận tiền mặt'
-                                                      : customerTripStatusLabel(
-                                                          booking.status),
-                                                  maxLines: 2,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                  style: Theme.of(context)
-                                                      .textTheme
-                                                      .titleSmall,
-                                                ),
-                                              ),
-                                              TextButton(
-                                                onPressed: () =>
-                                                    _openBooking(booking),
-                                                child: const Text('Xem chuyến'),
-                                              ),
-                                            ]),
-                                          ),
-                                        )),
-                                  if (!state.loading &&
-                                      !state.isActive &&
-                                      booking != null &&
-                                      booking.status == 'COMPLETED' &&
-                                      state.payment?.isPaid == true &&
-                                      _dismissedPaidBookingId !=
-                                          booking.publicId)
-                                    AppMotion.entrance(
-                                        context,
-                                        Padding(
-                                          padding:
-                                              const EdgeInsets.only(bottom: 8),
-                                          child: Row(children: [
-                                            const Icon(Icons.check_circle,
-                                                color: AppColors.success),
-                                            const SizedBox(width: 8),
-                                            Expanded(
-                                                child: Text(
-                                                    'Chuyến trước đã thanh toán',
-                                                    maxLines: 2,
-                                                    style: Theme.of(context)
-                                                        .textTheme
-                                                        .bodySmall)),
-                                            TextButton(
-                                              onPressed: () =>
-                                                  _openBooking(booking),
-                                              child: const Text('Biên nhận'),
-                                            ),
-                                            IconButton(
-                                              tooltip:
-                                                  'Ẩn chuyến đã thanh toán',
-                                              onPressed: () => setState(() =>
-                                                  _dismissedPaidBookingId =
-                                                      booking.publicId),
-                                              icon: const Icon(Icons.close,
-                                                  size: 18),
-                                            ),
-                                          ]),
-                                        )),
-                                  if (!state.loading &&
-                                      booking != null &&
-                                      const {'CANCELLED', 'NO_DRIVER_AVAILABLE'}
-                                          .contains(booking.status))
-                                    Card(
-                                        child: Padding(
-                                            padding: const EdgeInsets.all(12),
-                                            child: Text(booking.status ==
-                                                    'CANCELLED'
-                                                ? 'Chuyến trước đã được hủy. Bạn có thể đặt chuyến mới.'
-                                                : 'Không tìm được tài xế cho chuyến trước. Bạn có thể thử đặt chuyến mới.'))),
-                                  if (state.error != null)
-                                    Card(
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .errorContainer,
-                                        child: Padding(
-                                            padding: const EdgeInsets.all(12),
-                                            child: Text(state.error!))),
-                                  if (state.sessionEnded)
-                                    const Text(
-                                        'Phiên đăng nhập đã thay đổi. Hãy đăng nhập lại để khôi phục chuyến.'),
-                                ]);
-                          }),
-                          const SizedBox(height: 12),
-                          const SizedBox(height: 4),
-                          if (AppConfig.instance.isMock)
-                            const Card(
-                                child: Padding(
-                              padding: EdgeInsets.all(12),
-                              child: Text(
-                                  'Đặt xe chưa khả dụng trong bản xem thử.'),
-                            )),
-                          BlocBuilder<BookingCubit, BookingState>(
-                              builder: (context, state) {
-                            final pending = state.pending;
-                            if (pending == null) return const SizedBox.shrink();
-                            return Card(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .tertiaryContainer,
-                                child: Padding(
-                                    padding: const EdgeInsets.all(12),
-                                    child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          const Text(
-                                              'Đang xác minh kết quả đặt chuyến',
-                                              style: TextStyle(
-                                                  fontWeight: FontWeight.bold)),
-                                          const Text(
-                                              'Nếu mạng bị ngắt, thử lại vẫn kiểm tra cùng yêu cầu. Đừng đặt chuyến mới trước khi có kết quả.'),
-                                          Wrap(spacing: 8, children: [
-                                            FilledButton(
-                                                onPressed: state.loading
-                                                    ? null
-                                                    : () => context
-                                                        .read<BookingCubit>()
-                                                        .submit(pending
-                                                            .quotePublicId),
-                                                child: const Text(
-                                                    'Thử lại yêu cầu cũ')),
-                                            TextButton(
-                                                onPressed: state.loading
-                                                    ? null
-                                                    : () async {
-                                                        final confirmed =
-                                                            await showDialog<
-                                                                    bool>(
-                                                                context:
-                                                                    context,
-                                                                builder: (ctx) =>
-                                                                    AlertDialog(
-                                                                      title: const Text(
-                                                                          'Bỏ yêu cầu đang chờ?'),
-                                                                      content:
-                                                                          const Text(
-                                                                              'Yêu cầu cũ có thể đã tạo chuyến. Hãy kiểm tra kết quả trước khi bỏ yêu cầu này.'),
-                                                                      actions: [
-                                                                        TextButton(
-                                                                            onPressed: () => Navigator.pop(ctx,
-                                                                                false),
-                                                                            child:
-                                                                                const Text('Giữ lại')),
-                                                                        TextButton(
-                                                                            onPressed: () => Navigator.pop(ctx,
-                                                                                true),
-                                                                            child:
-                                                                                const Text('Bỏ yêu cầu'))
-                                                                      ],
-                                                                    ));
-                                                        if (confirmed == true &&
-                                                            context.mounted) {
-                                                          await context
-                                                              .read<
-                                                                  BookingCubit>()
-                                                              .abandon();
-                                                        }
-                                                      },
-                                                child:
-                                                    const Text('Bỏ yêu cầu')),
-                                          ]),
-                                          if (state.error != null)
-                                            Text(state.error!,
-                                                style: const TextStyle(
-                                                    color: Colors.red)),
-                                        ])));
-                          }),
-                          const SizedBox(height: 12),
-                          const CustomerSectionHeading(
-                            icon: Icons.directions_car_filled_rounded,
-                            title: 'Chọn xe phù hợp',
-                          ),
-                          const SizedBox(height: 10),
-                          Wrap(spacing: 8, runSpacing: 8, children: [
-                            for (final type in VehicleType.values)
-                              _vehicleCard(type),
-                          ]),
-                          const SizedBox(height: 12),
-                          ExpansionTile(
-                            key: const ValueKey('customer-location-options'),
-                            title: const Text('Tùy chọn vị trí khác'),
-                            leading: const Icon(Icons.tune_rounded),
-                            tilePadding: EdgeInsets.zero,
-                            childrenPadding: const EdgeInsets.only(bottom: 8),
-                            children: [
-                              const CustomerSectionHeading(
-                                icon: Icons.touch_app_rounded,
-                                title: 'Chọn trên bản đồ',
+                        IconButton(
+                          tooltip: 'Lịch sử chuyến đi',
+                          icon: const Icon(Icons.history),
+                          onPressed:
+                              AppConfig.instance.isMock || !_isCurrentAccount
+                                  ? null
+                                  : _openHistory,
+                        ),
+                        IconButton(
+                          tooltip: 'Đăng xuất',
+                          icon: const Icon(Icons.logout),
+                          onPressed: () => context
+                              .read<AuthBloc>()
+                              .add(const AuthLogoutRequested()),
+                        )
+                      ]),
+            body: LayoutBuilder(builder: (context, constraints) {
+              final keyboardOpen = View.of(context).viewInsets.bottom > 0;
+              _sheetMinSize = keyboardOpen
+                  ? .58
+                  : (248 / constraints.maxHeight).clamp(.28, .48).toDouble();
+              _sheetMaxSize = keyboardOpen ? .98 : .92;
+              if (keyboardOpen != _keyboardWasOpen) {
+                _keyboardWasOpen = keyboardOpen;
+                if (keyboardOpen && routeCurrent) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted && _sheetController.isAttached) {
+                      _sheetController.jumpTo(_sheetMaxSize);
+                    }
+                  });
+                }
+              }
+              return Stack(children: [
+                Positioned.fill(
+                  child: _mapVisible && (routeCurrent || _searchRouteOpen)
+                      ? (widget.mapBuilder?.call(context, pickup, dropoff,
+                              (_) {}, _pickerBinding) ??
+                          CustomerMapCanvas(
+                            pickup: pickup,
+                            dropoff: dropoff,
+                            onTap: (_) {},
+                            fullScreen: true,
+                            picker: _pickerBinding,
+                          ))
+                      : const ColoredBox(color: Colors.transparent),
+                ),
+                Offstage(
+                    offstage: _picker.state.isOpen,
+                    child: Align(
+                      alignment: Alignment.bottomCenter,
+                      child: DraggableScrollableSheet(
+                        key: const ValueKey('customer-booking-sheet'),
+                        controller: _sheetController,
+                        expand: false,
+                        minChildSize: _sheetMinSize,
+                        initialChildSize: _sheetMinSize,
+                        maxChildSize: _sheetMaxSize,
+                        snap: !AppMotion.reduceMotion(context),
+                        snapSizes: [
+                          _sheetMinSize,
+                          (_sheetMinSize + _sheetMaxSize) / 2,
+                        ],
+                        builder: (context, sheetScrollController) => Material(
+                          elevation: 12,
+                          color: Theme.of(context).colorScheme.surface,
+                          clipBehavior: Clip.antiAlias,
+                          borderRadius: const BorderRadius.vertical(
+                              top: Radius.circular(24)),
+                          child: Column(children: [
+                            GestureDetector(
+                              key:
+                                  const ValueKey('customer-booking-sheet-grip'),
+                              behavior: HitTestBehavior.opaque,
+                              onVerticalDragUpdate: (details) =>
+                                  _dragSheet(details, constraints.maxHeight),
+                              onVerticalDragEnd: _settleSheet,
+                              child: SizedBox(
+                                width: double.infinity,
+                                height: 38,
+                                child: Center(
+                                  child: Container(
+                                    key: const ValueKey(
+                                        'customer-booking-sheet-handle'),
+                                    width: 44,
+                                    height: 5,
+                                    decoration: BoxDecoration(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .outlineVariant,
+                                      borderRadius: BorderRadius.circular(3),
+                                    ),
+                                  ),
+                                ),
                               ),
-                              const SizedBox(height: 8),
-                              Wrap(spacing: 8, runSpacing: 4, children: [
-                                AnimatedScale(
-                                  key:
-                                      const ValueKey('pickup-selection-motion'),
-                                  scale:
-                                      _mapTarget == _MapTarget.pickup ? 1 : .98,
-                                  duration: AppMotion.duration(
-                                      context, AppMotion.touch),
-                                  curve: AppMotion.enterCurve,
-                                  child: ChoiceChip(
-                                    label: const Text('Chọn điểm đón'),
-                                    avatar: Icon(Icons.trip_origin,
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .primary),
-                                    selected: _mapTarget == _MapTarget.pickup,
-                                    onSelected: (_) =>
-                                        _chooseOnMap(_MapTarget.pickup),
-                                  ),
-                                ),
-                                AnimatedScale(
-                                  key: const ValueKey(
-                                      'dropoff-selection-motion'),
-                                  scale: _mapTarget == _MapTarget.dropoff
-                                      ? 1
-                                      : .98,
-                                  duration: AppMotion.duration(
-                                      context, AppMotion.touch),
-                                  curve: AppMotion.enterCurve,
-                                  child: ChoiceChip(
-                                    label: const Text('Chọn điểm đến'),
-                                    avatar: const Icon(Icons.location_on,
-                                        color: Color(0xFFE87521)),
-                                    selected: _mapTarget == _MapTarget.dropoff,
-                                    onSelected: (_) =>
-                                        _chooseOnMap(_MapTarget.dropoff),
-                                  ),
-                                ),
-                              ]),
+                            ),
+                            if (!keyboardOpen)
                               Padding(
                                 padding:
-                                    const EdgeInsets.only(top: 4, bottom: 8),
-                                child: Text(
-                                  'Đang chọn: ${_mapTarget == _MapTarget.pickup ? 'Điểm đón' : 'Điểm đến'}',
-                                  style:
-                                      Theme.of(context).textTheme.labelMedium,
-                                ),
+                                    const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                                child: Row(children: [
+                                  Expanded(
+                                      child: CustomerFloatingPlaceField(
+                                    key: const ValueKey(
+                                        'floating-pickup-search'),
+                                    label: 'Điểm đón',
+                                    value: _floatingPlaceLabel(
+                                        _MapTarget.pickup, pickup),
+                                    icon: Icons.trip_origin,
+                                    selected: _mapTarget == _MapTarget.pickup,
+                                    compact: true,
+                                    onTap: () =>
+                                        _openSearchFromMap(_MapTarget.pickup),
+                                  )),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                      child: CustomerFloatingPlaceField(
+                                    key: const ValueKey(
+                                        'floating-dropoff-search'),
+                                    label: 'Điểm đến',
+                                    value: _floatingPlaceLabel(
+                                        _MapTarget.dropoff, dropoff),
+                                    icon: Icons.location_on_rounded,
+                                    selected: _mapTarget == _MapTarget.dropoff,
+                                    compact: true,
+                                    onTap: () =>
+                                        _openSearchFromMap(_MapTarget.dropoff),
+                                  )),
+                                ]),
                               ),
-                              _pointSummary(
-                                  'Điểm đón',
-                                  pickup,
-                                  Theme.of(context).colorScheme.primary,
-                                  _MapTarget.pickup),
-                              _pointSummary('Điểm đến', dropoff,
-                                  const Color(0xFFE87521), _MapTarget.dropoff),
-                              const SizedBox(height: 12),
-                              Card(
-                                child: ExpansionTile(
-                                  key: const ValueKey(
-                                      'customer-manual-coordinates'),
-                                  leading: const Icon(Icons.pin_drop_outlined),
-                                  title: const Text(
-                                      'Nhập vị trí thủ công khi cần'),
-                                  subtitle: const Text(
-                                      'Dùng khi tìm kiếm hoặc bản đồ không khả dụng'),
-                                  childrenPadding:
-                                      const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                                  children: [
-                                    Form(
-                                      key: _form,
-                                      child: Column(
+                            Expanded(
+                              child: ListView(
+                                key: const ValueKey(
+                                    'customer-booking-sheet-scroll'),
+                                controller: sheetScrollController,
+                                padding:
+                                    const EdgeInsets.fromLTRB(16, 4, 16, 20),
+                                children: [
+                                  BlocBuilder<CustomerActiveBookingCubit,
+                                          CustomerActiveBookingState>(
+                                      builder: (context, state) {
+                                    final booking = state.booking;
+                                    return Column(
                                         crossAxisAlignment:
                                             CrossAxisAlignment.stretch,
                                         children: [
-                                          const Text('Điểm đón'),
-                                          const SizedBox(height: 8),
-                                          _coordinatePair(
-                                              'Điểm đón · vĩ độ',
-                                              _pickupLat,
-                                              -90,
-                                              90,
-                                              'Điểm đón · kinh độ',
-                                              _pickupLon,
-                                              -180,
-                                              180),
-                                          const SizedBox(height: 14),
-                                          const Text('Điểm đến'),
-                                          const SizedBox(height: 8),
-                                          _coordinatePair(
-                                              'Điểm đến · vĩ độ',
-                                              _dropoffLat,
-                                              -90,
-                                              90,
-                                              'Điểm đến · kinh độ',
-                                              _dropoffLon,
-                                              -180,
-                                              180),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                          Wrap(spacing: 8, runSpacing: 2, children: [
-                            TextButton.icon(
-                              onPressed: AppConfig.instance.isMock ||
-                                      !_isCurrentAccount
-                                  ? null
-                                  : _openHistory,
-                              icon: const Icon(Icons.history),
-                              label: const Text('Lịch sử chuyến đi'),
-                            ),
-                            BlocBuilder<CustomerActiveBookingCubit,
-                                CustomerActiveBookingState>(
-                              builder: (context, state) => TextButton.icon(
-                                onPressed: state.loading || state.sessionEnded
-                                    ? null
-                                    : _recoverExistingBooking,
-                                icon: const Icon(Icons.manage_search_rounded),
-                                label: const Text('Tìm lại chuyến bằng mã'),
-                              ),
-                            ),
-                            TextButton.icon(
-                              onPressed: () => Navigator.of(context).push(
-                                  MaterialPageRoute<void>(
-                                      builder: (_) =>
-                                          const DriverOnboardingScreen())),
-                              icon: const Icon(Icons.two_wheeler_rounded),
-                              label: const Text('Đăng ký làm tài xế'),
-                            ),
-                          ]),
-                        ],
-                      ),
-                    ),
-                    SafeArea(
-                      top: false,
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-                        child: BlocBuilder<CustomerActiveBookingCubit,
-                            CustomerActiveBookingState>(
-                          builder: (context, active) => active.isActive &&
-                                  active.booking != null
-                              ? CustomerPressableAction(
-                                  onPressed: active.loading
-                                      ? null
-                                      : () => _openBooking(active.booking!),
-                                  child: const Text(
-                                      'Tiếp tục chuyến đang diễn ra'),
-                                )
-                              : BlocBuilder<QuoteCubit, QuoteState>(
-                                  builder: (context, state) => Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.stretch,
+                                          if (state.loading)
+                                            const LinearProgressIndicator(
+                                                semanticsLabel:
+                                                    'Đang xác minh chuyến'),
+                                          if (!state.loading &&
+                                              state.isActive &&
+                                              booking != null)
+                                            AppMotion.entrance(
+                                                context,
+                                                DecoratedBox(
+                                                  decoration: BoxDecoration(
+                                                    color: AppColors.paleBlue,
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            16),
+                                                  ),
+                                                  child: Padding(
+                                                    padding:
+                                                        const EdgeInsets.all(
+                                                            12),
+                                                    child: Row(children: [
+                                                      const Icon(
+                                                          Icons.near_me_rounded,
+                                                          color: AppColors
+                                                              .primary),
+                                                      const SizedBox(width: 10),
+                                                      Expanded(
+                                                        child: Text(
+                                                          booking.status ==
+                                                                  'COMPLETED'
+                                                              ? 'Chờ xác nhận tiền mặt'
+                                                              : customerTripStatusLabel(
+                                                                  booking
+                                                                      .status),
+                                                          maxLines: 2,
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
+                                                          style:
+                                                              Theme.of(context)
+                                                                  .textTheme
+                                                                  .titleSmall,
+                                                        ),
+                                                      ),
+                                                      TextButton(
+                                                        onPressed: () =>
+                                                            _openBooking(
+                                                                booking),
+                                                        child: const Text(
+                                                            'Xem chuyến'),
+                                                      ),
+                                                    ]),
+                                                  ),
+                                                )),
+                                          if (!state.loading &&
+                                              !state.isActive &&
+                                              booking != null &&
+                                              booking.status == 'COMPLETED' &&
+                                              state.payment?.isPaid == true &&
+                                              _dismissedPaidBookingId !=
+                                                  booking.publicId)
+                                            AppMotion.entrance(
+                                                context,
+                                                Padding(
+                                                  padding:
+                                                      const EdgeInsets.only(
+                                                          bottom: 8),
+                                                  child: Row(children: [
+                                                    const Icon(
+                                                        Icons.check_circle,
+                                                        color:
+                                                            AppColors.success),
+                                                    const SizedBox(width: 8),
+                                                    Expanded(
+                                                        child: Text(
+                                                            'Chuyến trước đã thanh toán',
+                                                            maxLines: 2,
+                                                            style: Theme.of(
+                                                                    context)
+                                                                .textTheme
+                                                                .bodySmall)),
+                                                    TextButton(
+                                                      onPressed: () =>
+                                                          _openBooking(booking),
+                                                      child: const Text(
+                                                          'Biên nhận'),
+                                                    ),
+                                                    IconButton(
+                                                      tooltip:
+                                                          'Ẩn chuyến đã thanh toán',
+                                                      onPressed: () => setState(() =>
+                                                          _dismissedPaidBookingId =
+                                                              booking.publicId),
+                                                      icon: const Icon(
+                                                          Icons.close,
+                                                          size: 18),
+                                                    ),
+                                                  ]),
+                                                )),
+                                          if (!state.loading &&
+                                              booking != null &&
+                                              const {
+                                                'CANCELLED',
+                                                'NO_DRIVER_AVAILABLE'
+                                              }.contains(booking.status))
+                                            Card(
+                                                child: Padding(
+                                                    padding:
+                                                        const EdgeInsets.all(
+                                                            12),
+                                                    child: Text(booking
+                                                                .status ==
+                                                            'CANCELLED'
+                                                        ? 'Chuyến trước đã được hủy. Bạn có thể đặt chuyến mới.'
+                                                        : 'Không tìm được tài xế cho chuyến trước. Bạn có thể thử đặt chuyến mới.'))),
+                                          if (state.error != null)
+                                            Card(
+                                                color: Theme.of(context)
+                                                    .colorScheme
+                                                    .errorContainer,
+                                                child: Padding(
+                                                    padding:
+                                                        const EdgeInsets.all(
+                                                            12),
+                                                    child: Text(state.error!))),
+                                          if (state.sessionEnded)
+                                            const Text(
+                                                'Phiên đăng nhập đã thay đổi. Hãy đăng nhập lại để khôi phục chuyến.'),
+                                        ]);
+                                  }),
+                                  const SizedBox(height: 12),
+                                  const SizedBox(height: 4),
+                                  if (AppConfig.instance.isMock)
+                                    const Card(
+                                        child: Padding(
+                                      padding: EdgeInsets.all(12),
+                                      child: Text(
+                                          'Đặt xe chưa khả dụng trong bản xem thử.'),
+                                    )),
+                                  BlocBuilder<BookingCubit, BookingState>(
+                                      builder: (context, state) {
+                                    final pending = state.pending;
+                                    if (pending == null) {
+                                      return const SizedBox.shrink();
+                                    }
+                                    return Card(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .tertiaryContainer,
+                                        child: Padding(
+                                            padding: const EdgeInsets.all(12),
+                                            child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  const Text(
+                                                      'Đang xác minh kết quả đặt chuyến',
+                                                      style: TextStyle(
+                                                          fontWeight:
+                                                              FontWeight.bold)),
+                                                  const Text(
+                                                      'Nếu mạng bị ngắt, thử lại vẫn kiểm tra cùng yêu cầu. Đừng đặt chuyến mới trước khi có kết quả.'),
+                                                  Wrap(spacing: 8, children: [
+                                                    FilledButton(
+                                                        onPressed: state.loading
+                                                            ? null
+                                                            : () => context
+                                                                .read<
+                                                                    BookingCubit>()
+                                                                .submit(pending
+                                                                    .quotePublicId),
+                                                        child: const Text(
+                                                            'Thử lại yêu cầu cũ')),
+                                                    TextButton(
+                                                        onPressed: state.loading
+                                                            ? null
+                                                            : () async {
+                                                                final confirmed = await showDialog<
+                                                                        bool>(
+                                                                    context:
+                                                                        context,
+                                                                    builder:
+                                                                        (ctx) =>
+                                                                            AlertDialog(
+                                                                              title: const Text('Bỏ yêu cầu đang chờ?'),
+                                                                              content: const Text('Yêu cầu cũ có thể đã tạo chuyến. Hãy kiểm tra kết quả trước khi bỏ yêu cầu này.'),
+                                                                              actions: [
+                                                                                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Giữ lại')),
+                                                                                TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Bỏ yêu cầu'))
+                                                                              ],
+                                                                            ));
+                                                                if (confirmed ==
+                                                                        true &&
+                                                                    context
+                                                                        .mounted) {
+                                                                  await context
+                                                                      .read<
+                                                                          BookingCubit>()
+                                                                      .abandon();
+                                                                }
+                                                              },
+                                                        child: const Text(
+                                                            'Bỏ yêu cầu')),
+                                                  ]),
+                                                  if (state.error != null)
+                                                    Text(state.error!,
+                                                        style: const TextStyle(
+                                                            color: Colors.red)),
+                                                ])));
+                                  }),
+                                  const SizedBox(height: 12),
+                                  const CustomerSectionHeading(
+                                    icon: Icons.directions_car_filled_rounded,
+                                    title: 'Chọn xe phù hợp',
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Wrap(spacing: 8, runSpacing: 8, children: [
+                                    for (final type in VehicleType.values)
+                                      _vehicleCard(type),
+                                  ]),
+                                  const SizedBox(height: 12),
+                                  ExpansionTile(
+                                    key: const ValueKey(
+                                        'customer-location-options'),
+                                    title: const Text('Tùy chọn vị trí khác'),
+                                    leading: const Icon(Icons.tune_rounded),
+                                    tilePadding: EdgeInsets.zero,
+                                    childrenPadding:
+                                        const EdgeInsets.only(bottom: 8),
                                     children: [
-                                      if (_coordinateError != null)
-                                        Padding(
-                                          padding:
-                                              const EdgeInsets.only(bottom: 8),
-                                          child: Text(_coordinateError!,
-                                              style: TextStyle(
-                                                  color: Theme.of(context)
-                                                      .colorScheme
-                                                      .error)),
-                                        ),
-                                      SizedBox(
-                                        height: 52,
-                                        child: CustomerPressableAction(
-                                          onPressed: state.loading ||
-                                                  AppConfig.instance.isMock
-                                              ? null
-                                              : _request,
-                                          child: AnimatedSwitcher(
-                                            duration: AppMotion.duration(
-                                                context, AppMotion.feedback),
-                                            child: state.loading
-                                                ? const SizedBox(
-                                                    key: ValueKey(
-                                                        'quote-loading'),
-                                                    width: 22,
-                                                    height: 22,
-                                                    child:
-                                                        CircularProgressIndicator(
-                                                            strokeWidth: 2))
-                                                : const Text(
-                                                    'Xem giá chuyến đi',
-                                                    key: ValueKey(
-                                                        'quote-action')),
-                                          ),
+                                      const CustomerSectionHeading(
+                                        icon: Icons.touch_app_rounded,
+                                        title: 'Chọn trên bản đồ',
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Wrap(
+                                          spacing: 8,
+                                          runSpacing: 4,
+                                          children: [
+                                            AnimatedScale(
+                                              key: const ValueKey(
+                                                  'pickup-selection-motion'),
+                                              scale: _mapTarget ==
+                                                      _MapTarget.pickup
+                                                  ? 1
+                                                  : .98,
+                                              duration: AppMotion.duration(
+                                                  context, AppMotion.touch),
+                                              curve: AppMotion.enterCurve,
+                                              child: ChoiceChip(
+                                                label:
+                                                    const Text('Chọn điểm đón'),
+                                                avatar: Icon(Icons.trip_origin,
+                                                    color: Theme.of(context)
+                                                        .colorScheme
+                                                        .primary),
+                                                selected: _mapTarget ==
+                                                    _MapTarget.pickup,
+                                                onSelected: (_) => _chooseOnMap(
+                                                    _MapTarget.pickup),
+                                              ),
+                                            ),
+                                            AnimatedScale(
+                                              key: const ValueKey(
+                                                  'dropoff-selection-motion'),
+                                              scale: _mapTarget ==
+                                                      _MapTarget.dropoff
+                                                  ? 1
+                                                  : .98,
+                                              duration: AppMotion.duration(
+                                                  context, AppMotion.touch),
+                                              curve: AppMotion.enterCurve,
+                                              child: ChoiceChip(
+                                                label:
+                                                    const Text('Chọn điểm đến'),
+                                                avatar: const Icon(
+                                                    Icons.location_on,
+                                                    color: Color(0xFFE87521)),
+                                                selected: _mapTarget ==
+                                                    _MapTarget.dropoff,
+                                                onSelected: (_) => _chooseOnMap(
+                                                    _MapTarget.dropoff),
+                                              ),
+                                            ),
+                                          ]),
+                                      Padding(
+                                        padding: const EdgeInsets.only(
+                                            top: 4, bottom: 8),
+                                        child: Text(
+                                          'Đang chọn: ${_mapTarget == _MapTarget.pickup ? 'Điểm đón' : 'Điểm đến'}',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .labelMedium,
                                         ),
                                       ),
-                                      if (state.error != null)
-                                        Padding(
-                                          padding:
-                                              const EdgeInsets.only(top: 8),
-                                          child: Text(state.error!,
-                                              style: TextStyle(
-                                                  color: Theme.of(context)
-                                                      .colorScheme
-                                                      .error)),
+                                      _pointSummary(
+                                          'Điểm đón',
+                                          pickup,
+                                          Theme.of(context).colorScheme.primary,
+                                          _MapTarget.pickup),
+                                      _pointSummary(
+                                          'Điểm đến',
+                                          dropoff,
+                                          const Color(0xFFE87521),
+                                          _MapTarget.dropoff),
+                                      const SizedBox(height: 12),
+                                      Card(
+                                        child: ExpansionTile(
+                                          key: const ValueKey(
+                                              'customer-manual-coordinates'),
+                                          leading: const Icon(
+                                              Icons.pin_drop_outlined),
+                                          title: const Text(
+                                              'Nhập vị trí thủ công khi cần'),
+                                          subtitle: const Text(
+                                              'Dùng khi tìm kiếm hoặc bản đồ không khả dụng'),
+                                          childrenPadding:
+                                              const EdgeInsets.fromLTRB(
+                                                  16, 0, 16, 16),
+                                          children: [
+                                            Form(
+                                              key: _form,
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.stretch,
+                                                children: [
+                                                  const Text('Điểm đón'),
+                                                  const SizedBox(height: 8),
+                                                  _coordinatePair(
+                                                      'Điểm đón · vĩ độ',
+                                                      _pickupLat,
+                                                      -90,
+                                                      90,
+                                                      'Điểm đón · kinh độ',
+                                                      _pickupLon,
+                                                      -180,
+                                                      180),
+                                                  const SizedBox(height: 14),
+                                                  const Text('Điểm đến'),
+                                                  const SizedBox(height: 8),
+                                                  _coordinatePair(
+                                                      'Điểm đến · vĩ độ',
+                                                      _dropoffLat,
+                                                      -90,
+                                                      90,
+                                                      'Điểm đến · kinh độ',
+                                                      _dropoffLon,
+                                                      -180,
+                                                      180),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
                                         ),
+                                      ),
                                     ],
                                   ),
+                                  Wrap(spacing: 8, runSpacing: 2, children: [
+                                    TextButton.icon(
+                                      onPressed: AppConfig.instance.isMock ||
+                                              !_isCurrentAccount
+                                          ? null
+                                          : _openHistory,
+                                      icon: const Icon(Icons.history),
+                                      label: const Text('Lịch sử chuyến đi'),
+                                    ),
+                                    BlocBuilder<CustomerActiveBookingCubit,
+                                        CustomerActiveBookingState>(
+                                      builder: (context, state) =>
+                                          TextButton.icon(
+                                        onPressed:
+                                            state.loading || state.sessionEnded
+                                                ? null
+                                                : _recoverExistingBooking,
+                                        icon: const Icon(
+                                            Icons.manage_search_rounded),
+                                        label: const Text(
+                                            'Tìm lại chuyến bằng mã'),
+                                      ),
+                                    ),
+                                    TextButton.icon(
+                                      onPressed: () => Navigator.of(context)
+                                          .push(MaterialPageRoute<void>(
+                                              builder: (_) =>
+                                                  const DriverOnboardingScreen())),
+                                      icon:
+                                          const Icon(Icons.two_wheeler_rounded),
+                                      label: const Text('Đăng ký làm tài xế'),
+                                    ),
+                                  ]),
+                                ],
+                              ),
+                            ),
+                            SafeArea(
+                              top: false,
+                              child: Padding(
+                                padding:
+                                    const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                                child: BlocBuilder<CustomerActiveBookingCubit,
+                                    CustomerActiveBookingState>(
+                                  builder: (context, active) => active
+                                              .isActive &&
+                                          active.booking != null
+                                      ? CustomerPressableAction(
+                                          onPressed: active.loading
+                                              ? null
+                                              : () =>
+                                                  _openBooking(active.booking!),
+                                          child: const Text(
+                                              'Tiếp tục chuyến đang diễn ra'),
+                                        )
+                                      : BlocBuilder<QuoteCubit, QuoteState>(
+                                          builder: (context, state) => Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.stretch,
+                                            children: [
+                                              if (_coordinateError != null)
+                                                Padding(
+                                                  padding:
+                                                      const EdgeInsets.only(
+                                                          bottom: 8),
+                                                  child: Text(_coordinateError!,
+                                                      style: TextStyle(
+                                                          color:
+                                                              Theme.of(context)
+                                                                  .colorScheme
+                                                                  .error)),
+                                                ),
+                                              SizedBox(
+                                                height: 52,
+                                                child: CustomerPressableAction(
+                                                  onPressed: state.loading ||
+                                                          AppConfig
+                                                              .instance.isMock
+                                                      ? null
+                                                      : _request,
+                                                  child: AnimatedSwitcher(
+                                                    duration:
+                                                        AppMotion.duration(
+                                                            context,
+                                                            AppMotion.feedback),
+                                                    child: state.loading
+                                                        ? const SizedBox(
+                                                            key: ValueKey(
+                                                                'quote-loading'),
+                                                            width: 22,
+                                                            height: 22,
+                                                            child:
+                                                                CircularProgressIndicator(
+                                                                    strokeWidth:
+                                                                        2))
+                                                        : const Text(
+                                                            'Xem giá chuyến đi',
+                                                            key: ValueKey(
+                                                                'quote-action')),
+                                                  ),
+                                                ),
+                                              ),
+                                              if (state.error != null)
+                                                Padding(
+                                                  padding:
+                                                      const EdgeInsets.only(
+                                                          top: 8),
+                                                  child: Text(state.error!,
+                                                      style: TextStyle(
+                                                          color:
+                                                              Theme.of(context)
+                                                                  .colorScheme
+                                                                  .error)),
+                                                ),
+                                            ],
+                                          ),
+                                        ),
                                 ),
+                              ),
+                            ),
+                          ]),
                         ),
                       ),
-                    ),
-                  ]),
-                ),
-              ),
-            ),
-          ]);
-        }),
-      ),
+                    )),
+                if (_picker.state.isOpen)
+                  CustomerLocationPickerOverlay(
+                    picker: _picker,
+                    onCancel: _picker.cancel,
+                    onConfirm: () => unawaited(_confirmMapPoint()),
+                    onPanelHeight: (height) {
+                      if (mounted &&
+                          _picker.state.isOpen &&
+                          height != _pickerPanelHeight) {
+                        setState(() => _pickerPanelHeight = height);
+                      }
+                    },
+                  ),
+              ]);
+            }),
+          )),
     );
   }
 }

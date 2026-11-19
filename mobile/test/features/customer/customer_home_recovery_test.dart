@@ -31,6 +31,7 @@ import 'package:gomove_mobile/features/customer/presentation/bloc/booking_cubit.
 import 'package:gomove_mobile/features/customer/presentation/bloc/customer_active_booking_cubit.dart';
 import 'package:gomove_mobile/features/customer/presentation/bloc/quote_cubit.dart';
 import 'package:gomove_mobile/features/customer/presentation/screens/customer_home_screen.dart';
+import 'package:gomove_mobile/features/customer/presentation/screens/customer_map_canvas.dart';
 import 'package:gomove_mobile/features/trip/domain/models/trip_models.dart';
 import 'package:gomove_mobile/features/trip/domain/repositories/trip_repository.dart';
 import 'package:mocktail/mocktail.dart';
@@ -242,6 +243,9 @@ void main() {
   late bool mapUnavailable;
   Coordinates? lastMapPickup;
   Coordinates? lastMapDropoff;
+  CustomerMapPickerBinding? lastPicker;
+  var fakeCameraRevision = 0;
+  var initializedPickerEpoch = -1;
   var mapMounts = 0;
   var mapDisposals = 0;
   var steadyMounts = 0;
@@ -249,8 +253,22 @@ void main() {
   var manualOpened = false;
   var locationOptionsOpened = false;
 
-  Widget fakeMapBuilder(BuildContext context, Coordinates? pickup,
-      Coordinates? dropoff, ValueChanged<Coordinates> onTap) {
+  Widget fakeMapBuilder(
+      BuildContext context,
+      Coordinates? pickup,
+      Coordinates? dropoff,
+      ValueChanged<Coordinates> onTap,
+      CustomerMapPickerBinding? picker) {
+    lastPicker = picker;
+    if (picker != null &&
+        !picker.suspended &&
+        initializedPickerEpoch != picker.epoch) {
+      initializedPickerEpoch = picker.epoch;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        picker.onMoving(++fakeCameraRevision);
+        picker.onIdle(fakeCameraRevision, picker.initialPoint ?? mapTap);
+      });
+    }
     lastMapPickup = pickup;
     lastMapDropoff = dropoff;
     if (mapUnavailable) {
@@ -265,7 +283,14 @@ void main() {
           // Match the uncovered top strip when the booking sheet is expanded.
           padding: const EdgeInsets.only(top: 8),
           child: TextButton(
-              onPressed: () => onTap(mapTap),
+              onPressed: () {
+                if (picker != null && !picker.suspended) {
+                  picker.onMoving(++fakeCameraRevision);
+                  picker.onIdle(fakeCameraRevision, mapTap);
+                } else {
+                  onTap(mapTap);
+                }
+              },
               child: const Text('Chọn trên bản đồ giả')),
         ),
       ),
@@ -281,6 +306,9 @@ void main() {
     mapUnavailable = false;
     lastMapPickup = null;
     lastMapDropoff = null;
+    lastPicker = null;
+    fakeCameraRevision = 0;
+    initializedPickerEpoch = -1;
     mapMounts = 0;
     mapDisposals = 0;
     steadyMounts = 0;
@@ -325,17 +353,15 @@ void main() {
   });
 
   Future<void> showHome(WidgetTester tester,
-      {bool reducedMotion = false}) async {
+      {bool reducedMotion = false, double textScale = 1}) async {
     await tester.pumpWidget(BlocProvider<AuthBloc>.value(
         value: auth,
         child: MaterialApp(
-            builder: (context, child) => reducedMotion
-                ? MediaQuery(
-                    data: MediaQuery.of(context)
-                        .copyWith(disableAnimations: true),
-                    child: child!,
-                  )
-                : child!,
+            builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(context).copyWith(
+                    disableAnimations: reducedMotion,
+                    textScaler: TextScaler.linear(textScale)),
+                child: child!),
             home:
                 CustomerHomeScreen(user: userA, mapBuilder: fakeMapBuilder))));
     await tester.pumpAndSettle();
@@ -350,7 +376,8 @@ void main() {
   }
 
   Future<void> selectOnFakeMap(
-      WidgetTester tester, String mode, Coordinates point) async {
+      WidgetTester tester, String mode, Coordinates point,
+      {bool confirm = true}) async {
     mapTap = point;
     await tester.tap(find.byKey(ValueKey(mode == 'Chọn điểm đón'
         ? 'floating-pickup-search'
@@ -361,7 +388,13 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('customer-search-choose-map')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Chọn trên bản đồ giả'));
+    await tester.pump(const Duration(milliseconds: 600));
     await tester.pumpAndSettle();
+    if (confirm) {
+      await tester.tap(find.byKey(const ValueKey('picker-confirm')));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 1));
+    }
   }
 
   Future<void> openSearch(WidgetTester tester, {bool pickup = true}) async {
@@ -1182,7 +1215,7 @@ void main() {
         tester, 'Chọn điểm đến', const Coordinates(21.05, 105.88));
     expect(lastMapDropoff?.latitude, 21.05);
     await openLocationOptions(tester);
-    expect(find.textContaining('Không thể xác minh địa chỉ'), findsOneWidget);
+    expect(find.textContaining('Chưa xác minh được địa chỉ'), findsOneWidget);
   });
 
   testWidgets('Account replacement ignores a late place-search response',
@@ -1387,12 +1420,16 @@ void main() {
   testWidgets(
       'Reverse result waiting on session check cannot relabel after resume',
       (tester) async {
-    geocoding.reverseHandler = (point) async => place('Phố cũ', point);
+    final response = Completer<PlaceSearchResult?>();
+    geocoding.reverseHandler = (_) => response.future;
     await showHome(tester);
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đón', const Coordinates(21.031, 105.841),
+        confirm: false);
     final check = Completer<bool>();
     when(() => session.isCurrentSession(7)).thenAnswer((_) => check.future);
-    await selectOnFakeMap(
-        tester, 'Chọn điểm đón', const Coordinates(21.031, 105.841));
+    response.complete(place('Phố cũ', const Coordinates(21.031, 105.841)));
+    await tester.pump();
     expect(geocoding.reverses, hasLength(1));
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
     check.complete(true);
@@ -1400,7 +1437,10 @@ void main() {
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     await tester.pump();
     expect(find.text('Phố cũ'), findsNothing);
-    expect(lastMapPickup?.latitude, 21.031);
+    expect(lastMapPickup?.latitude, 21.0287,
+        reason: 'The unconfirmed draft must not change committed coordinates');
+    await tester.tap(find.byKey(const ValueKey('picker-cancel')));
+    await tester.pumpAndSettle();
   });
 
   testWidgets('New query invalidates a search waiting on session check',
@@ -1426,19 +1466,129 @@ void main() {
 
   testWidgets('New map point invalidates reverse waiting on session check',
       (tester) async {
-    geocoding.reverseHandler = (point) async =>
-        place(point.latitude == 21.031 ? 'Phố cũ' : 'Phố mới', point);
+    final response = Completer<PlaceSearchResult?>();
+    geocoding.reverseHandler = (_) => response.future;
     await showHome(tester);
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đón', const Coordinates(21.031, 105.841),
+        confirm: false);
     final check = Completer<bool>();
     when(() => session.isCurrentSession(7)).thenAnswer((_) => check.future);
-    await selectOnFakeMap(
-        tester, 'Chọn điểm đón', const Coordinates(21.031, 105.841));
-    await selectOnFakeMap(
-        tester, 'Chọn điểm đón', const Coordinates(21.04, 105.84));
+    response.complete(place('Phố cũ', const Coordinates(21.031, 105.841)));
+    await tester.pump();
+    geocoding.reverseHandler = (point) async => place('Phố mới', point);
+    lastPicker!.onMoving(++fakeCameraRevision);
+    lastPicker!.onIdle(fakeCameraRevision, const Coordinates(21.04, 105.84));
     check.complete(true);
+    await tester.pump(const Duration(seconds: 1));
     await tester.pumpAndSettle();
     expect(find.text('Phố cũ'), findsNothing);
     expect(find.text('Phố mới'), findsOneWidget);
+    expect(lastMapPickup?.latitude, 21.0287);
+    await tester.tap(find.byKey(const ValueKey('picker-confirm')));
+    await tester.pumpAndSettle();
     expect(lastMapPickup?.latitude, 21.04);
+  });
+
+  testWidgets(
+      'Picker previews without committing and Back preserves both points',
+      (tester) async {
+    await showHome(tester);
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đến', const Coordinates(21.05, 105.88),
+        confirm: false);
+    expect(lastMapPickup?.latitude, 21.0287);
+    expect(lastMapDropoff?.latitude, 21.0245);
+    expect(find.byKey(const ValueKey('customer-booking-sheet')), findsNothing);
+    expect(find.text('Xem giá chuyến đi'), findsNothing);
+    expectMapSteady();
+    expect(repository.quoteRequests, isEmpty);
+    expect(repository.createCalls, 0);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('picker-confirm')), findsNothing);
+    expect(lastMapDropoff?.latitude, 21.0245);
+    expectMapSteady();
+  });
+
+  testWidgets('Map tap outside picker cannot change committed coordinates',
+      (tester) async {
+    await showHome(tester);
+    await tester.tap(find.text('Chọn trên bản đồ giả'));
+    await tester.pumpAndSettle();
+    expect(lastMapPickup?.latitude, 21.0287);
+    expect(lastMapDropoff?.latitude, 21.0245);
+    expect(geocoding.reverses, isEmpty);
+    expect(repository.quoteRequests, isEmpty);
+  });
+
+  testWidgets('Cancel preserves a previously verified search label',
+      (tester) async {
+    geocoding.searchHandler = (_) async =>
+        [place('Địa chỉ đã chọn', const Coordinates(21.03, 105.84))];
+    await showHome(tester);
+    await openSearch(tester);
+    await tester.enterText(
+        find.byKey(const ValueKey('pickup-place-search')), 'Địa chỉ đã chọn');
+    await tester.pump(const Duration(milliseconds: 450));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ListTile, 'Địa chỉ đã chọn'));
+    await tester.pumpAndSettle();
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đón', const Coordinates(21.05, 105.88),
+        confirm: false);
+    await tester.tap(find.byKey(const ValueKey('picker-cancel')));
+    await tester.pumpAndSettle();
+    expect(find.text('Địa chỉ đã chọn'), findsOneWidget);
+    expect(lastMapPickup?.latitude, 21.03);
+    expect(lastMapPickup?.longitude, 105.84);
+    expectMapSteady();
+  });
+
+  testWidgets(
+      'Small-screen picker keeps Confirm and Cancel tappable with reduced motion',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    await showHome(tester, reducedMotion: true);
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đón', const Coordinates(21.05, 105.88),
+        confirm: false);
+    expect(tester.getSize(find.byKey(const ValueKey('picker-confirm'))).height,
+        greaterThanOrEqualTo(48));
+    expect(tester.getSize(find.byKey(const ValueKey('picker-cancel'))).height,
+        greaterThanOrEqualTo(48));
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.byKey(const ValueKey('picker-cancel')));
+    await tester.pumpAndSettle();
+    expectMapSteady();
+  });
+
+  testWidgets(
+      'Large text picker remains usable on 320x640 and preserves sheet gestures',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    await showHome(tester, textScale: 2);
+    await selectOnFakeMap(
+        tester, 'Chọn điểm đón', const Coordinates(21.05, 105.88),
+        confirm: false);
+    expect(tester.takeException(), isNull);
+    expect(find.text('Xem giá chuyến đi'), findsNothing);
+    final handle = tester.getRect(find.byKey(const ValueKey('picker-confirm')));
+    expect(handle.bottom, lessThanOrEqualTo(640));
+    await tester.tap(find.byKey(const ValueKey('picker-cancel')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('customer-booking-sheet-grip')),
+        findsOneWidget);
+    expectMapSteady();
   });
 }

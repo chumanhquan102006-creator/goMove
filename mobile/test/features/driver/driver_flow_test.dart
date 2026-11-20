@@ -163,11 +163,16 @@ class FakeDriverRepository implements DriverRepository {
   Object? statusError;
   Object? acceptError;
   Object? trackingError;
+  Object? vehicleError;
+  Future<DriverProfile> Function(String status)? statusResponse;
+  Future<void> Function()? gpsResponse;
+  Future<List<DriverVehicle>> Function()? vehicleResponse;
   Future<BookingTracking> Function()? trackingResponse;
   Future<DriverProfile> Function()? onboardResponse;
   Future<List<DriverOffer>> Function()? offerResponse;
   Future<OfferDecision> Function()? acceptResponse;
   Future<void> Function()? addDelay;
+  Future<void> Function()? activateDelay;
   BookingTracking trackingValue =
       const BookingTracking('booking-1', 'REQUESTED', null);
   List<DriverOffer> offers = [];
@@ -188,12 +193,15 @@ class FakeDriverRepository implements DriverRepository {
     statusCalls++;
     lastStatus = status;
     if (statusError != null) throw statusError!;
+    if (statusResponse != null) return statusResponse!(status);
     return DriverProfile('driver-1', 'APPROVED', status);
   }
 
   @override
   Future<List<DriverVehicle>> vehicles(int session) async {
     vehicleCalls++;
+    if (vehicleError != null) throw vehicleError!;
+    if (vehicleResponse != null) return vehicleResponse!();
     return vehicleList;
   }
 
@@ -209,6 +217,7 @@ class FakeDriverRepository implements DriverRepository {
 
   @override
   Future<DriverVehicle> activateVehicle(String publicId, int session) async {
+    if (activateDelay != null) await activateDelay!();
     vehicleList = [
       for (final vehicle in vehicleList)
         DriverVehicle(
@@ -227,6 +236,7 @@ class FakeDriverRepository implements DriverRepository {
   Future<void> uploadLocation(DriverCoordinates location, int session) async {
     gpsCalls++;
     lastPoint = location;
+    if (gpsResponse != null) await gpsResponse!();
   }
 
   @override
@@ -357,9 +367,14 @@ void main() {
         heartbeatInterval: const Duration(hours: 1));
   });
 
-  tearDown(() async => cubit.close());
+  tearDown(() async {
+    if (!cubit.isClosed) await cubit.close();
+  });
 
-  Future<void> restartDriver({String user = 'user-A'}) async {
+  Future<void> restartDriver(
+      {String user = 'user-A',
+      TripRepository? tripRepository,
+      Duration heartbeat = const Duration(hours: 1)}) async {
     await cubit.close();
     when(() => session.getUserPublicId()).thenAnswer((_) async => user);
     cubit = DriverCubit(
@@ -367,13 +382,320 @@ void main() {
         location: location,
         session: session,
         acceptedStore: store,
+        tripRepository: tripRepository,
         userPublicId: user,
         isMock: false,
         now: () => now,
         pollInterval: const Duration(hours: 1),
-        heartbeatInterval: const Duration(hours: 1));
+        heartbeatInterval: heartbeat);
     await cubit.initialize();
   }
+
+  Future<MockTripRepository> activeTripDriver() async {
+    final trip = MockTripRepository();
+    when(() => trip.tracking('booking-1', any())).thenAnswer((_) async =>
+        TrackingSnapshot(
+            bookingPublicId: 'booking-1',
+            status: 'IN_PROGRESS',
+            driverPublicId: 'driver-1',
+            latitude: 21.0287,
+            longitude: 105.8524,
+            locationUpdatedAt: now));
+    store.values['user-A'] = AcceptedBookingRecord(
+        'driver-1', offer(now.add(const Duration(seconds: 15))));
+    repository.trackingValue =
+        const BookingTracking('booking-1', 'IN_PROGRESS', 'driver-1');
+    await restartDriver(
+        tripRepository: trip, heartbeat: DriverCubit.locationHeartbeatInterval);
+    cubit.setTripChannelActive(true);
+    return trip;
+  }
+
+  test('Resume closure BUSY active channel verifies fresh REST GPS', () async {
+    final trip = await activeTripDriver();
+    final uploads = repository.gpsCalls;
+    cubit.pause();
+    await cubit.resume();
+    expect(cubit.state.notice, isNull);
+    expect(cubit.state.operatingStatus, 'BUSY');
+    expect(repository.gpsCalls, uploads,
+        reason: 'The connected trip channel still owns GPS publishing.');
+    verify(() => trip.tracking('booking-1', 1)).called(1);
+  });
+
+  test('Resume closure waits for Vehicle action then revalidates ONLINE',
+      () async {
+    await cubit.initialize();
+    await cubit.goOnline();
+    final action = Completer<void>();
+    repository.addDelay = () => action.future;
+    final add =
+        cubit.addVehicle(const VehicleDraft('79B-456.78', 'CAR_4_SEAT'));
+    await Future<void>.delayed(Duration.zero);
+    final calls = repository.statusCalls;
+    cubit.pause();
+    final resume = cubit.resume();
+    await Future<void>.delayed(Duration.zero);
+    expect(cubit.state.operatingStatus, isNull);
+    expect(repository.statusCalls, calls);
+    action.complete();
+    await add;
+    await resume;
+    expect(repository.statusCalls, calls + 1);
+    expect(cubit.state.operatingStatus, 'ONLINE');
+    expect(cubit.state.notice, contains('Đã thêm xe'));
+  });
+
+  for (final invalid in [
+    'stale',
+    'boundary',
+    'future',
+    'missing',
+    'wrong booking',
+    'wrong driver',
+    'terminal',
+    'invalid coordinates'
+  ]) {
+    test('Resume closure connected socket cannot prove $invalid GPS', () async {
+      final trip = await activeTripDriver();
+      final snapshot = TrackingSnapshot(
+          bookingPublicId:
+              invalid == 'wrong booking' ? 'booking-2' : 'booking-1',
+          driverPublicId: invalid == 'wrong driver' ? 'driver-2' : 'driver-1',
+          status: invalid == 'terminal' ? 'COMPLETED' : 'IN_PROGRESS',
+          latitude: invalid == 'invalid coordinates' ? double.nan : 21.0287,
+          longitude: 105.8524,
+          locationUpdatedAt: invalid == 'missing'
+              ? null
+              : invalid == 'future'
+                  ? now.add(const Duration(seconds: 1))
+                  : invalid == 'stale'
+                      ? now.subtract(const Duration(seconds: 31))
+                      : invalid == 'boundary'
+                          ? now.subtract(const Duration(seconds: 30))
+                          : now);
+      when(() => trip.tracking('booking-1', any()))
+          .thenAnswer((_) async => snapshot);
+      cubit.pause();
+      await cubit.resume();
+      expect(cubit.state.notice, contains('tạm dừng'));
+      expect(cubit.state.operatingStatus, 'BUSY');
+    });
+  }
+
+  for (final initial in ['stale', 'network failure']) {
+    testWidgets('Resume closure retries $initial until REST confirms fresh GPS',
+        (tester) async {
+      final trip = await activeTripDriver();
+      when(() => trip.tracking('booking-1', any())).thenAnswer((_) async {
+        if (initial == 'network failure') {
+          throw const ServerException(
+              message: 'tracking unavailable', statusCode: 503);
+        }
+        return TrackingSnapshot(
+            bookingPublicId: 'booking-1',
+            status: 'IN_PROGRESS',
+            driverPublicId: 'driver-1',
+            latitude: 21.0287,
+            longitude: 105.8524,
+            locationUpdatedAt: now.subtract(const Duration(seconds: 31)));
+      });
+      cubit.pause();
+      await cubit.resume();
+      expect(cubit.state.notice, contains('tạm dừng'));
+      when(() => trip.tracking('booking-1', any())).thenAnswer((_) async =>
+          TrackingSnapshot(
+              bookingPublicId: 'booking-1',
+              status: 'IN_PROGRESS',
+              driverPublicId: 'driver-1',
+              latitude: 21.0287,
+              longitude: 105.8524,
+              locationUpdatedAt: now));
+      now = now.add(DriverCubit.locationHeartbeatInterval);
+      await tester.pump(DriverCubit.locationHeartbeatInterval);
+      await tester.pump();
+      expect(cubit.state.notice, isNull);
+      verify(() => trip.tracking('booking-1', 1)).called(2);
+      await tester.pump(const Duration(seconds: 27));
+      verifyNoMoreInteractions(trip);
+    });
+  }
+
+  testWidgets('Resume closure keeps one verification in flight',
+      (tester) async {
+    final trip = await activeTripDriver();
+    final pending = Completer<TrackingSnapshot>();
+    when(() => trip.tracking('booking-1', any()))
+        .thenAnswer((_) => pending.future);
+    cubit.pause();
+    final resume = cubit.resume();
+    await tester.pump();
+    verify(() => trip.tracking('booking-1', 1)).called(1);
+    now = now.add(const Duration(seconds: 27));
+    await tester.pump(const Duration(seconds: 27));
+    verifyNoMoreInteractions(trip);
+    pending.complete(TrackingSnapshot(
+        bookingPublicId: 'booking-1',
+        status: 'IN_PROGRESS',
+        driverPublicId: 'driver-1',
+        latitude: 21.0287,
+        longitude: 105.8524,
+        locationUpdatedAt: now));
+    await resume;
+    expect(cubit.state.notice, isNull);
+  });
+
+  for (final invalidation in ['session replacement', 'dispose']) {
+    testWidgets('Resume closure discards active trip proof after $invalidation',
+        (tester) async {
+      final trip = await activeTripDriver();
+      final pending = Completer<TrackingSnapshot>();
+      when(() => trip.tracking('booking-1', any()))
+          .thenAnswer((_) => pending.future);
+      cubit.pause();
+      final resume = cubit.resume();
+      await tester.pump();
+      if (invalidation == 'dispose') {
+        final closing = cubit.close();
+        await tester.pump();
+        await closing;
+      } else {
+        generation++;
+      }
+      final previous = cubit.state;
+      pending.complete(TrackingSnapshot(
+          bookingPublicId: 'booking-1',
+          status: 'IN_PROGRESS',
+          driverPublicId: 'driver-1',
+          latitude: 21.0287,
+          longitude: 105.8524,
+          locationUpdatedAt: now));
+      await resume;
+      expect(cubit.state, same(previous));
+      await tester.pump(const Duration(seconds: 27));
+      verify(() => trip.tracking('booking-1', 1)).called(1);
+    });
+
+    test(
+        'Resume closure discards deferred Vehicle revalidation after $invalidation',
+        () async {
+      await cubit.initialize();
+      await cubit.goOnline();
+      final action = Completer<void>();
+      repository.addDelay = () => action.future;
+      final add =
+          cubit.addVehicle(const VehicleDraft('79B-456.78', 'CAR_4_SEAT'));
+      await Future<void>.delayed(Duration.zero);
+      final calls = repository.statusCalls;
+      cubit.pause();
+      final resume = cubit.resume();
+      await Future<void>.delayed(Duration.zero);
+      if (invalidation == 'dispose') {
+        await cubit.close();
+      } else {
+        generation++;
+      }
+      final previous = cubit.state;
+      action.complete();
+      await add;
+      await resume;
+      expect(cubit.state, same(previous));
+      expect(repository.statusCalls, calls);
+    });
+  }
+
+  test('Resume closure waits for activation and preserves failed revalidation',
+      () async {
+    await cubit.initialize();
+    await cubit.goOnline();
+    final action = Completer<void>();
+    repository.activateDelay = () => action.future;
+    final activate = cubit.activateVehicle('vehicle-1');
+    await Future<void>.delayed(Duration.zero);
+    cubit.pause();
+    final resume = cubit.resume();
+    await Future<void>.delayed(Duration.zero);
+    repository.statusError =
+        const ServerException(message: 'revalidation failed', statusCode: 503);
+    action.complete();
+    await activate;
+    await resume;
+    expect(cubit.state.operatingStatus, isNull);
+    expect(cubit.state.actionBusy, isFalse);
+    expect(cubit.state.error, 'revalidation failed');
+    expect(cubit.state.notice, 'Xe đã được kích hoạt.');
+    repository.statusError = null;
+    await cubit.resume();
+    expect(cubit.state.operatingStatus, 'ONLINE');
+    expect(cubit.state.error, isNull);
+  });
+
+  test('Resume closure only the newest deferred resume revalidates', () async {
+    await cubit.initialize();
+    await cubit.goOnline();
+    final action = Completer<void>();
+    repository.addDelay = () => action.future;
+    final add =
+        cubit.addVehicle(const VehicleDraft('79B-456.78', 'CAR_4_SEAT'));
+    await Future<void>.delayed(Duration.zero);
+    final calls = repository.statusCalls;
+    cubit.pause();
+    final older = cubit.resume();
+    await Future<void>.delayed(Duration.zero);
+    cubit.pause();
+    final newer = cubit.resume();
+    await Future<void>.delayed(Duration.zero);
+    action.complete();
+    await Future.wait([add, older, newer]);
+    expect(repository.statusCalls, calls + 1);
+    expect(cubit.state.operatingStatus, 'ONLINE');
+  });
+
+  test(
+      'Resume closure failed Vehicle action still releases deferred revalidation',
+      () async {
+    await cubit.initialize();
+    await cubit.goOnline();
+    final action = Completer<void>();
+    repository.addDelay = () => action.future;
+    final add =
+        cubit.addVehicle(const VehicleDraft('79B-456.78', 'CAR_4_SEAT'));
+    await Future<void>.delayed(Duration.zero);
+    cubit.pause();
+    final resume = cubit.resume();
+    await Future<void>.delayed(Duration.zero);
+    action.completeError(
+        const ServerException(message: 'vehicle failed', statusCode: 503));
+    await add;
+    await resume;
+    expect(cubit.state.operatingStatus, 'ONLINE');
+    expect(cubit.state.actionBusy, isFalse);
+    expect(cubit.state.error, 'vehicle failed');
+    expect(repository.statusCalls, 2);
+  });
+
+  test('Resume closure active trip proof preserves a newer Vehicle notice',
+      () async {
+    final trip = await activeTripDriver();
+    final pending = Completer<TrackingSnapshot>();
+    when(() => trip.tracking('booking-1', any()))
+        .thenAnswer((_) => pending.future);
+    cubit.pause();
+    final resume = cubit.resume();
+    await Future<void>.delayed(Duration.zero);
+    await cubit.addVehicle(const VehicleDraft('79B-456.78', 'CAR_4_SEAT'));
+    final independent = cubit.state.notice;
+    pending.complete(TrackingSnapshot(
+        bookingPublicId: 'booking-1',
+        status: 'IN_PROGRESS',
+        driverPublicId: 'driver-1',
+        latitude: 21.0287,
+        longitude: 105.8524,
+        locationUpdatedAt: now));
+    await resume;
+    expect(cubit.state.notice, independent);
+    expect(independent, contains('Đã thêm xe'));
+  });
 
   test('GPS validates order, bounds and optional accuracy/bearing', () {
     expect(
@@ -522,6 +844,478 @@ void main() {
     await cubit.pollOnce();
     expect(repository.lastStatus, 'OFFLINE');
     expect(repository.offerCalls, 2);
+  });
+
+  test('Driver reliability clears only the confirmed OFFLINE notice on ONLINE',
+      () async {
+    await cubit.initialize();
+    await cubit.goOnline();
+    await cubit.goOffline();
+    expect(cubit.state.notice, 'Máy chủ đã xác nhận OFFLINE.');
+    final pending = Completer<DriverProfile>();
+    repository.statusResponse = (_) => pending.future;
+    final online = cubit.goOnline();
+    await Future<void>.delayed(Duration.zero);
+    expect(cubit.state.operatingStatus, 'OFFLINE');
+    expect(cubit.state.notice, 'Máy chủ đã xác nhận OFFLINE.');
+    repository.vehicleError =
+        const ServerException(message: 'vehicle_read_failed', statusCode: 503);
+    await cubit.reloadVehicles();
+    now = now.add(const Duration(seconds: 1));
+    pending.complete(const DriverProfile('driver-1', 'APPROVED', 'ONLINE'));
+    await online;
+    expect(cubit.state.operatingStatus, 'ONLINE');
+    expect(cubit.state.notice, isNull);
+    expect(cubit.state.error, 'vehicle_read_failed');
+  });
+
+  test('Driver reliability preserves OFFLINE when the ONLINE request fails',
+      () async {
+    await cubit.initialize();
+    await cubit.goOnline();
+    await cubit.goOffline();
+    repository.statusError = const ServerException(
+        message: 'status_request_failed', statusCode: 503);
+    await cubit.goOnline();
+    expect(cubit.state.operatingStatus, 'OFFLINE');
+    expect(cubit.state.notice, 'Máy chủ đã xác nhận OFFLINE.');
+    expect(cubit.state.error, 'status_request_failed');
+    repository.statusError = null;
+    now = now.add(const Duration(seconds: 1));
+    await cubit.goOnline();
+    expect(cubit.state.operatingStatus, 'ONLINE');
+    expect(cubit.state.error, isNull);
+  });
+
+  test('Driver reliability retains an independent error that still applies',
+      () async {
+    await cubit.initialize();
+    repository.vehicleError =
+        const ServerException(message: 'vehicle_read_failed', statusCode: 503);
+    await cubit.reloadVehicles();
+    await cubit.goOnline();
+    expect(cubit.state.operatingStatus, 'ONLINE');
+    expect(cubit.state.error, 'vehicle_read_failed');
+  });
+
+  test('Driver reliability requires ONLINE in the actual server profile',
+      () async {
+    await cubit.initialize();
+    repository.statusResponse =
+        (_) async => const DriverProfile('driver-1', 'APPROVED', 'OFFLINE');
+    await cubit.goOnline();
+    expect(cubit.state.operatingStatus, 'OFFLINE');
+    expect(repository.gpsCalls, 0);
+  });
+
+  test('Driver reliability clears expired pause notice after verified resume',
+      () async {
+    await cubit.initialize();
+    await cubit.goOnline();
+    await cubit.goOffline();
+    final pending = Completer<DriverProfile>();
+    repository.statusResponse = (_) => pending.future;
+    final online = cubit.goOnline();
+    await Future<void>.delayed(Duration.zero);
+    cubit.pause();
+    final notice = cubit.state.notice;
+    pending.complete(const DriverProfile('driver-1', 'APPROVED', 'ONLINE'));
+    await online;
+    expect(cubit.state.notice, notice);
+    expect(cubit.state.foreground, isFalse);
+    repository.statusResponse = null;
+    await cubit.resume();
+    expect(cubit.state.operatingStatus, 'ONLINE');
+    expect(cubit.state.notice, isNull);
+    expect(cubit.state.notice, isNot(contains('xác nhận OFFLINE')));
+  });
+
+  test('Ownership regression keeps Vehicle E when Poll E recovers', () async {
+    await cubit.initialize();
+    repository.offerResponse = () =>
+        Future.error(const ServerException(message: 'E', statusCode: 503));
+    await cubit.goOnline();
+    repository.vehicleError =
+        const ServerException(message: 'E', statusCode: 503);
+    await cubit.reloadVehicles();
+    repository.offerResponse = null;
+    await cubit.pollOnce();
+    expect(cubit.state.error, 'E');
+  });
+
+  test('Ownership regression old Status E cannot clear later Vehicle E',
+      () async {
+    await cubit.initialize();
+    repository.statusError =
+        const ServerException(message: 'E', statusCode: 503);
+    await cubit.goOnline();
+    repository.statusError = null;
+    await cubit.goOnline();
+    expect(cubit.state.error, isNull);
+    repository.vehicleError =
+        const ServerException(message: 'E', statusCode: 503);
+    await cubit.reloadVehicles();
+    await cubit.goOnline();
+    expect(cubit.state.error, 'E');
+  });
+
+  test(
+      'Ownership regression ignores an older vehicle success after a newer error',
+      () async {
+    await cubit.initialize();
+    final first = Completer<List<DriverVehicle>>();
+    repository.vehicleResponse = () => first.future;
+    final older = cubit.reloadVehicles();
+    await Future<void>.delayed(Duration.zero);
+    repository.vehicleError =
+        const ServerException(message: 'E', statusCode: 503);
+    await cubit.reloadVehicles();
+    first.complete(repository.vehicleList);
+    await older;
+    expect(cubit.state.error, 'E');
+  });
+
+  test('Ownership regression failed resume never confirms ONLINE', () async {
+    await cubit.initialize();
+    await cubit.goOnline();
+    cubit.pause();
+    repository.statusError =
+        const ServerException(message: 'resume_failed', statusCode: 503);
+    await cubit.resume();
+    expect(cubit.state.operatingStatus, isNot('ONLINE'));
+    expect(cubit.state.error, 'resume_failed');
+    expect(cubit.state.notice, contains('tạm dừng'));
+  });
+
+  test('Ownership regression old resume cannot acknowledge a newer pause',
+      () async {
+    await cubit.initialize();
+    await cubit.goOnline();
+    cubit.pause();
+    final first = Completer<DriverProfile>();
+    repository.statusResponse = (_) => first.future;
+    final older = cubit.resume();
+    await Future<void>.delayed(Duration.zero);
+    cubit.pause();
+    final second = Completer<DriverProfile>();
+    repository.statusResponse = (_) => second.future;
+    final newer = cubit.resume();
+    await Future<void>.delayed(Duration.zero);
+    first.complete(const DriverProfile('driver-1', 'APPROVED', 'ONLINE'));
+    await older;
+    expect(cubit.state.operatingStatus, isNot('ONLINE'));
+    expect(cubit.state.notice, contains('tạm dừng'));
+    second.complete(const DriverProfile('driver-1', 'APPROVED', 'ONLINE'));
+    await newer;
+    expect(cubit.state.operatingStatus, 'ONLINE');
+    expect(cubit.state.notice, isNull);
+  });
+
+  test('Driver reliability does not revive OFFLINE notice after a paused reply',
+      () async {
+    await cubit.initialize();
+    await cubit.goOnline();
+    final pending = Completer<DriverProfile>();
+    repository.statusResponse = (_) => pending.future;
+    final offline = cubit.goOffline();
+    await Future<void>.delayed(Duration.zero);
+    cubit.pause();
+    final notice = cubit.state.notice;
+    pending.complete(const DriverProfile('driver-1', 'APPROVED', 'OFFLINE'));
+    await offline;
+    expect(cubit.state.notice, notice);
+    expect(cubit.state.operatingStatus, isNull,
+        reason: 'The reply belongs to the activity before pause.');
+    repository.statusResponse = null;
+    await cubit.resume();
+    expect(cubit.state.operatingStatus, 'OFFLINE');
+    expect(cubit.state.notice, 'Máy chủ đã xác nhận OFFLINE.');
+  });
+
+  for (final source in ['Poll', 'Status']) {
+    test(
+        'Ownership regression $source recovery cannot clear an in-flight Vehicle E',
+        () async {
+      await cubit.initialize();
+      final pendingPoll = Completer<List<DriverOffer>>();
+      final pendingStatus = Completer<DriverProfile>();
+      late Future<void> recovery;
+      if (source == 'Poll') {
+        repository.offerResponse = () =>
+            Future.error(const ServerException(message: 'E', statusCode: 503));
+        await cubit.goOnline();
+        repository.offerResponse = () => pendingPoll.future;
+        recovery = cubit.pollOnce();
+      } else {
+        repository.statusError =
+            const ServerException(message: 'E', statusCode: 503);
+        await cubit.goOnline();
+        repository.statusError = null;
+        repository.statusResponse = (_) => pendingStatus.future;
+        recovery = cubit.goOnline();
+      }
+      await Future<void>.delayed(Duration.zero);
+      repository.vehicleError =
+          const ServerException(message: 'E', statusCode: 503);
+      await cubit.reloadVehicles();
+      if (source == 'Poll') {
+        pendingPoll.complete([]);
+      } else {
+        pendingStatus
+            .complete(const DriverProfile('driver-1', 'APPROVED', 'ONLINE'));
+      }
+      await recovery;
+      expect(cubit.state.error, 'E');
+    });
+  }
+
+  test('Ownership regression late resume preserves a newer Vehicle error',
+      () async {
+    await cubit.initialize();
+    await cubit.goOnline();
+    cubit.pause();
+    final pending = Completer<DriverProfile>();
+    repository.statusResponse = (_) => pending.future;
+    final resume = cubit.resume();
+    await Future<void>.delayed(Duration.zero);
+    repository.vehicleError =
+        const ServerException(message: 'E', statusCode: 503);
+    await cubit.reloadVehicles();
+    pending.complete(const DriverProfile('driver-1', 'APPROVED', 'ONLINE'));
+    await resume;
+    expect(cubit.state.error, 'E');
+    expect(cubit.state.notice, isNull);
+    expect(cubit.state.operatingStatus, 'ONLINE');
+  });
+
+  for (final invalidation in ['session replacement', 'dispose']) {
+    test(
+        'Ownership regression late resume error is ignored after $invalidation',
+        () async {
+      await cubit.initialize();
+      await cubit.goOnline();
+      cubit.pause();
+      final pending = Completer<DriverProfile>();
+      repository.statusResponse = (_) => pending.future;
+      final resume = cubit.resume();
+      await Future<void>.delayed(Duration.zero);
+      if (invalidation == 'dispose') {
+        await cubit.close();
+      } else {
+        generation++;
+      }
+      final previous = cubit.state;
+      pending.completeError(
+          const ServerException(message: 'late E', statusCode: 503));
+      await resume;
+      expect(cubit.state, same(previous));
+    });
+  }
+
+  test(
+      'Ownership regression successful ONLINE preserves independent vehicle notice',
+      () async {
+    await cubit.initialize();
+    await cubit.goOnline();
+    final pending = Completer<void>();
+    repository.addDelay = () => pending.future;
+    final add =
+        cubit.addVehicle(const VehicleDraft('79B-456.78', 'CAR_4_SEAT'));
+    await Future<void>.delayed(Duration.zero);
+    cubit.pause();
+    final resume = cubit.resume();
+    await Future<void>.delayed(Duration.zero);
+    expect(cubit.state.operatingStatus, isNot('ONLINE'));
+    pending.complete();
+    await add;
+    await resume;
+    final independent = cubit.state.notice;
+    expect(independent, contains('Đã thêm xe'));
+    expect(cubit.state.operatingStatus, 'ONLINE');
+    expect(cubit.state.notice, independent);
+  });
+
+  test('Ownership regression BUSY resume clears pause only after confirmed GPS',
+      () async {
+    store.values['user-A'] = AcceptedBookingRecord(
+        'driver-1', offer(now.add(const Duration(seconds: 15))));
+    repository.trackingValue =
+        const BookingTracking('booking-1', 'PASSENGER_ONBOARD', 'driver-1');
+    await cubit.initialize();
+    cubit.pause();
+    final pending = Completer<void>();
+    repository.gpsResponse = () => pending.future;
+    now = now.add(const Duration(seconds: 1));
+    final resume = cubit.resume();
+    await Future<void>.delayed(Duration.zero);
+    expect(cubit.state.notice, contains('tạm dừng'));
+    pending.complete();
+    await resume;
+    expect(cubit.state.operatingStatus, 'BUSY');
+    expect(cubit.state.notice, isNull);
+  });
+
+  test('Ownership regression Vehicle recovery clears its own error', () async {
+    await cubit.initialize();
+    repository.vehicleError =
+        const ServerException(message: 'E', statusCode: 503);
+    await cubit.reloadVehicles();
+    expect(cubit.state.error, 'E');
+    repository.vehicleError = null;
+    await cubit.reloadVehicles();
+    expect(cubit.state.error, isNull);
+  });
+
+  test(
+      'Ownership regression newer vehicle load finishes initialization loading',
+      () async {
+    final first = Completer<List<DriverVehicle>>();
+    repository.vehicleResponse = () => first.future;
+    final initialization = cubit.initialize();
+    await Future<void>.delayed(Duration.zero);
+    expect(cubit.state.loading, isTrue);
+    repository.vehicleResponse = () async => repository.vehicleList;
+    await cubit.reloadVehicles();
+    expect(cubit.state.loading, isFalse);
+    first.complete([]);
+    await initialization;
+    expect(cubit.state.loading, isFalse);
+    expect(cubit.state.vehicles, repository.vehicleList);
+  });
+
+  for (final invalidation in ['session replacement', 'dispose']) {
+    test(
+        'Ownership regression late session read cannot emit after $invalidation',
+        () async {
+      final pending = Completer<AuthSessionSnapshot>();
+      when(() => session.getSession()).thenAnswer((_) => pending.future);
+      final initialization = cubit.initialize();
+      await Future<void>.delayed(Duration.zero);
+      if (invalidation == 'dispose') {
+        await cubit.close();
+      } else {
+        generation++;
+      }
+      final previous = cubit.state;
+      pending.complete(const AuthSessionSnapshot(1, 'access', 'refresh'));
+      await initialization;
+      expect(cubit.state, same(previous));
+      expect(repository.vehicleCalls, 0);
+    });
+  }
+
+  for (final invalidation in ['session replacement', 'logout/dispose']) {
+    test('Driver reliability ignores late ONLINE after $invalidation',
+        () async {
+      await cubit.initialize();
+      final pending = Completer<DriverProfile>();
+      repository.statusResponse = (_) => pending.future;
+      final online = cubit.goOnline();
+      await Future<void>.delayed(Duration.zero);
+      if (invalidation == 'session replacement') {
+        generation++;
+      } else {
+        await cubit.close();
+      }
+      final previous = cubit.state;
+      pending.complete(const DriverProfile('driver-1', 'APPROVED', 'ONLINE'));
+      await online;
+      expect(cubit.state, same(previous));
+      expect(repository.gpsCalls, 0);
+    });
+  }
+
+  test(
+      'Driver reliability keeps fresh GPS on duplicate then expires and recovers',
+      () async {
+    await cubit.initialize();
+    final sampled = now;
+    location.currentResponse = () async =>
+        DriverCoordinates(21.0287, 105.8524, accuracy: 8, sampledAt: sampled);
+    await cubit.goOnline();
+    final message = cubit.state.locationMessage;
+    now = now.add(const Duration(seconds: 5));
+    await cubit.goOnline();
+    expect(repository.gpsCalls, 1);
+    expect(cubit.state.lastLocationUpload, sampled);
+    expect(cubit.state.locationMessage, message);
+    now = sampled.add(DriverCubit.locationFreshness);
+    await cubit.goOnline();
+    expect(repository.gpsCalls, 1);
+    expect(cubit.state.locationMessage, contains('30 giây'));
+    expect(repository.offerCalls, 2);
+    now = now.add(const Duration(seconds: 1));
+    location.currentResponse = null;
+    await cubit.goOnline();
+    expect(repository.gpsCalls, 2);
+    expect(cubit.state.lastLocationUpload, now);
+    expect(cubit.state.locationMessage, 'GPS mới đã gửi đến máy chủ.');
+  });
+
+  test(
+      'Driver reliability distinguishes no sample and upload failure from expiry',
+      () async {
+    await cubit.initialize();
+    location.currentResponse =
+        () async => const DriverCoordinates(21.0287, 105.8524);
+    await cubit.goOnline();
+    expect(repository.gpsCalls, 0);
+    expect(cubit.state.locationMessage, contains('chưa có mẫu'));
+    expect(cubit.state.locationMessage, isNot(contains('30 giây')));
+    location.currentResponse = () => Future.error(TimeoutException('no fix'));
+    await cubit.goOnline();
+    expect(cubit.state.locationMessage, contains('Chưa nhận được mẫu GPS'));
+    location.currentResponse = null;
+    repository.gpsResponse = () => Future.error(
+        const ServerException(message: 'gps_upload_failed', statusCode: 503));
+    await cubit.goOnline();
+    expect(cubit.state.lastLocationUpload, isNull);
+    expect(
+        cubit.state.locationMessage, contains('Chưa gửi được GPS đến máy chủ'));
+    await cubit.pollOnce();
+    expect(cubit.state.locationMessage, contains('gps_upload_failed'));
+    repository.gpsResponse = null;
+    await cubit.goOnline();
+    expect(cubit.state.locationMessage, 'GPS mới đã gửi đến máy chủ.');
+    await cubit.goOffline();
+    expect(cubit.state.locationMessage, contains('OFFLINE'));
+  });
+
+  test(
+      'Driver reliability serializes status changes and ignores late GPS failure',
+      () async {
+    await cubit.initialize();
+    final pending = Completer<DriverProfile>();
+    repository.statusResponse = (_) => pending.future;
+    final online = cubit.goOnline();
+    await cubit.goOnline();
+    await cubit.goOffline();
+    expect(repository.statusCalls, 1);
+    final gps = Completer<void>();
+    repository.gpsResponse = () => gps.future;
+    pending.complete(const DriverProfile('driver-1', 'APPROVED', 'ONLINE'));
+    await Future<void>.delayed(Duration.zero);
+    expect(repository.gpsCalls, 1);
+    repository.statusResponse = null;
+    await cubit.goOffline();
+    final offline = cubit.state;
+    gps.completeError(
+        const ServerException(message: 'late_failure', statusCode: 503));
+    await online;
+    expect(cubit.state, same(offline));
+    expect(cubit.state.operatingStatus, 'OFFLINE');
+    expect(cubit.state.locationMessage, contains('OFFLINE'));
+  });
+
+  test('Driver reliability clears only recovered poll errors', () async {
+    await cubit.initialize();
+    repository.offerResponse = () => Future.error(
+        const ServerException(message: 'poll_failed', statusCode: 503));
+    await cubit.goOnline();
+    expect(cubit.state.error, 'poll_failed');
+    repository.offerResponse = null;
+    await cubit.pollOnce();
+    expect(cubit.state.error, isNull);
   });
 
   test('REST heartbeat rejects missing, stale and future device fixes',

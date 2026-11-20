@@ -25,6 +25,9 @@ const _tripStages = <String>[
 int _stage(String status) => _tripStages.indexOf(status);
 
 class CustomerLiveLocation {
+  static const displayTtl = Duration(seconds: 20);
+  static const maxFutureSkew = Duration(seconds: 5);
+  static const maxInterpolationAccuracyMeters = 100.0;
   final double latitude;
   final double longitude;
   final double? accuracy;
@@ -34,8 +37,19 @@ class CustomerLiveLocation {
   const CustomerLiveLocation(this.latitude, this.longitude, this.accuracy,
       this.bearing, this.updatedAt);
 
+  bool get hasInterpolationAccuracy =>
+      accuracy != null &&
+      accuracy!.isFinite &&
+      accuracy! >= 0 &&
+      accuracy! <= maxInterpolationAccuracyMeters;
+
+  bool isFreshAt(DateTime now) =>
+      !updatedAt.isAfter(now.toUtc().add(maxFutureSkew)) &&
+      now.toUtc().isBefore(updatedAt.toUtc().add(displayTtl));
+
   static CustomerLiveLocation? valid(double latitude, double longitude,
-      double? accuracy, double? bearing, DateTime updatedAt) {
+      double? accuracy, double? bearing, DateTime updatedAt,
+      {DateTime? now}) {
     if (!latitude.isFinite ||
         !longitude.isFinite ||
         latitude < -90 ||
@@ -43,7 +57,8 @@ class CustomerLiveLocation {
         longitude < -180 ||
         longitude > 180 ||
         !updatedAt
-            .isAfter(DateTime.fromMillisecondsSinceEpoch(0, isUtc: true))) {
+            .isAfter(DateTime.fromMillisecondsSinceEpoch(0, isUtc: true)) ||
+        updatedAt.isAfter((now ?? DateTime.now()).toUtc().add(maxFutureSkew))) {
       return null;
     }
     return CustomerLiveLocation(
@@ -58,7 +73,8 @@ class CustomerLiveLocation {
         updatedAt);
   }
 
-  static CustomerLiveLocation? fromTracking(TrackingSnapshot tracking) {
+  static CustomerLiveLocation? fromTracking(TrackingSnapshot tracking,
+      {DateTime? now}) {
     if (!tracking.allowsLiveLocation ||
         tracking.latitude == null ||
         tracking.longitude == null ||
@@ -66,7 +82,8 @@ class CustomerLiveLocation {
       return null;
     }
     return valid(tracking.latitude!, tracking.longitude!, tracking.accuracy,
-        tracking.bearing, tracking.locationUpdatedAt!);
+        tracking.bearing, tracking.locationUpdatedAt!,
+        now: now);
   }
 }
 
@@ -164,6 +181,7 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
   final SecureStorageService? session;
   final TripRealtimeClient? realtime;
   final Duration pollInterval;
+  final DateTime Function() _now;
 
   Timer? _timer;
   // Cancelled by _disconnectRealtime from stop() and close().
@@ -185,8 +203,10 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
       {this.tripRepository,
       this.session,
       this.realtime,
+      DateTime Function()? now,
       this.pollInterval = const Duration(seconds: 5)})
       : assert((tripRepository == null) == (session == null)),
+        _now = now ?? DateTime.now,
         super(BookingStatusState(initial));
 
   bool get _hasTrip => tripRepository != null;
@@ -343,7 +363,8 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
         return;
       }
       final location = CustomerLiveLocation.valid(event.latitude,
-          event.longitude, event.accuracy, event.bearing, event.recordedAt);
+          event.longitude, event.accuracy, event.bearing, event.recordedAt,
+          now: _now());
       if (location != null) {
         emit(state.copyWith(liveLocation: location));
       }
@@ -458,7 +479,8 @@ class BookingStatusCubit extends Cubit<BookingStatusState> {
               _stage(previousTracking.status) > _stage(tracking.status)
           ? previousTracking
           : tracking;
-      final freshLocation = CustomerLiveLocation.fromTracking(tracking);
+      final freshLocation =
+          CustomerLiveLocation.fromTracking(tracking, now: _now());
       final currentLocation = state.liveLocation;
       final preferredLocation = freshLocation == null
           ? currentLocation

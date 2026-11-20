@@ -29,6 +29,10 @@ class DriverState {
   final String? notice;
   final bool unresolvedDecision;
   final bool completedAwaitingSettlement;
+  // Every explicit write gets a distinct identity, even for equal messages.
+  // Copies which do not write feedback retain its identity.
+  final Object? _errorWrite;
+  final Object? _noticeWrite;
 
   const DriverState(
       {this.operatingStatus,
@@ -47,7 +51,28 @@ class DriverState {
       this.error,
       this.notice,
       this.unresolvedDecision = false,
-      this.completedAwaitingSettlement = false});
+      this.completedAwaitingSettlement = false})
+      : _errorWrite = null,
+        _noticeWrite = null;
+
+  DriverState._feedback(DriverState value, this._errorWrite, this._noticeWrite)
+      : operatingStatus = value.operatingStatus,
+        approvalStatus = value.approvalStatus,
+        driverPublicId = value.driverPublicId,
+        vehicles = value.vehicles,
+        offer = value.offer,
+        acceptedOffer = value.acceptedOffer,
+        loading = value.loading,
+        actionBusy = value.actionBusy,
+        offerActionBusy = value.offerActionBusy,
+        foreground = value.foreground,
+        locationMessage = value.locationMessage,
+        locationProblem = value.locationProblem,
+        lastLocationUpload = value.lastLocationUpload,
+        error = value.error,
+        notice = value.notice,
+        unresolvedDecision = value.unresolvedDecision,
+        completedAwaitingSettlement = value.completedAwaitingSettlement;
 
   DriverVehicle? get activeVehicle {
     for (final vehicle in vehicles) {
@@ -57,62 +82,69 @@ class DriverState {
   }
 
   DriverState copy(
-          {Object? operatingStatus = _unchanged,
-          Object? approvalStatus = _unchanged,
-          Object? driverPublicId = _unchanged,
-          List<DriverVehicle>? vehicles,
-          Object? offer = _unchanged,
-          Object? acceptedOffer = _unchanged,
-          bool? loading,
-          bool? actionBusy,
-          bool? offerActionBusy,
-          bool? foreground,
-          String? locationMessage,
-          Object? locationProblem = _unchanged,
-          Object? lastLocationUpload = _unchanged,
-          Object? error = _unchanged,
-          Object? notice = _unchanged,
-          bool? unresolvedDecision,
-          bool? completedAwaitingSettlement}) =>
-      DriverState(
-          operatingStatus: identical(operatingStatus, _unchanged)
-              ? this.operatingStatus
-              : operatingStatus as String?,
-          approvalStatus: identical(approvalStatus, _unchanged)
-              ? this.approvalStatus
-              : approvalStatus as String?,
-          driverPublicId: identical(driverPublicId, _unchanged)
-              ? this.driverPublicId
-              : driverPublicId as String?,
-          vehicles: vehicles ?? this.vehicles,
-          offer:
-              identical(offer, _unchanged) ? this.offer : offer as DriverOffer?,
-          acceptedOffer: identical(acceptedOffer, _unchanged)
-              ? this.acceptedOffer
-              : acceptedOffer as DriverOffer?,
-          loading: loading ?? this.loading,
-          actionBusy: actionBusy ?? this.actionBusy,
-          offerActionBusy: offerActionBusy ?? this.offerActionBusy,
-          foreground: foreground ?? this.foreground,
-          locationMessage: locationMessage ?? this.locationMessage,
-          locationProblem: identical(locationProblem, _unchanged)
-              ? this.locationProblem
-              : locationProblem as DriverLocationProblem?,
-          lastLocationUpload: identical(lastLocationUpload, _unchanged)
-              ? this.lastLocationUpload
-              : lastLocationUpload as DateTime?,
-          error: identical(error, _unchanged) ? this.error : error as String?,
-          notice:
-              identical(notice, _unchanged) ? this.notice : notice as String?,
-          unresolvedDecision: unresolvedDecision ?? this.unresolvedDecision,
-          completedAwaitingSettlement:
-              completedAwaitingSettlement ?? this.completedAwaitingSettlement);
+      {Object? operatingStatus = _unchanged,
+      Object? approvalStatus = _unchanged,
+      Object? driverPublicId = _unchanged,
+      List<DriverVehicle>? vehicles,
+      Object? offer = _unchanged,
+      Object? acceptedOffer = _unchanged,
+      bool? loading,
+      bool? actionBusy,
+      bool? offerActionBusy,
+      bool? foreground,
+      String? locationMessage,
+      Object? locationProblem = _unchanged,
+      Object? lastLocationUpload = _unchanged,
+      Object? error = _unchanged,
+      Object? notice = _unchanged,
+      bool? unresolvedDecision,
+      bool? completedAwaitingSettlement}) {
+    final value = DriverState(
+        operatingStatus: identical(operatingStatus, _unchanged)
+            ? this.operatingStatus
+            : operatingStatus as String?,
+        approvalStatus: identical(approvalStatus, _unchanged)
+            ? this.approvalStatus
+            : approvalStatus as String?,
+        driverPublicId: identical(driverPublicId, _unchanged)
+            ? this.driverPublicId
+            : driverPublicId as String?,
+        vehicles: vehicles ?? this.vehicles,
+        offer:
+            identical(offer, _unchanged) ? this.offer : offer as DriverOffer?,
+        acceptedOffer: identical(acceptedOffer, _unchanged)
+            ? this.acceptedOffer
+            : acceptedOffer as DriverOffer?,
+        loading: loading ?? this.loading,
+        actionBusy: actionBusy ?? this.actionBusy,
+        offerActionBusy: offerActionBusy ?? this.offerActionBusy,
+        foreground: foreground ?? this.foreground,
+        locationMessage: locationMessage ?? this.locationMessage,
+        locationProblem: identical(locationProblem, _unchanged)
+            ? this.locationProblem
+            : locationProblem as DriverLocationProblem?,
+        lastLocationUpload: identical(lastLocationUpload, _unchanged)
+            ? this.lastLocationUpload
+            : lastLocationUpload as DateTime?,
+        error: identical(error, _unchanged) ? this.error : error as String?,
+        notice: identical(notice, _unchanged) ? this.notice : notice as String?,
+        unresolvedDecision: unresolvedDecision ?? this.unresolvedDecision,
+        completedAwaitingSettlement:
+            completedAwaitingSettlement ?? this.completedAwaitingSettlement);
+    return DriverState._feedback(
+        value,
+        identical(error, _unchanged) ? _errorWrite : Object(),
+        identical(notice, _unchanged) ? _noticeWrite : Object());
+  }
 }
 
 class DriverCubit extends Cubit<DriverState> {
   static const offerPollInterval = Duration(seconds: 2);
   static const locationHeartbeatInterval = Duration(seconds: 9);
   static const locationFreshness = Duration(seconds: 30);
+  static const _offlineNotice = 'Máy chủ đã xác nhận OFFLINE.';
+  static const _offlineGps = 'Đã ngừng gửi GPS khi tài xế OFFLINE.';
+  static const _staleGps = 'GPS quá 30 giây; đang chờ vị trí mới.';
 
   final DriverUseCases _useCases;
   final DriverLocationSource _location;
@@ -135,6 +167,25 @@ class DriverCubit extends Cubit<DriverState> {
   int _revision = 0;
   bool _tripChannelActive = false;
   DateTime? _lastUploadedSampleAt;
+  String? _locationFailure;
+  // A source owns the exact committed write token, not its message. Any
+  // independent writer changes that token atomically through DriverState.copy.
+  Object? _pollErrorOwner;
+  Object? _statusErrorOwner;
+  Object? _vehicleLoadErrorOwner;
+  Object? _vehicleActionErrorOwner;
+  Object? _bookingErrorOwner;
+  Object? _offlineNoticeOwner;
+  Object? _pauseNoticeOwner;
+  int _vehicleLoadRevision = 0;
+  int _statusRevision = 0;
+  int _resumeRevision = 0;
+  String? _pendingStatus;
+  String? _resumeStatus;
+  Completer<void>? _vehicleAction;
+  Timer? _activeResumeTimer;
+  Object? _activeResumeRun;
+  bool _checkingActiveResume = false;
 
   DriverCubit(
       {required DriverUseCases useCases,
@@ -163,6 +214,21 @@ class DriverCubit extends Cubit<DriverState> {
 
   int get _sessionId => _generation!;
 
+  Object? _clearError(Object? owner) =>
+      owner != null && identical(state._errorWrite, owner)
+          ? null
+          : DriverState._unchanged;
+
+  Object? _clearNotice(Object? owner) =>
+      owner != null && identical(state._noticeWrite, owner)
+          ? null
+          : DriverState._unchanged;
+
+  void _emitBookingError(DriverState next) {
+    emit(next);
+    _bookingErrorOwner = state._errorWrite;
+  }
+
   Future<void> initialize() async {
     if (isMock) {
       emit(state.copy(
@@ -171,8 +237,15 @@ class DriverCubit extends Cubit<DriverState> {
       return;
     }
     final revision = ++_revision;
-    _generation = (await _session.getSession()).generation;
-    emit(state.copy(loading: true, error: null));
+    _statusRevision++;
+    _resumeRevision++;
+    _pendingStatus = null;
+    _resumeStatus = null;
+    final snapshot = await _session.getSession();
+    if (isClosed || revision != _revision) return;
+    _generation = snapshot.generation;
+    if (!await _current(revision)) return;
+    emit(state.copy(loading: true, error: null, notice: null));
     try {
       final authenticatedUser = await _session.getUserPublicId();
       if (!await _current(revision)) return;
@@ -184,15 +257,21 @@ class DriverCubit extends Cubit<DriverState> {
             error: 'Tài khoản đã thay đổi. Mở lại màn hình tài xế.'));
         return;
       }
+      final loadRequest = ++_vehicleLoadRevision;
       try {
         final vehicles = await _useCases.vehicles(_sessionId);
         if (!await _current(revision)) return;
-        emit(state.copy(vehicles: vehicles, loading: false));
+        if (loadRequest == _vehicleLoadRevision) {
+          emit(state.copy(vehicles: vehicles, loading: false));
+        }
       } catch (error) {
         if (!await _current(revision)) return;
         // Vehicle listing is not a prerequisite for recovering an accepted
         // Booking; tracking/payment are independently authorized endpoints.
-        emit(state.copy(loading: false, error: _message(error)));
+        if (loadRequest == _vehicleLoadRevision) {
+          emit(state.copy(loading: false, error: _message(error)));
+          _vehicleLoadErrorOwner = state._errorWrite;
+        }
       }
       if (!await _current(revision)) return;
       final saved = await _acceptedStore.read(userPublicId);
@@ -277,15 +356,25 @@ class DriverCubit extends Cubit<DriverState> {
 
   Future<void> reloadVehicles() async {
     final revision = _revision;
+    final request = ++_vehicleLoadRevision;
+    final errorOwner = _vehicleLoadErrorOwner;
+    final errorAtStart = state._errorWrite;
     if (_generation == null || !await _current(revision)) return;
     try {
       final vehicles = await _useCases.vehicles(_sessionId);
-      if (await _current(revision)) {
-        emit(state.copy(vehicles: vehicles, error: null));
+      if (await _current(revision) && request == _vehicleLoadRevision) {
+        emit(state.copy(
+            vehicles: vehicles,
+            loading: false,
+            error: _clearError(errorOwner)));
       }
     } catch (error) {
-      if (await _current(revision)) {
-        emit(state.copy(error: _message(error)));
+      if (await _current(revision) && request == _vehicleLoadRevision) {
+        final writesError = identical(state._errorWrite, errorAtStart);
+        emit(state.copy(
+            loading: false,
+            error: writesError ? _message(error) : DriverState._unchanged));
+        if (writesError) _vehicleLoadErrorOwner = state._errorWrite;
       }
     }
   }
@@ -293,7 +382,11 @@ class DriverCubit extends Cubit<DriverState> {
   Future<void> addVehicle(VehicleDraft draft) async {
     if (state.actionBusy || _generation == null) return;
     final revision = _revision;
-    emit(state.copy(actionBusy: true, error: null));
+    final errorOwner = _vehicleActionErrorOwner;
+    final errorAtStart = state._errorWrite;
+    final action = Completer<void>();
+    _vehicleAction = action;
+    emit(state.copy(actionBusy: true));
     try {
       await _useCases.addVehicle(draft, _sessionId);
       if (!await _current(revision)) return;
@@ -302,19 +395,31 @@ class DriverCubit extends Cubit<DriverState> {
         emit(state.copy(
             vehicles: vehicles,
             actionBusy: false,
+            error: _clearError(errorOwner),
             notice: 'Đã thêm xe. Hãy kích hoạt xe trước khi trực tuyến.'));
       }
     } catch (error) {
       if (await _current(revision)) {
-        emit(state.copy(actionBusy: false, error: _message(error)));
+        final writesError = identical(state._errorWrite, errorAtStart);
+        emit(state.copy(
+            actionBusy: false,
+            error: writesError ? _message(error) : DriverState._unchanged));
+        if (writesError) _vehicleActionErrorOwner = state._errorWrite;
       }
+    } finally {
+      if (identical(_vehicleAction, action)) _vehicleAction = null;
+      action.complete();
     }
   }
 
   Future<void> activateVehicle(String publicId) async {
     if (state.actionBusy || _generation == null) return;
     final revision = _revision;
-    emit(state.copy(actionBusy: true, error: null));
+    final errorOwner = _vehicleActionErrorOwner;
+    final errorAtStart = state._errorWrite;
+    final action = Completer<void>();
+    _vehicleAction = action;
+    emit(state.copy(actionBusy: true));
     try {
       await _useCases.activateVehicle(publicId, _sessionId);
       if (!await _current(revision)) return;
@@ -323,71 +428,136 @@ class DriverCubit extends Cubit<DriverState> {
         emit(state.copy(
             vehicles: vehicles,
             actionBusy: false,
+            error: _clearError(errorOwner),
             notice: 'Xe đã được kích hoạt.'));
       }
     } catch (error) {
       if (await _current(revision)) {
-        emit(state.copy(actionBusy: false, error: _message(error)));
+        final writesError = identical(state._errorWrite, errorAtStart);
+        emit(state.copy(
+            actionBusy: false,
+            error: writesError ? _message(error) : DriverState._unchanged));
+        if (writesError) _vehicleActionErrorOwner = state._errorWrite;
       }
+    } finally {
+      if (identical(_vehicleAction, action)) _vehicleAction = null;
+      action.complete();
     }
   }
 
   Future<void> goOnline() async {
+    await _changeStatus('ONLINE');
+  }
+
+  Future<void> goOffline() async {
+    await _changeStatus('OFFLINE');
+  }
+
+  Future<bool> _changeStatus(String target, {bool revalidate = false}) async {
     if (state.actionBusy ||
         state.offerActionBusy ||
         state.unresolvedDecision ||
-        state.operatingStatus == 'BUSY' ||
         _generation == null ||
-        isMock) {
-      return;
+        isMock ||
+        state.operatingStatus == 'BUSY' ||
+        (target == 'OFFLINE' &&
+            !revalidate &&
+            state.operatingStatus != 'ONLINE')) {
+      return false;
     }
     final revision = _revision;
-    emit(state.copy(actionBusy: true, error: null));
+    final request = ++_statusRevision;
+    final errorAtStart = state._errorWrite;
+    final errorOwner = _statusErrorOwner;
+    final noticeAtStart = state._noticeWrite;
+    final offlineNotice = _offlineNoticeOwner;
+    final pauseNotice = _pauseNoticeOwner;
+    _pendingStatus = target;
+    if (target == 'OFFLINE') _stopForeground();
+    final activity = _activityRevision;
+    emit(state.copy(actionBusy: true));
     try {
-      final profile = await _useCases.setStatus('ONLINE', _sessionId);
-      if (!await _current(revision)) return;
+      final profile = await _useCases.setStatus(target, _sessionId);
+      if (!await _current(revision) ||
+          request != _statusRevision ||
+          activity != _activityRevision) {
+        return false;
+      }
+      _pendingStatus = null;
+      Object? notice = DriverState._unchanged;
+      var writesOfflineNotice = false;
+      if (profile.operatingStatus == 'ONLINE' &&
+          ((offlineNotice != null &&
+                  identical(state._noticeWrite, offlineNotice)) ||
+              (pauseNotice != null &&
+                  identical(state._noticeWrite, pauseNotice)))) {
+        notice = null;
+      } else if (target == 'OFFLINE' &&
+          profile.operatingStatus == 'OFFLINE' &&
+          identical(state._noticeWrite, noticeAtStart)) {
+        notice = _offlineNotice;
+        writesOfflineNotice = true;
+      }
+      if (target == 'OFFLINE' && profile.operatingStatus == 'OFFLINE') {
+        _locationFailure = null;
+      }
       emit(state.copy(
           operatingStatus: profile.operatingStatus,
-          approvalStatus: profile.approvalStatus,
-          driverPublicId: profile.publicId,
-          actionBusy: false));
+          approvalStatus: target == 'ONLINE'
+              ? profile.approvalStatus
+              : state.approvalStatus,
+          driverPublicId:
+              target == 'ONLINE' ? profile.publicId : state.driverPublicId,
+          actionBusy: false,
+          error: profile.operatingStatus == target
+              ? _clearError(errorOwner)
+              : DriverState._unchanged,
+          notice: notice,
+          offer: target == 'OFFLINE' ? null : DriverState._unchanged,
+          lastLocationUpload:
+              target == 'OFFLINE' ? null : DriverState._unchanged,
+          unresolvedDecision:
+              target == 'OFFLINE' ? false : state.unresolvedDecision,
+          locationMessage:
+              target == 'OFFLINE' && profile.operatingStatus == 'OFFLINE'
+                  ? _offlineGps
+                  : profile.operatingStatus == 'ONLINE' &&
+                          state.locationMessage == _offlineGps
+                      ? 'Chưa gửi GPS'
+                      : state.locationMessage));
+      if (profile.operatingStatus == target) _statusErrorOwner = null;
+      _resumeStatus = null;
+      if (writesOfflineNotice) _offlineNoticeOwner = state._noticeWrite;
       if (profile.operatingStatus == 'ONLINE' && state.foreground) {
         _startForeground();
         await _uploadLocation(revision);
       }
+      return profile.operatingStatus == target;
     } catch (error) {
-      if (await _current(revision)) {
-        emit(state.copy(actionBusy: false, error: _message(error)));
+      if (await _current(revision) &&
+          request == _statusRevision &&
+          activity == _activityRevision) {
+        final writesError = identical(state._errorWrite, errorAtStart) &&
+            (state.error == null || identical(errorAtStart, errorOwner));
+        emit(state.copy(
+            actionBusy: false,
+            error: writesError ? _message(error) : DriverState._unchanged));
+        if (writesError) _statusErrorOwner = state._errorWrite;
+        if (target == 'OFFLINE' &&
+            state.operatingStatus == 'ONLINE' &&
+            state.foreground) {
+          _startForeground();
+        }
       }
-    }
-  }
-
-  Future<void> goOffline() async {
-    if (state.actionBusy ||
-        state.offerActionBusy ||
-        state.unresolvedDecision ||
-        state.operatingStatus != 'ONLINE' ||
-        _generation == null) {
-      return;
-    }
-    _stopForeground();
-    final revision = _revision;
-    emit(state.copy(actionBusy: true, error: null));
-    try {
-      final profile = await _useCases.setStatus('OFFLINE', _sessionId);
-      if (!await _current(revision)) return;
-      emit(state.copy(
-          operatingStatus: profile.operatingStatus,
-          actionBusy: false,
-          offer: null,
-          lastLocationUpload: null,
-          unresolvedDecision: false,
-          notice: 'Máy chủ đã xác nhận OFFLINE.'));
-    } catch (error) {
-      if (!await _current(revision)) return;
-      emit(state.copy(actionBusy: false, error: _message(error)));
-      if (state.operatingStatus == 'ONLINE' && state.foreground) {
-        _startForeground();
+      return false;
+    } finally {
+      if (request == _statusRevision) {
+        _pendingStatus = null;
+        if (state.actionBusy &&
+            await _current(revision) &&
+            request == _statusRevision) {
+          emit(state.copy(actionBusy: false));
+        }
       }
     }
   }
@@ -423,6 +593,7 @@ class DriverCubit extends Cubit<DriverState> {
     }
     if (active) {
       _stopForeground();
+      unawaited(_startActiveResumeCheck());
     } else {
       _startBusyLocation();
     }
@@ -531,6 +702,7 @@ class DriverCubit extends Cubit<DriverState> {
   }
 
   void _stopForeground() {
+    _stopActiveResumeCheck();
     _activityRevision++;
     _pollTimer?.cancel();
     _locationTimer?.cancel();
@@ -538,8 +710,105 @@ class DriverCubit extends Cubit<DriverState> {
     _locationTimer = null;
   }
 
+  bool get _needsActiveResumeCheck =>
+      !isClosed &&
+      state.foreground &&
+      state.operatingStatus == 'BUSY' &&
+      _tripChannelActive &&
+      !state.completedAwaitingSettlement &&
+      state.acceptedOffer != null &&
+      state.driverPublicId != null &&
+      _pauseNoticeOwner != null &&
+      identical(state._noticeWrite, _pauseNoticeOwner);
+
+  void _stopActiveResumeCheck([Object? run]) {
+    if (run != null && !identical(run, _activeResumeRun)) return;
+    _activeResumeTimer?.cancel();
+    _activeResumeTimer = null;
+    _activeResumeRun = null;
+  }
+
+  Future<void> _startActiveResumeCheck() async {
+    _stopActiveResumeCheck();
+    if (!_needsActiveResumeCheck || _tripRepository == null) return;
+    final run = Object();
+    _activeResumeRun = run;
+    // Only while an owned pause notice awaits recovery. Never publish a
+    // second GPS stream; one REST read at a time checks server-confirmed GPS.
+    _activeResumeTimer = Timer.periodic(
+        heartbeatInterval, (_) => unawaited(_checkActiveResume(run)));
+    await _checkActiveResume(run);
+  }
+
+  Future<void> _checkActiveResume(Object run) async {
+    if (!identical(run, _activeResumeRun) || _checkingActiveResume) return;
+    if (!_needsActiveResumeCheck) {
+      _stopActiveResumeCheck(run);
+      return;
+    }
+    final revision = _revision;
+    final attempt = _resumeRevision;
+    final activity = _activityRevision;
+    final booking = state.acceptedOffer!.bookingPublicId;
+    final driver = state.driverPublicId;
+    final notice = _pauseNoticeOwner;
+    _checkingActiveResume = true;
+    try {
+      if (!await _current(revision)) {
+        _stopActiveResumeCheck(run);
+        return;
+      }
+      if (!identical(run, _activeResumeRun) || !_needsActiveResumeCheck) return;
+      final tracking = await _tripRepository!.tracking(booking, _sessionId);
+      if (!await _current(revision)) {
+        _stopActiveResumeCheck(run);
+        return;
+      }
+      if (!identical(run, _activeResumeRun) ||
+          attempt != _resumeRevision ||
+          activity != _activityRevision ||
+          !_needsActiveResumeCheck ||
+          state.acceptedOffer?.bookingPublicId != booking ||
+          state.driverPublicId != driver) {
+        return;
+      }
+      final latitude = tracking.latitude;
+      final longitude = tracking.longitude;
+      final sampled = tracking.locationUpdatedAt;
+      final age =
+          sampled == null ? null : _now().toUtc().difference(sampled.toUtc());
+      if (tracking.bookingPublicId == booking &&
+          tracking.driverPublicId == driver &&
+          tracking.allowsLiveLocation &&
+          latitude != null &&
+          latitude.isFinite &&
+          latitude >= -90 &&
+          latitude <= 90 &&
+          longitude != null &&
+          longitude.isFinite &&
+          longitude >= -180 &&
+          longitude <= 180 &&
+          sampled != null &&
+          sampled.millisecondsSinceEpoch > 0 &&
+          !age!.isNegative &&
+          age < locationFreshness) {
+        emit(state.copy(notice: _clearNotice(notice)));
+        _stopActiveResumeCheck(run);
+      }
+    } catch (error) {
+      // Failed reconciliation never turns a connected socket into GPS proof.
+      if (_authError(error) ||
+          error is ServerException && error.statusCode == 404) {
+        _stopActiveResumeCheck(run);
+      }
+    } finally {
+      _checkingActiveResume = false;
+    }
+  }
+
   Future<void> _uploadLocation(int revision) async {
     final activityRevision = _activityRevision;
+    final pauseNotice = _pauseNoticeOwner;
     if (_uploading ||
         !state.foreground ||
         state.completedAwaitingSettlement ||
@@ -548,6 +817,7 @@ class DriverCubit extends Cubit<DriverState> {
       return;
     }
     _uploading = true;
+    var uploadStarted = false;
     try {
       final point = await _location.current();
       if (!await _current(revision) ||
@@ -575,16 +845,26 @@ class DriverCubit extends Cubit<DriverState> {
               'ageMs=${age?.inMilliseconds} '
               'operating=${state.operatingStatus} tripChannel=$_tripChannelActive');
         }
-        emit(state.copy(
-            locationMessage: 'GPS chưa có mẫu vị trí mới; đang chờ cập nhật.'));
+        if (!_hasFreshLocationUpload && _locationFailure == null) {
+          emit(state.copy(
+              offer: null,
+              locationMessage: state.lastLocationUpload != null ||
+                      rejection == 'expired_sample'
+                  ? _staleGps
+                  : rejection == 'future_sample'
+                      ? 'Thời gian mẫu GPS không hợp lệ; đang chờ vị trí mới.'
+                      : 'GPS chưa có mẫu vị trí mới; đang chờ cập nhật.'));
+        }
         if (state.operatingStatus == 'ONLINE') await pollOnce();
         return;
       }
+      uploadStarted = true;
       await _useCases.uploadLocation(point, _sessionId);
       if (!await _current(revision) || activityRevision != _activityRevision) {
         return;
       }
       _lastUploadedSampleAt = sampledAt;
+      _locationFailure = null;
       if (kDebugMode) {
         debugPrint('GoMoveGPS source=profile-REST result=sent '
             'ageMs=${age!.inMilliseconds} '
@@ -593,20 +873,23 @@ class DriverCubit extends Cubit<DriverState> {
       emit(state.copy(
           lastLocationUpload: _now(),
           locationProblem: null,
+          notice: _clearNotice(pauseNotice),
           locationMessage: point.approximate
               ? 'Đã gửi GPS gần đúng; có thể giảm khả năng nhận chuyến.'
-              : 'GPS mới đã gửi đến máy chủ.',
-          error: null));
+              : 'GPS mới đã gửi đến máy chủ.'));
       if (state.operatingStatus == 'ONLINE') await pollOnce();
     } on DriverLocationException catch (error) {
       if (kDebugMode) {
         debugPrint('GoMoveGPS source=profile-REST result=skipped '
             'reason=location_${error.problem.name}');
       }
-      if (await _current(revision)) {
+      if (await _current(revision) &&
+          state.foreground &&
+          activityRevision == _activityRevision) {
+        _locationFailure = _locationMessage(error.problem);
         emit(state.copy(
             locationProblem: error.problem,
-            locationMessage: _locationMessage(error.problem),
+            locationMessage: _locationFailure,
             lastLocationUpload: null,
             offer: null));
       }
@@ -615,9 +898,16 @@ class DriverCubit extends Cubit<DriverState> {
         debugPrint('GoMoveGPS source=profile-REST result=failed '
             'errorType=${error.runtimeType}');
       }
-      if (await _current(revision)) {
+      if (await _current(revision) &&
+          state.foreground &&
+          activityRevision == _activityRevision) {
+        _locationFailure = uploadStarted
+            ? 'Chưa gửi được GPS đến máy chủ. ${_message(error)}'
+            : error is TimeoutException
+                ? 'Chưa nhận được mẫu GPS từ thiết bị. Đang chờ cập nhật.'
+                : 'Không lấy được GPS từ thiết bị. ${_message(error)}';
         emit(state.copy(
-            locationMessage: _message(error),
+            locationMessage: _locationFailure,
             lastLocationUpload: null,
             offer: null));
         if (_authError(error)) _stopForeground();
@@ -627,9 +917,20 @@ class DriverCubit extends Cubit<DriverState> {
     }
   }
 
+  bool get _hasFreshLocationUpload {
+    final uploaded = state.lastLocationUpload;
+    if (uploaded == null) return false;
+    // Preserve the existing eligibility deadline from the last confirmed PUT.
+    final age = _now().toUtc().difference(uploaded.toUtc());
+    return !age.isNegative && age < locationFreshness;
+  }
+
   Future<void> pollOnce() async {
     final revision = _revision;
     final offerRevision = _offerRevision;
+    final activityRevision = _activityRevision;
+    final errorOwner = _pollErrorOwner;
+    final errorAtStart = state._errorWrite;
     if (_polling ||
         _generation == null ||
         !state.foreground ||
@@ -639,11 +940,12 @@ class DriverCubit extends Cubit<DriverState> {
         !await _current(revision)) {
       return;
     }
-    final last = state.lastLocationUpload;
-    if (last == null || _now().difference(last) >= locationFreshness) {
+    if (!_hasFreshLocationUpload) {
       emit(state.copy(
           offer: null,
-          locationMessage: 'GPS quá 30 giây; đang chờ vị trí mới.'));
+          locationMessage: state.lastLocationUpload == null
+              ? state.locationMessage
+              : _staleGps));
       return;
     }
     _polling = true;
@@ -652,6 +954,7 @@ class DriverCubit extends Cubit<DriverState> {
       if (!await _current(revision) ||
           !state.foreground ||
           state.operatingStatus != 'ONLINE' ||
+          activityRevision != _activityRevision ||
           offerRevision != _offerRevision ||
           state.unresolvedDecision ||
           state.offerActionBusy) {
@@ -660,15 +963,22 @@ class DriverCubit extends Cubit<DriverState> {
       final fresh = offers.where((offer) => _now().isBefore(offer.expiresAt));
       emit(state.copy(
           offer: fresh.isEmpty ? null : fresh.first,
-          error: null,
+          error: _clearError(errorOwner),
           notice: fresh.isEmpty && state.offer != null
               ? 'Đề nghị không còn khả dụng hoặc đã hết hạn.'
-              : state.notice));
+              : DriverState._unchanged));
+      _pollErrorOwner = null;
     } catch (error) {
-      if (await _current(revision)) {
+      if (await _current(revision) &&
+          state.foreground &&
+          state.operatingStatus == 'ONLINE' &&
+          activityRevision == _activityRevision &&
+          offerRevision == _offerRevision) {
+        final writesError = identical(state._errorWrite, errorAtStart);
         emit(state.copy(
-            error: _message(error),
+            error: writesError ? _message(error) : DriverState._unchanged,
             offer: _authError(error) ? null : state.offer));
+        if (writesError) _pollErrorOwner = state._errorWrite;
         if (_authError(error)) _stopForeground();
       }
     } finally {
@@ -688,12 +998,13 @@ class DriverCubit extends Cubit<DriverState> {
     }
     final revision = _revision;
     _offerRevision++;
-    emit(state.copy(offerActionBusy: true, error: null));
+    emit(state.copy(
+        offerActionBusy: true, error: _clearError(_bookingErrorOwner)));
     if (accept) {
       final driverId = state.driverPublicId;
       if (driverId == null || !await _current(revision)) {
         if (await _current(revision)) {
-          emit(state.copy(
+          _emitBookingError(state.copy(
               offerActionBusy: false, error: 'Chưa xác minh ID tài xế.'));
         }
         return;
@@ -706,7 +1017,7 @@ class DriverCubit extends Cubit<DriverState> {
             AcceptedBookingRecord(driverId, offer, pendingAcceptance: true));
       } catch (_) {
         if (await _current(revision)) {
-          emit(state.copy(
+          _emitBookingError(state.copy(
               offerActionBusy: false,
               error: 'Không lưu được ý định nhận chuyến; chưa gửi yêu cầu.'));
           if (state.foreground && state.operatingStatus == 'ONLINE') {
@@ -745,7 +1056,7 @@ class DriverCubit extends Cubit<DriverState> {
     } catch (error) {
       if (!await _current(revision)) return;
       if (accept) {
-        emit(state.copy(
+        _emitBookingError(state.copy(
             offerActionBusy: false,
             unresolvedDecision: true,
             error:
@@ -764,14 +1075,15 @@ class DriverCubit extends Cubit<DriverState> {
         await pollOnce();
       } else if (error is NetworkException ||
           error is ServerException && error.statusCode == 503) {
-        emit(state.copy(
+        _emitBookingError(state.copy(
             offerActionBusy: false,
             unresolvedDecision: true,
             error:
                 'Chưa xác định kết quả do lỗi mạng/máy chủ. Không gửi lại quyết định.'));
         await reconcile();
       } else {
-        emit(state.copy(offerActionBusy: false, error: _message(error)));
+        _emitBookingError(
+            state.copy(offerActionBusy: false, error: _message(error)));
         if (_authError(error)) _stopForeground();
       }
     }
@@ -781,7 +1093,7 @@ class DriverCubit extends Cubit<DriverState> {
       {bool completed = false}) async {
     final driverId = state.driverPublicId;
     if (driverId == null) {
-      emit(state.copy(
+      _emitBookingError(state.copy(
           offerActionBusy: false,
           unresolvedDecision: true,
           error:
@@ -804,7 +1116,7 @@ class DriverCubit extends Cubit<DriverState> {
       if (!await _current(revision)) return;
     } catch (_) {
       if (await _current(revision)) {
-        emit(state.copy(
+        _emitBookingError(state.copy(
             error: 'Đã nhận chuyến nhưng không lưu được thông tin '
                 'bàn giao trên thiết bị. Ghi lại Booking UUID trước khi thoát.'));
       }
@@ -863,7 +1175,7 @@ class DriverCubit extends Cubit<DriverState> {
       }
       // A missing active offer alone cannot prove whether a decision committed.
       if (await _current(revision)) {
-        emit(state.copy(
+        _emitBookingError(state.copy(
             error:
                 'Chưa xác minh được kết quả. Kiểm tra lại sau; không gửi lại quyết định.'));
       }
@@ -878,7 +1190,7 @@ class DriverCubit extends Cubit<DriverState> {
         return;
       }
       if (await _current(revision)) {
-        emit(state.copy(
+        _emitBookingError(state.copy(
             error: 'Không thể xác minh kết quả. Không gửi lại quyết định.'));
         if (_authError(error)) _stopForeground();
       }
@@ -889,6 +1201,7 @@ class DriverCubit extends Cubit<DriverState> {
 
   Future<void> _resolveIntent(
       DriverOffer offer, int revision, String notice) async {
+    final errorOwner = _bookingErrorOwner;
     try {
       final saved = await _acceptedStore.read(userPublicId);
       if (!await _current(revision)) return;
@@ -903,7 +1216,7 @@ class DriverCubit extends Cubit<DriverState> {
           offer: null,
           offerActionBusy: false,
           unresolvedDecision: false,
-          error: null,
+          error: _clearError(errorOwner),
           notice: notice));
       if (state.foreground && state.operatingStatus == 'ONLINE') {
         _startForeground();
@@ -912,7 +1225,7 @@ class DriverCubit extends Cubit<DriverState> {
     } catch (_) {
       if (await _current(revision)) {
         _stopForeground();
-        emit(state.copy(
+        _emitBookingError(state.copy(
             offerActionBusy: false,
             unresolvedDecision: true,
             error:
@@ -922,31 +1235,59 @@ class DriverCubit extends Cubit<DriverState> {
   }
 
   void pause() {
+    final pending = _pendingStatus;
+    _resumeStatus = pending ?? state.operatingStatus ?? _resumeStatus;
+    _pendingStatus = null;
+    _statusRevision++;
+    _resumeRevision++;
     _stopForeground();
     if (!isClosed) {
       emit(state.copy(
           foreground: false,
+          actionBusy: pending == null ? state.actionBusy : false,
+          operatingStatus: pending == null ? DriverState._unchanged : null,
           offer: state.unresolvedDecision || state.offerActionBusy
               ? state.offer
               : null,
           notice:
               'Ứng dụng tạm dừng: GPS có thể hết hạn, không nhận đề nghị mới.'));
+      _pauseNoticeOwner = state._noticeWrite;
     }
   }
 
   Future<void> resume() async {
     if (isClosed) return;
     final revision = _revision;
-    if (!await _current(revision)) return;
-    emit(state.copy(foreground: true));
+    final attempt = ++_resumeRevision;
+    if (!await _current(revision) || attempt != _resumeRevision) return;
+    final target = _resumeStatus ?? state.operatingStatus;
+    emit(state.copy(
+        foreground: true,
+        operatingStatus: target == 'ONLINE' || target == 'OFFLINE'
+            ? null
+            : DriverState._unchanged));
+    while (_vehicleAction != null) {
+      await _vehicleAction!.future;
+      if (!await _current(revision) ||
+          attempt != _resumeRevision ||
+          !state.foreground) {
+        return;
+      }
+    }
     if (state.unresolvedDecision) {
       await reconcile();
-    } else if (state.operatingStatus == 'ONLINE') {
-      // No GET /drivers/me: revalidate ONLINE by asking the server again.
-      await goOnline();
-      if (state.unresolvedDecision) await reconcile();
-    } else if (state.operatingStatus == 'BUSY') {
-      if (!_tripChannelActive) {
+    } else if (target == 'ONLINE' || target == 'OFFLINE') {
+      await _changeStatus(target!, revalidate: true);
+      if (await _current(revision) &&
+          attempt == _resumeRevision &&
+          state.unresolvedDecision) {
+        await reconcile();
+      }
+    } else if (target == 'BUSY') {
+      _resumeStatus = null;
+      if (_tripChannelActive) {
+        await _startActiveResumeCheck();
+      } else {
         _startBusyLocation();
         await _uploadLocation(revision);
       }
@@ -959,6 +1300,8 @@ class DriverCubit extends Cubit<DriverState> {
   @override
   Future<void> close() async {
     _revision++;
+    _statusRevision++;
+    _resumeRevision++;
     _stopForeground();
     await super.close();
   }

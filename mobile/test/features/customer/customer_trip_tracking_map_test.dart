@@ -1,18 +1,33 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart' show Factory;
 import 'package:flutter/gestures.dart' show OneSequenceGestureRecognizer;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gomove_mobile/core/theme/app_theme.dart';
 import 'package:gomove_mobile/features/customer/presentation/bloc/booking_status_cubit.dart';
 import 'package:gomove_mobile/features/customer/domain/models/quote.dart';
 import 'package:gomove_mobile/features/customer/presentation/widgets/customer_trip_tracking_map.dart';
+import 'package:gomove_mobile/features/customer/presentation/widgets/customer_map_source.dart';
 import 'package:gomove_mobile/features/trip/data/trip_realtime_client.dart';
 import 'package:gomove_mobile/features/trip/domain/models/road_route.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 
+DateTime? _clockStart;
+Duration _elapsed(WidgetTester tester) {
+  _clockStart ??= tester.binding.clock.now();
+  return tester.binding.clock.now().difference(_clockStart!);
+}
+
+DateTime _wallNow(WidgetTester tester) =>
+    DateTime.utc(2026, 10, 16, 10, 11, 11).add(_elapsed(tester));
+
 void main() {
+  setUpAll(_loadTrackingTestFonts);
+  setUp(() => _clockStart = null);
   final firstFix = DateTime.utc(2026, 10, 16, 10, 11);
   final newerFix = firstFix.add(const Duration(seconds: 5));
 
@@ -116,6 +131,8 @@ void main() {
           home: Scaffold(
               body: SizedBox.expand(
         child: CustomerTripTrackingMap(
+          motionElapsed: () => _elapsed(tester),
+          motionNow: () => _wallNow(tester),
           bookingPublicId: 'booking-radar',
           pickup: const Coordinates(21.0287, 105.8524),
           searchingForDriver: searching,
@@ -150,6 +167,7 @@ void main() {
     final first = CustomerLiveLocation(21.1, 105.1, 4, 90, firstFix);
     final stationary = CustomerLiveLocation(21.1, 105.1, 3, 90, newerFix);
     final motion = CustomerMarkerMotion(
+        elapsed: () => _elapsed(tester),
         onPosition: points.add,
         now: () => newerFix.add(const Duration(seconds: 1)));
     addTearDown(motion.dispose);
@@ -167,6 +185,7 @@ void main() {
     final first = CustomerLiveLocation(21.1, 105.1, 4, 90, firstFix);
     final newer = CustomerLiveLocation(21.1001, 105.1001, 3, 95, newerFix);
     final motion = CustomerMarkerMotion(
+        elapsed: () => _elapsed(tester),
         onPosition: points.add,
         now: () => newerFix.add(const Duration(seconds: 1)));
     addTearDown(motion.dispose);
@@ -190,7 +209,7 @@ void main() {
     expect(points.length, 4, reason: 'No timer or native writes while idle');
   });
 
-  testWidgets('Newer fix interrupts interpolation and snaps to latest',
+  testWidgets('Newer fix retargets from the rendered point without jumping',
       (tester) async {
     final points = <LatLng>[];
     final first = CustomerLiveLocation(21.1, 105.1, 4, 90, firstFix);
@@ -198,13 +217,18 @@ void main() {
     final latest = CustomerLiveLocation(
         21.1002, 105.1002, 3, 95, newerFix.add(const Duration(seconds: 5)));
     final motion = CustomerMarkerMotion(
+        elapsed: () => _elapsed(tester),
         onPosition: points.add,
         now: () => latest.updatedAt.add(const Duration(seconds: 1)));
     addTearDown(motion.dispose);
     motion.accept(first, animate: true);
     motion.accept(newer, animate: true);
     await tester.pump(CustomerMarkerMotion.tick);
+    final rendered = points.last;
     motion.accept(latest, animate: true);
+    expect(points.last, rendered);
+    expect(motion.isAnimating, isTrue);
+    await tester.pump(CustomerMarkerMotion.duration);
     expect(points.last.latitude, latest.latitude);
     expect(points.last.longitude, closeTo(latest.longitude, 1e-9));
     expect(motion.isAnimating, isFalse);
@@ -221,6 +245,7 @@ void main() {
     final first = CustomerLiveLocation(21.1, 105.1, 4, 90, firstFix);
     final newer = CustomerLiveLocation(21.1001, 105.1001, 3, 95, newerFix);
     final motion = CustomerMarkerMotion(
+        elapsed: () => _elapsed(tester),
         onPosition: points.add,
         now: () => newerFix.add(const Duration(seconds: 1)));
     motion.accept(first, animate: false);
@@ -253,6 +278,8 @@ void main() {
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
         body: CustomerTripTrackingMap(
+          motionElapsed: () => _elapsed(tester),
+          motionNow: () => _wallNow(tester),
           location: CustomerLiveLocation(21.1, 105.1, 4, 90, firstFix),
           connectionState: TripRealtimeConnectionState.failed,
         ),
@@ -283,6 +310,8 @@ void main() {
       await tester.pumpWidget(MaterialApp(
         home: Scaffold(
           body: CustomerTripTrackingMap(
+            motionElapsed: () => _elapsed(tester),
+            motionNow: () => _wallNow(tester),
             location: location,
             connectionState: TripRealtimeConnectionState.connected,
           ),
@@ -304,6 +333,8 @@ void main() {
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
         body: CustomerTripTrackingMap(
+          motionElapsed: () => _elapsed(tester),
+          motionNow: () => _wallNow(tester),
           location:
               CustomerLiveLocation(double.nan, 105.1, null, null, firstFix),
           connectionState: TripRealtimeConnectionState.disconnected,
@@ -332,6 +363,8 @@ void main() {
         home: Scaffold(
           body: SizedBox.expand(
             child: CustomerTripTrackingMap(
+              motionElapsed: () => _elapsed(tester),
+              motionNow: () => _wallNow(tester),
               bookingPublicId: bookingId,
               fullBleed: true,
               location: location,
@@ -422,6 +455,8 @@ void main() {
         home: Scaffold(
           body: SizedBox.expand(
             child: CustomerTripTrackingMap(
+              motionElapsed: () => _elapsed(tester),
+              motionNow: () => _wallNow(tester),
               bookingPublicId: 'booking-a',
               fullBleed: true,
               location: location,
@@ -637,6 +672,7 @@ void main() {
         home: Scaffold(
           body: SizedBox.expand(
             child: CustomerTripTrackingMap(
+              motionElapsed: () => _elapsed(tester),
               bookingPublicId: 'booking-a',
               fullBleed: true,
               enableMarkerInterpolation: true,
@@ -682,6 +718,526 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     expect(positions.length, afterStyle);
   });
+  testWidgets(
+      'GPS expires at 20s without a frame and keeps native map and route',
+      (tester) async {
+    _installFakeMapLibre(tester);
+    final stamp = _wallNow(tester);
+    final route = RoadRoute.fromJson({
+      'sourceQuotePublicId': 'quote-a',
+      'bookingPublicId': 'booking-a',
+      'availability': 'AVAILABLE',
+      'geometryFormat': 'GEOJSON_LINESTRING',
+      'geometry': {
+        'type': 'LineString',
+        'coordinates': [
+          [105.85, 21.03],
+          [105.86, 21.04]
+        ]
+      },
+    });
+    final stale = <bool>[];
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(21.03, 105.85, 4, 90, stamp),
+        route: route,
+        onStale: stale.add);
+    final native = tester.state(find.byType(MapLibreMap));
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final controller = _RecordingTrackingController();
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    expect(controller.circles, hasLength(1));
+    await tester.pump(const Duration(seconds: 19));
+    expect(controller.circles, hasLength(1));
+    await tester.pump(const Duration(seconds: 1));
+    await _flushNativeWrites(tester);
+    expect(controller.circles, isEmpty);
+    expect(controller.symbols, isEmpty);
+    expect(controller.circleRemovals, 1);
+    expect(controller.lines, hasLength(1));
+    expect(stale.last, isTrue);
+    expect(find.text('Vị trí tài xế chưa được cập nhật.'), findsOneWidget);
+    expect(find.text('Tìm tài xế'), findsNothing);
+    expect(tester.state(find.byType(MapLibreMap)), same(native));
+    controller.simulateStyleReload();
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    expect(controller.circles, isEmpty);
+    expect(controller.symbols, isEmpty);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  for (final scenario in [
+    ('tablet portrait', const Size(800, 1280), 1.0),
+    ('tablet landscape', const Size(1280, 800), 1.0),
+    ('small phone', const Size(320, 568), 1.0),
+    ('small phone 200% text', const Size(320, 568), 2.0),
+    ('small phone 300% text', const Size(320, 568), 3.0),
+  ]) {
+    testWidgets(
+        'Compact GPS warning fits ${scenario.$1} and clears on fresh GPS',
+        (tester) async {
+      tester.view.physicalSize = scenario.$2;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      _installFakeMapLibre(tester);
+      const message = 'Vị trí tài xế chưa được cập nhật.';
+      final warning = find.byKey(const ValueKey('customer-gps-stale-warning'));
+      final route = _warningTestRoute();
+      await _showNativeTrackingMap(tester,
+          location:
+              CustomerLiveLocation(21.03, 105.85, 4, 90, _wallNow(tester)),
+          route: route,
+          theme: AppTheme.light,
+          textScale: scenario.$3);
+      final native = tester.state(find.byType(MapLibreMap));
+      final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+      map.onMapCreated!(_RecordingTrackingController());
+      map.onStyleLoadedCallback!();
+      await _flushNativeWrites(tester);
+      expect(warning, findsNothing);
+
+      await tester.pump(CustomerLiveLocation.displayTtl);
+      await _flushNativeWrites(tester);
+      expect(warning, findsOneWidget);
+      expect(find.text(message), findsOneWidget);
+      expect(find.byIcon(Icons.warning_amber_rounded), findsOneWidget);
+      final mapRect = tester.getRect(find.byType(MapLibreMap));
+      final warningRect = tester.getRect(warning);
+      expect(warningRect.left, closeTo(mapRect.left + 12, .1));
+      expect(warningRect.top, greaterThanOrEqualTo(mapRect.top + 112));
+      expect(warningRect.right, lessThanOrEqualTo(mapRect.right - 12));
+      expect(warningRect.bottom, lessThanOrEqualTo(mapRect.bottom));
+      if (scenario.$2.width >= 800) {
+        expect(warningRect.width, closeTo(scenario.$2.width * .25, .1));
+      }
+      final routeButton = find.ancestor(
+          of: find.text('Xem tuyến'), matching: find.byType(TextButton));
+      expect(routeButton.hitTestable(), findsOneWidget);
+      expect(warningRect.overlaps(tester.getRect(routeButton)), isFalse);
+      expect(
+          warningRect.overlaps(
+              tester.getRect(find.text(CustomerMapSource.visibleAttribution))),
+          isFalse);
+      final paragraph =
+          tester.renderObject<RenderParagraph>(find.text(message));
+      final text = TextPainter(
+          text: paragraph.text,
+          textDirection: TextDirection.ltr,
+          textScaler: TextScaler.linear(scenario.$3))
+        ..layout(maxWidth: paragraph.size.width);
+      expect(text.computeLineMetrics().length, lessThanOrEqualTo(3),
+          reason: 'The whole message must fit without truncation.');
+      text.dispose();
+      expect(tester.takeException(), isNull);
+
+      await _showNativeTrackingMap(tester,
+          location:
+              CustomerLiveLocation(21.0301, 105.8501, 4, 95, _wallNow(tester)),
+          route: route,
+          theme: AppTheme.light,
+          textScale: scenario.$3);
+      await _flushNativeWrites(tester);
+      expect(warning, findsNothing);
+      expect(tester.state(find.byType(MapLibreMap)), same(native));
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets('Compact GPS warning passes taps and drags through to the map',
+      (tester) async {
+    _installFakeMapLibre(tester);
+    var taps = 0;
+    var drags = 0;
+    MapLibrePlatform.createInstance =
+        () => _InteractiveTrackingPlatform(() => taps++, (_) => drags++);
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(21.03, 105.85, 4, 90, _wallNow(tester)),
+        route: _warningTestRoute());
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final controller = _RecordingTrackingController();
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    await tester.pump(CustomerLiveLocation.displayTtl);
+    await _flushNativeWrites(tester);
+    final warning = find.byKey(const ValueKey('customer-gps-stale-warning'));
+    final center = tester.getCenter(warning);
+    await tester.tapAt(center);
+    expect(taps, 1);
+    await tester.dragFrom(center, const Offset(0, 40));
+    expect(drags, greaterThan(0));
+    final cameraMoves = controller.cameraMoves;
+    await tester.tap(find.text('Xem tuyến'));
+    await tester.pump();
+    expect(controller.cameraMoves, cameraMoves + 1);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('New fix replaces the deadline and the old timer cannot erase it',
+      (tester) async {
+    _installFakeMapLibre(tester);
+    final first = CustomerLiveLocation(21.03, 105.85, 4, 90, _wallNow(tester));
+    await _showNativeTrackingMap(tester, location: first);
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final controller = _RecordingTrackingController();
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    await tester.pump(const Duration(seconds: 10));
+    await _showNativeTrackingMap(tester,
+        location:
+            CustomerLiveLocation(21.0301, 105.8501, 4, 95, _wallNow(tester)));
+    await tester.pump(const Duration(seconds: 10));
+    await _flushNativeWrites(tester);
+    expect(controller.circles, hasLength(1));
+    expect(find.text('Vị trí tài xế chưa được cập nhật.'), findsNothing);
+    await tester.pump(const Duration(seconds: 10));
+    await _flushNativeWrites(tester);
+    expect(controller.circles, isEmpty);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Unknown or over-100m accuracy cannot start interpolation',
+      (tester) async {
+    for (final accuracy in <double?>[null, 101]) {
+      final points = <LatLng>[];
+      final first = CustomerLiveLocation(21.03, 105.85, 4, 90, firstFix);
+      final next =
+          CustomerLiveLocation(21.0301, 105.8501, accuracy, 95, newerFix);
+      final motion = CustomerMarkerMotion(
+          onPosition: points.add,
+          now: () => newerFix,
+          elapsed: () => _elapsed(tester));
+      motion.accept(first, animate: false);
+      motion.accept(next, animate: true);
+      expect(motion.isAnimating, isFalse);
+      expect(points.last, const LatLng(21.0301, 105.8501));
+      motion.dispose();
+      expect(
+          CustomerMarkerMotion.canInterpolate(
+              next,
+              CustomerLiveLocation(21.0302, 105.8502, 4, 95,
+                  newerFix.add(const Duration(seconds: 1))),
+              newerFix.add(const Duration(seconds: 1))),
+          isFalse);
+    }
+  });
+
+  testWidgets('A delayed tick uses elapsed time and lands on the real endpoint',
+      (tester) async {
+    var elapsed = Duration.zero;
+    final points = <LatLng>[];
+    final motion = CustomerMarkerMotion(
+        onPosition: points.add, now: () => newerFix, elapsed: () => elapsed);
+    motion.accept(CustomerLiveLocation(21.03, 105.85, 4, 350, firstFix),
+        animate: false);
+    motion.accept(CustomerLiveLocation(21.0301, 105.8501, 4, 10, newerFix),
+        animate: true);
+    elapsed = const Duration(milliseconds: 900);
+    await tester.pump(CustomerMarkerMotion.tick);
+    expect(points, hasLength(2));
+    expect(points.last, const LatLng(21.0301, 105.8501));
+    expect(motion.isAnimating, isFalse);
+    await tester.pump(const Duration(seconds: 1));
+    expect(points, hasLength(2));
+    motion.dispose();
+  });
+
+  testWidgets('Retarget keeps the currently rendered bearing on the short arc',
+      (tester) async {
+    final headings = <double?>[];
+    final points = <LatLng>[];
+    final motion = CustomerMarkerMotion(
+        onPosition: points.add,
+        onBearing: headings.add,
+        now: () => newerFix.add(const Duration(seconds: 5)),
+        elapsed: () => _elapsed(tester));
+    motion.accept(CustomerLiveLocation(21.03, 105.85, 4, 350, firstFix),
+        animate: false);
+    motion.accept(CustomerLiveLocation(21.0301, 105.8501, 4, 10, newerFix),
+        animate: true);
+    await tester.pump(CustomerMarkerMotion.tick);
+    final visual = points.last;
+    final bearing = headings.last;
+    motion.accept(
+        CustomerLiveLocation(
+            21.0302, 105.8502, 4, 20, newerFix.add(const Duration(seconds: 5))),
+        animate: true);
+    expect(points.last, visual);
+    expect(headings.last, bearing);
+    await tester.pump(CustomerMarkerMotion.duration);
+    expect(headings.last, 20);
+    expect(points.last, const LatLng(21.0302, 105.8502));
+    motion.dispose();
+  });
+
+  testWidgets(
+      'Stationary heading writes only symbol; identical samples write nothing',
+      (tester) async {
+    _installFakeMapLibre(tester);
+    final stamp = _wallNow(tester);
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(21.03, 105.85, 4, 90, stamp));
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final controller = _RecordingTrackingController();
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(
+            21.03, 105.85, 4, 95, stamp.add(const Duration(seconds: 1))));
+    await _flushNativeWrites(tester);
+    expect(controller.circleUpdates, 0);
+    expect(controller.symbolUpdates, 1);
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(
+            21.03, 105.85, 4, 95, stamp.add(const Duration(seconds: 2))));
+    await _flushNativeWrites(tester);
+    expect(controller.circleUpdates, 0);
+    expect(controller.symbolUpdates, 1);
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(
+            21.03, 105.85, 4, null, stamp.add(const Duration(seconds: 3))));
+    await _flushNativeWrites(tester);
+    expect(controller.circleUpdates, 0);
+    expect(controller.symbolRemovals, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Burst GPS is latest-wins with one native operation in flight',
+      (tester) async {
+    _installFakeMapLibre(tester);
+    final stamp = _wallNow(tester).subtract(const Duration(seconds: 10));
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(21.03, 105.85, 4, 90, stamp));
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final controller = _RecordingTrackingController();
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    controller.delayCircleUpdate = Completer<void>();
+    for (var i = 1; i <= 100; i++) {
+      await _showNativeTrackingMap(tester,
+          location: CustomerLiveLocation(21.03 + i * .000001, 105.85, 4, 90,
+              stamp.add(Duration(milliseconds: i * 10))));
+    }
+    expect(controller.circleUpdates, 1);
+    controller.delayCircleUpdate!.complete();
+    await _flushNativeWrites(tester);
+    expect(controller.circleUpdates, lessThanOrEqualTo(2));
+    expect(controller.symbolUpdates, lessThanOrEqualTo(2));
+    expect(controller.circleAdds, 1);
+    expect(controller.symbolAdds, 1);
+    expect(controller.circles.single.options.geometry!.latitude,
+        closeTo(21.0301, 1e-9));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+      'Expiry covers a late addSymbol until every GPS annotation is removed',
+      (tester) async {
+    _installFakeMapLibre(tester);
+    final stamp = _wallNow(tester);
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(21.03, 105.85, 4, 90, stamp));
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final controller = _RecordingTrackingController()
+      ..delaySymbolAddition = Completer<void>();
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    expect(controller.symbolAdditionStarted.isCompleted, isTrue);
+    await tester.pump(CustomerLiveLocation.displayTtl);
+    expect(find.byWidgetPredicate((w) => w is AbsorbPointer && w.absorbing),
+        findsOneWidget);
+    controller.delaySymbolAddition!.complete();
+    await _flushNativeWrites(tester);
+    expect(controller.symbols, isEmpty);
+    expect(controller.circles, isEmpty);
+    expect(controller.symbolRemovals, 1);
+    expect(find.byWidgetPredicate((w) => w is AbsorbPointer && w.absorbing),
+        findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Resume after TTL hides old GPS and a new fix does not replay it',
+      (tester) async {
+    _installFakeMapLibre(tester);
+    final stamp = _wallNow(tester);
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(21.03, 105.85, 4, 90, stamp),
+        interpolation: true);
+    final native = tester.state(find.byType(MapLibreMap));
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final controller = _RecordingTrackingController();
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump(const Duration(seconds: 30));
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await _flushNativeWrites(tester);
+    expect(controller.circles, isEmpty);
+    await _showNativeTrackingMap(tester,
+        location:
+            CustomerLiveLocation(21.0301, 105.8501, 4, 95, _wallNow(tester)),
+        interpolation: true);
+    await _flushNativeWrites(tester);
+    expect(controller.circles.single.options.geometry,
+        const LatLng(21.0301, 105.8501));
+    final writes = controller.circleUpdates;
+    await tester.pump(CustomerMarkerMotion.duration);
+    expect(controller.circleUpdates, writes);
+    expect(tester.state(find.byType(MapLibreMap)), same(native));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+      'Flag true animates a reliable pair without remounting or camera moves',
+      (tester) async {
+    _installFakeMapLibre(tester);
+    final stamp = _wallNow(tester);
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(
+            21.03, 105.85, 4, 350, stamp.subtract(const Duration(seconds: 5))),
+        interpolation: true);
+    final native = tester.state(find.byType(MapLibreMap));
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final controller = _RecordingTrackingController();
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(21.0301, 105.8501, 4, 10, stamp),
+        interpolation: true);
+    expect(controller.circleUpdates, 0);
+    await tester.pump(CustomerMarkerMotion.tick);
+    await _flushNativeWrites(tester);
+    expect(controller.circles.single.options.geometry!.latitude,
+        inExclusiveRange(21.03, 21.0301));
+    await tester.pump(CustomerMarkerMotion.duration);
+    await _flushNativeWrites(tester);
+    expect(controller.circles.single.options.geometry,
+        const LatLng(21.0301, 105.8501));
+    expect(controller.symbols.single.options.textRotate, 10);
+    expect(controller.circleUpdates, lessThanOrEqualTo(3));
+    expect(controller.cameraMoves, 0);
+    expect(tester.state(find.byType(MapLibreMap)), same(native));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+  testWidgets(
+      'Failed expiry deletion keeps the privacy cover without a retry loop',
+      (tester) async {
+    _installFakeMapLibre(tester);
+    final stamp = _wallNow(tester);
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(21.03, 105.85, 4, 90, stamp));
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final controller = _RecordingTrackingController();
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    controller.failSymbolClear = true;
+    await tester.pump(CustomerLiveLocation.displayTtl);
+    await _flushNativeWrites(tester);
+    expect(find.byWidgetPredicate((w) => w is AbsorbPointer && w.absorbing),
+        findsOneWidget);
+    final clears = controller.symbolClears;
+    await tester.pump(const Duration(seconds: 1));
+    expect(controller.symbolClears, clears);
+    controller.failSymbolClear = false;
+    controller.simulateStyleReload();
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    expect(controller.circles, isEmpty);
+    expect(controller.symbols, isEmpty);
+    expect(find.byWidgetPredicate((w) => w is AbsorbPointer && w.absorbing),
+        findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('A future map input cannot poison subsequent normal fixes',
+      (tester) async {
+    _installFakeMapLibre(tester);
+    final stamp = _wallNow(tester);
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(21.03, 105.85, 4, 90, stamp));
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final controller = _RecordingTrackingController();
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(
+            22, 106, 4, 90, stamp.add(const Duration(seconds: 6))));
+    await _flushNativeWrites(tester);
+    expect(controller.circleUpdates, 0);
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(
+            21.0301, 105.8501, 4, 95, stamp.add(const Duration(seconds: 1))));
+    await _flushNativeWrites(tester);
+    expect(controller.circles.single.options.geometry,
+        const LatLng(21.0301, 105.8501));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Style reload during expiry cleanup does not strand the cover',
+      (tester) async {
+    _installFakeMapLibre(tester);
+    await _showNativeTrackingMap(tester,
+        location: CustomerLiveLocation(21.03, 105.85, 4, 90, _wallNow(tester)));
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final controller = _RecordingTrackingController();
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    controller.delayRemoval = Completer<void>();
+    await tester.pump(CustomerLiveLocation.displayTtl);
+    await _flushNativeWrites(tester);
+    expect(controller.removalStarted.isCompleted, isTrue);
+    controller.simulateStyleReload();
+    map.onStyleLoadedCallback!();
+    controller.delayRemoval!.complete();
+    await _flushNativeWrites(tester);
+    expect(controller.circles, isEmpty);
+    expect(controller.symbols, isEmpty);
+    expect(find.byWidgetPredicate((w) => w is AbsorbPointer && w.absorbing),
+        findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Disposal during radar add stops subsequent native operations',
+      (tester) async {
+    _installFakeMapLibre(tester);
+    await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+            body: CustomerTripTrackingMap(
+                location: null,
+                pickup: const Coordinates(21.03, 105.85),
+                searchingForDriver: true,
+                motionNow: () => _wallNow(tester),
+                motionElapsed: () => _elapsed(tester),
+                connectionState: TripRealtimeConnectionState.connected))));
+    await tester.pump();
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final controller = _RecordingTrackingController()
+      ..delayRadarAddition = Completer<void>();
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    expect(controller.radarAdditionStarted.isCompleted, isTrue);
+    final adds = controller.circleAdds;
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.simulateNativeDisposal();
+    controller.delayRadarAddition!.complete();
+    await _flushNativeWrites(tester);
+    expect(controller.circleAdds, adds);
+    expect(controller.circles, isEmpty);
+  });
 }
 
 class _FakeMapLibrePlatform extends Fake implements MapLibrePlatform {
@@ -697,6 +1253,63 @@ class _FakeMapLibrePlatform extends Fake implements MapLibrePlatform {
   void dispose() {}
 }
 
+class _InteractiveTrackingPlatform extends _FakeMapLibrePlatform {
+  _InteractiveTrackingPlatform(this.onTap, this.onPanUpdate);
+  final VoidCallback onTap;
+  final GestureDragUpdateCallback onPanUpdate;
+
+  @override
+  Widget buildView(
+          Map<String, dynamic> creationParams,
+          OnPlatformViewCreatedCallback onPlatformViewCreated,
+          Set<Factory<OneSequenceGestureRecognizer>>? gestureRecognizers) =>
+      GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        onPanUpdate: onPanUpdate,
+        child: const ColoredBox(color: Colors.white),
+      );
+}
+
+Future<void> _loadTrackingTestFonts() async {
+  // Ahem's square glyphs do not represent Android wrapping or accessibility.
+  // Use fonts already supplied by Flutter; no downloaded test dependency.
+  final sdk = Platform.environment['FLUTTER_ROOT'] ??
+      File(Platform.resolvedExecutable)
+          .parent
+          .parent
+          .parent
+          .parent
+          .parent
+          .parent
+          .path;
+  for (final font in [
+    ('Roboto', 'roboto-regular.ttf'),
+    ('MaterialIcons', 'materialicons-regular.otf'),
+  ]) {
+    final file = File.fromUri(Directory(sdk)
+        .uri
+        .resolve('bin/cache/artifacts/material_fonts/${font.$2}'));
+    final loader = FontLoader(font.$1)
+      ..addFont(file.readAsBytes().then(ByteData.sublistView));
+    await loader.load();
+  }
+}
+
+RoadRoute _warningTestRoute() => RoadRoute.fromJson({
+      'sourceQuotePublicId': 'quote-a',
+      'bookingPublicId': 'booking-symbol-lifecycle',
+      'availability': 'AVAILABLE',
+      'geometryFormat': 'GEOJSON_LINESTRING',
+      'geometry': {
+        'type': 'LineString',
+        'coordinates': [
+          [105.85, 21.03],
+          [105.86, 21.04]
+        ]
+      },
+    });
+
 void _installFakeMapLibre(WidgetTester tester) {
   const channel = MethodChannel('plugins.flutter.io/maplibre_gl');
   tester.binding.defaultBinaryMessenger
@@ -711,18 +1324,33 @@ void _installFakeMapLibre(WidgetTester tester) {
 Future<void> _showNativeTrackingMap(WidgetTester tester,
     {required CustomerLiveLocation? location,
     Coordinates? pickup,
-    Coordinates? dropoff}) async {
+    Coordinates? dropoff,
+    RoadRoute? route,
+    bool interpolation = false,
+    ThemeData? theme,
+    double textScale = 1,
+    ValueChanged<bool>? onStale}) async {
   await tester.pumpWidget(MaterialApp(
+      theme: theme,
+      builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: TextScaler.linear(textScale)),
+          child: child!),
       home: Scaffold(
           body: SizedBox.expand(
               child: CustomerTripTrackingMap(
-    bookingPublicId: 'booking-symbol-lifecycle',
-    fullBleed: true,
-    location: location,
-    pickup: pickup,
-    dropoff: dropoff,
-    connectionState: TripRealtimeConnectionState.connected,
-  )))));
+        motionElapsed: () => _elapsed(tester),
+        motionNow: () => _wallNow(tester),
+        bookingPublicId: 'booking-symbol-lifecycle',
+        fullBleed: true,
+        route: route,
+        enableMarkerInterpolation: interpolation,
+        onGpsStaleChanged: onStale,
+        location: location,
+        pickup: pickup,
+        dropoff: dropoff,
+        connectionState: TripRealtimeConnectionState.connected,
+      )))));
   await tester.pump();
 }
 
@@ -736,10 +1364,14 @@ class _RecordingTrackingController extends Fake
     implements MapLibreMapController {
   int cameraMoves = 0;
   int circleUpdates = 0;
+  int circleAdds = 0;
+  int circleRemovals = 0;
+  int circleClears = 0;
   int symbolAdds = 0;
   int symbolUpdates = 0;
   int symbolRemovals = 0;
   int symbolClears = 0;
+  bool failSymbolClear = false;
   int _nextCircle = 0;
   int _nextSymbol = 0;
   bool _nativeDisposed = false;
@@ -753,6 +1385,10 @@ class _RecordingTrackingController extends Fake
   final removalStarted = Completer<void>();
   Completer<void>? delaySymbolAddition;
   final symbolAdditionStarted = Completer<void>();
+  Completer<void>? delayCircleUpdate;
+  final circleUpdateStarted = Completer<void>();
+  Completer<void>? delayRadarAddition;
+  final radarAdditionStarted = Completer<void>();
 
   void simulateStyleReload() {
     circles.clear();
@@ -793,6 +1429,7 @@ class _RecordingTrackingController extends Fake
   @override
   Future<void> clearSymbols() async {
     symbolClears++;
+    if (failSymbolClear) throw StateError('native clear failed');
     symbols.clear();
   }
 
@@ -800,15 +1437,24 @@ class _RecordingTrackingController extends Fake
   Future<Circle> addCircle(CircleOptions options,
       [Map<String, dynamic>? data]) async {
     final circle = Circle('circle-${_nextCircle++}', options, data);
-    circles.add(circle);
+    circleAdds++;
+    if (options.circleOpacity == .12 && delayRadarAddition != null) {
+      if (!radarAdditionStarted.isCompleted) radarAdditionStarted.complete();
+      await delayRadarAddition!.future;
+    }
+    if (!_nativeDisposed) circles.add(circle);
     return circle;
   }
 
   @override
-  Future<void> clearCircles() async => circles.clear();
+  Future<void> clearCircles() async {
+    circleClears++;
+    circles.clear();
+  }
 
   @override
   Future<void> removeCircle(Circle circle) async {
+    circleRemovals++;
     if (!removalStarted.isCompleted) removalStarted.complete();
     await delayRemoval?.future;
     circles.remove(circle);
@@ -828,6 +1474,9 @@ class _RecordingTrackingController extends Fake
   @override
   Future<void> updateCircle(Circle circle, CircleOptions changes) async {
     circleUpdates++;
+    if (!circleUpdateStarted.isCompleted) circleUpdateStarted.complete();
+    await delayCircleUpdate?.future;
+    if (!_nativeDisposed) circle.options = circle.options.copyWith(changes);
   }
 
   @override

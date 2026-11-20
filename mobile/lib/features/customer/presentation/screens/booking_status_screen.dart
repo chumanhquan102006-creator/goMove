@@ -98,8 +98,14 @@ class BookingStatusScreen extends StatefulWidget {
   final Booking booking;
   final CustomerTripMapBuilder? trackingMapBuilder;
 
+  /// Wall-clock seam shared by GPS admission and display deadlines in tests.
+  final DateTime Function()? trackingNow;
+
   const BookingStatusScreen(
-      {super.key, required this.booking, this.trackingMapBuilder});
+      {super.key,
+      required this.booking,
+      this.trackingMapBuilder,
+      this.trackingNow});
 
   @override
   State<BookingStatusScreen> createState() => _BookingStatusScreenState();
@@ -114,6 +120,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
   String? _dropoffAddress;
   int _pointsRequest = 0;
   String? _customerPublicId;
+  bool _gpsStale = false;
 
   @override
   void initState() {
@@ -130,6 +137,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
       tripRepository: sl<TripRepository>(),
       session: sl<SecureStorageService>(),
       realtime: sl<TripRealtimeClient>(),
+      now: widget.trackingNow,
     )..start();
     WidgetsBinding.instance.addObserver(this);
     _loadPoints();
@@ -274,6 +282,13 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
             final location = state.liveLocation;
             final hasRenderableLocation = state.hasLiveLocation &&
                 CustomerTripTrackingMap.isRenderable(location);
+            final trackingMessage = isTerminalTripStatus(state.status)
+                ? state.status == 'COMPLETED'
+                    ? 'Chuyến đã hoàn thành; vị trí hiện tại của tài xế được ẩn.'
+                    : 'Chuyến đã kết thúc; vị trí hiện tại của tài xế được ẩn.'
+                : _gpsStale
+                    ? 'Vị trí tài xế chưa được cập nhật.'
+                    : customerRealtimeLabel(state.realtimeState);
             final progress = _progress(state.status);
             final colors = Theme.of(context).colorScheme;
             final motionDuration = AppMotion.duration(context, AppMotion.card);
@@ -302,7 +317,20 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                 bookingPublicId: booking.publicId,
                                 searchingForDriver:
                                     state.status == 'SEARCHING_DRIVER',
-                                enableMarkerInterpolation: true,
+                                motionNow: widget.trackingNow,
+                                onGpsStaleChanged: (stale) {
+                                  if (mounted &&
+                                      !_cubit.state.sessionEnded &&
+                                      widget.booking.publicId ==
+                                          booking.publicId &&
+                                      _cubit.state.booking.publicId ==
+                                          booking.publicId &&
+                                      identical(_cubit.state.liveLocation,
+                                          location) &&
+                                      _gpsStale != stale) {
+                                    setState(() => _gpsStale = stale);
+                                  }
+                                },
                                 location:
                                     hasRenderableLocation ? location : null,
                                 route: route,
@@ -442,9 +470,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                             color: AppColors.primaryDark)),
                                 if (!isTerminalTripStatus(state.status)) ...[
                                   const SizedBox(height: 6),
-                                  Text(
-                                      customerRealtimeLabel(
-                                          state.realtimeState),
+                                  Text(trackingMessage,
                                       style: Theme.of(context)
                                           .textTheme
                                           .bodySmall),
@@ -674,13 +700,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                       ),
                                     ]),
                                     const SizedBox(height: 6),
-                                    Text(
-                                        isTerminalTripStatus(state.status)
-                                            ? state.status == 'COMPLETED'
-                                                ? 'Chuyến đã hoàn thành; vị trí hiện tại của tài xế được ẩn.'
-                                                : 'Chuyến đã kết thúc; vị trí hiện tại của tài xế được ẩn.'
-                                            : customerRealtimeLabel(
-                                                state.realtimeState),
+                                    Text(trackingMessage,
                                         style: Theme.of(context)
                                             .textTheme
                                             .bodySmall),

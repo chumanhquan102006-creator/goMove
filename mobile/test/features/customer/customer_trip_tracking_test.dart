@@ -15,6 +15,7 @@ import 'package:gomove_mobile/features/customer/domain/repositories/geocoding_re
 import 'package:gomove_mobile/features/customer/domain/usecases/customer_usecases.dart';
 import 'package:gomove_mobile/features/customer/presentation/bloc/booking_status_cubit.dart';
 import 'package:gomove_mobile/features/customer/presentation/screens/booking_status_screen.dart';
+import 'package:gomove_mobile/features/customer/presentation/widgets/customer_trip_tracking_map.dart';
 import 'package:gomove_mobile/features/trip/data/trip_realtime_client.dart';
 import 'package:gomove_mobile/features/trip/domain/models/trip_models.dart';
 import 'package:gomove_mobile/features/trip/domain/models/trip_eta.dart';
@@ -346,6 +347,338 @@ void main() {
     sl.registerSingleton<SecureStorageService>(session);
     sl.registerSingleton<TripRealtimeClient>(realtime);
     addTearDown(() async => sl.reset());
+  }
+
+  test('REST future GPS cannot poison ordering and a normal fix is accepted',
+      () async {
+    final now = DateTime.utc(2026, 11, 19, 8);
+    trips.value = tracking('IN_PROGRESS',
+        latitude: 22,
+        longitude: 106,
+        accuracy: 4,
+        locationUpdatedAt: now.add(const Duration(seconds: 6)));
+    final cubit = BookingStatusCubit(
+        GetBookingUseCase(CustomerStub()), booking(),
+        tripRepository: trips,
+        session: session,
+        realtime: realtime,
+        now: () => now);
+    cubit.start();
+    await flush();
+    expect(cubit.state.liveLocation, isNull);
+    expect(cubit.state.status, 'IN_PROGRESS');
+    trips.value = tracking('IN_PROGRESS',
+        latitude: 21.1, longitude: 105.1, accuracy: 4, locationUpdatedAt: now);
+    await cubit.refresh();
+    expect(cubit.state.liveLocation?.updatedAt, now);
+    expect(cubit.state.liveLocation?.latitude, 21.1);
+    await cubit.close();
+  });
+
+  test('STOMP future GPS is rejected before the timestamp watermark', () async {
+    final now = DateTime.utc(2026, 11, 19, 8);
+    trips.value = tracking('IN_PROGRESS',
+        latitude: 21,
+        longitude: 105,
+        accuracy: 4,
+        locationUpdatedAt: now.subtract(const Duration(seconds: 1)));
+    final cubit = BookingStatusCubit(
+        GetBookingUseCase(CustomerStub()), booking(),
+        tripRepository: trips,
+        session: session,
+        realtime: realtime,
+        now: () => now);
+    cubit.start();
+    await flush();
+    realtime.last!.eventController.add(TripDriverLocationEvent(
+        bookingId, 22, 106, 4, 90, now.add(const Duration(seconds: 6))));
+    await flush();
+    expect(cubit.state.liveLocation?.latitude, 21);
+    realtime.last!.eventController
+        .add(TripDriverLocationEvent(bookingId, 21.1, 105.1, 4, 95, now));
+    await flush();
+    expect(cubit.state.liveLocation?.latitude, 21.1);
+    expect(cubit.state.liveLocation?.updatedAt, now);
+    await cubit.close();
+  });
+
+  test('Future skew and display TTL boundaries are explicit', () {
+    final now = DateTime.utc(2026, 11, 19, 8);
+    expect(
+        CustomerLiveLocation.valid(
+            21, 105, 4, 90, now.add(const Duration(seconds: 5)),
+            now: now),
+        isNotNull);
+    expect(
+        CustomerLiveLocation.valid(21, 105, 4, 90,
+            now.add(const Duration(seconds: 5, microseconds: 1)),
+            now: now),
+        isNull);
+    final fix = CustomerLiveLocation(21, 105, 4, 90, now);
+    expect(fix.isFreshAt(now.add(const Duration(seconds: 19))), isTrue);
+    expect(fix.isFreshAt(now.add(CustomerLiveLocation.displayTtl)), isFalse);
+  });
+
+  testWidgets('Booking screen respects the compiled marker interpolation flag',
+      (tester) async {
+    final now = DateTime.utc(2026, 11, 19, 8);
+    trips.value = tracking('IN_PROGRESS',
+        latitude: 21,
+        longitude: 105,
+        accuracy: 4,
+        bearing: 90,
+        locationUpdatedAt: now);
+    registerScreenServices();
+    await tester.pumpWidget(MaterialApp(
+        home: BookingStatusScreen(booking: booking(), trackingNow: () => now)));
+    await tester.pump();
+    await tester.pump();
+    final map = tester
+        .widget<CustomerTripTrackingMap>(find.byType(CustomerTripTrackingMap));
+    expect(map.location, isNotNull);
+    expect(
+        map.enableMarkerInterpolation,
+        const bool.fromEnvironment('GOMOVE_EXPERIMENTAL_MARKER_INTERPOLATION',
+            defaultValue: false));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  for (final terminal in ['COMPLETED', 'CANCELLED']) {
+    testWidgets(
+        'GPS status surfaces stay consistent through connected stale fresh and $terminal',
+        (tester) async {
+      tester.view.physicalSize = const Size(800, 2200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final base = DateTime.utc(2026, 11, 19, 8);
+      final started = tester.binding.clock.now();
+      DateTime now() =>
+          base.add(tester.binding.clock.now().difference(started));
+      trips.value = tracking('IN_PROGRESS',
+          latitude: 21,
+          longitude: 105,
+          accuracy: 4,
+          bearing: 90,
+          locationUpdatedAt: base);
+      registerScreenServices();
+      await tester.pumpWidget(MaterialApp(
+          builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(context).copyWith(disableAnimations: true),
+              child: child!),
+          home: BookingStatusScreen(booking: booking(), trackingNow: now)));
+      await tester.pump();
+      await tester.pump();
+      await tester.drag(
+          find.byKey(const ValueKey('customer-trip-sheet-handle')),
+          const Offset(0, -1800));
+      await tester.pump();
+      void expectBoth(String message) {
+        for (final key in [
+          'customer-status-surface',
+          'customer-live-tracking-card'
+        ]) {
+          expect(
+              find.descendant(
+                  of: find.byKey(ValueKey(key)), matching: find.text(message)),
+              findsOneWidget,
+              reason: key);
+        }
+      }
+
+      const updating = 'Vị trí đang được cập nhật';
+      const stale = 'Vị trí tài xế chưa được cập nhật.';
+      expectBoth(updating);
+      final mapState = tester.state(find.byType(CustomerTripTrackingMap));
+      final oldFreshnessCallback = tester
+          .widget<CustomerTripTrackingMap>(find.byType(CustomerTripTrackingMap))
+          .onGpsStaleChanged!;
+      await tester.pump(CustomerLiveLocation.displayTtl);
+      await tester.pump();
+      await tester.pump();
+      realtime.last!.stateController.add(TripRealtimeConnectionState.connected);
+      await tester.pump();
+      await tester.pump();
+      expectBoth(stale);
+      expect(find.text(updating), findsNothing);
+      expect(
+          tester
+              .widget<CustomerTripTrackingMap>(
+                  find.byType(CustomerTripTrackingMap))
+              .connectionState,
+          TripRealtimeConnectionState.connected);
+      expect(find.text('Chuyến đi đang diễn ra.'), findsOneWidget);
+      expect(find.text('Chờ xác nhận thanh toán'), findsOneWidget);
+      expect(
+          tester.state(find.byType(CustomerTripTrackingMap)), same(mapState));
+      expect(find.byKey(const ValueKey('customer-trip-sheet')), findsOneWidget);
+
+      trips.value = tracking('IN_PROGRESS',
+          latitude: 21.001,
+          longitude: 105.001,
+          accuracy: 4,
+          bearing: 95,
+          locationUpdatedAt: now());
+      realtime.last!.eventController.add(
+          TripDriverLocationEvent(bookingId, 21.001, 105.001, 4, 95, now()));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      expectBoth(updating);
+      expect(find.text(stale), findsNothing);
+      oldFreshnessCallback(true);
+      await tester.pump();
+      expectBoth(updating);
+      expect(find.text(stale), findsNothing);
+
+      await tester.pump(CustomerLiveLocation.displayTtl);
+      await tester.pump();
+      await tester.pump();
+      expectBoth(stale);
+      trips.value = tracking(terminal);
+      realtime.last!.eventController
+          .add(TripStatusChangedEvent(bookingId, terminal, now()));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      expect(
+          find.descendant(
+              of: find.byKey(const ValueKey('customer-status-surface')),
+              matching: find.text(terminal == 'COMPLETED'
+                  ? 'Chuyến đi đã hoàn thành.'
+                  : 'Chuyến đi đã được hủy.')),
+          findsOneWidget);
+      expect(
+          find.text(terminal == 'COMPLETED'
+              ? 'Chuyến đã hoàn thành; vị trí hiện tại của tài xế được ẩn.'
+              : 'Chuyến đã kết thúc; vị trí hiện tại của tài xế được ẩn.'),
+          findsOneWidget);
+      expect(find.text(stale), findsNothing);
+      expect(find.text(updating), findsNothing);
+      expect(find.text('Chờ xác nhận thanh toán'),
+          terminal == 'COMPLETED' ? findsOneWidget : findsNothing);
+      expect(trips.transitionCalls, 0);
+      expect(trips.confirmCalls, 0);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  for (final replacement in ['session', 'Booking']) {
+    testWidgets(
+        'GPS status ignores old $replacement callbacks after replacement',
+        (tester) async {
+      tester.view.physicalSize = const Size(800, 2200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final base = DateTime.utc(2026, 11, 19, 8);
+      final started = tester.binding.clock.now();
+      DateTime now() =>
+          base.add(tester.binding.clock.now().difference(started));
+      var currentSession = true;
+      when(() => session.isCurrentSession(any()))
+          .thenAnswer((_) async => currentSession);
+      trips.value = tracking('IN_PROGRESS',
+          latitude: 21, longitude: 105, accuracy: 4, locationUpdatedAt: now());
+      registerScreenServices();
+      Future<void> show(Booking currentBooking, String entry) async {
+        await tester.pumpWidget(MaterialApp(
+            builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(context).copyWith(disableAnimations: true),
+                child: child!),
+            home: BookingStatusScreen(
+                key: ValueKey(entry),
+                booking: currentBooking,
+                trackingNow: now)));
+        await tester.pump();
+        await tester.pump();
+        await tester.drag(
+            find.byKey(const ValueKey('customer-trip-sheet-handle')),
+            const Offset(0, -1800));
+        await tester.pump();
+      }
+
+      void expectBoth(String message) {
+        for (final key in [
+          'customer-status-surface',
+          'customer-live-tracking-card'
+        ]) {
+          expect(
+              find.descendant(
+                  of: find.byKey(ValueKey(key)), matching: find.text(message)),
+              findsOneWidget,
+              reason: key);
+        }
+      }
+
+      await show(booking(), 'old-entry');
+      final oldMap = tester.widget<CustomerTripTrackingMap>(
+          find.byType(CustomerTripTrackingMap));
+      final oldSubscription = realtime.last!;
+      await tester.pump(CustomerLiveLocation.displayTtl);
+      await tester.pump();
+      await tester.pump();
+      const stale = 'Vị trí tài xế chưa được cập nhật.';
+      expectBoth(stale);
+
+      if (replacement == 'session') {
+        currentSession = false;
+        oldSubscription.stateController
+            .add(TripRealtimeConnectionState.connected);
+        await tester.pump();
+        await tester.pump();
+        oldMap.onGpsStaleChanged!(true);
+        await tester.pump();
+        expect(find.byKey(const ValueKey('customer-status-surface')),
+            findsNothing);
+        expect(find.byKey(const ValueKey('customer-live-tracking-card')),
+            findsNothing);
+        expect(find.text(stale), findsNothing);
+        expect(
+            find.textContaining('Phiên đăng nhập đã thay đổi'), findsOneWidget);
+        currentSession = true;
+        when(() => session.getSession()).thenAnswer(
+            (_) async => const AuthSessionSnapshot(8, 'next-jwt', 'refresh'));
+      }
+      final nextId = replacement == 'Booking' ? otherBookingId : bookingId;
+      final nextBooking = Booking(
+          publicId: nextId,
+          quotePublicId: booking().quotePublicId,
+          status: 'IN_PROGRESS',
+          vehicleType: VehicleType.motorbike,
+          currency: 'VND',
+          finalFare: '16500',
+          createdAt: base);
+      trips.value = tracking('IN_PROGRESS',
+          bookingPublicId: nextId,
+          latitude: 21.001,
+          longitude: 105.001,
+          accuracy: 4,
+          locationUpdatedAt: now());
+      trips.cash = CashPayment(
+          paymentPublicId: payment('PENDING').paymentPublicId,
+          bookingPublicId: nextId,
+          method: 'CASH',
+          status: 'PENDING',
+          amount: '16500.00',
+          currency: 'VND');
+      await show(nextBooking, 'new-entry');
+      expectBoth('Vị trí đang được cập nhật');
+      oldMap.onGpsStaleChanged!(true);
+      oldSubscription.eventController
+          .add(TripDriverLocationEvent(bookingId, 22, 106, 4, 90, now()));
+      await tester.pump();
+      await tester.pump();
+      expectBoth('Vị trí đang được cập nhật');
+      expect(find.text(stale), findsNothing);
+      expect(
+          tester
+              .widget<CustomerTripTrackingMap>(
+                  find.byType(CustomerTripTrackingMap))
+              .bookingPublicId,
+          nextId);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
   }
 
   test('All server lifecycle statuses have Vietnamese labels', () {
@@ -1236,8 +1569,7 @@ void main() {
     expect(find.text('Bản đồ thử nghiệm'), findsOneWidget);
     expect(seenLocations.last.latitude, 21.1);
     expect(seenLocations.last.longitude, 105.1);
-    await tester.scrollUntilVisible(
-        find.textContaining('Vị trí mới nhất:'), 80,
+    await tester.scrollUntilVisible(find.textContaining('Vị trí mới nhất:'), 80,
         scrollable: find.byType(Scrollable).first);
     expect(find.textContaining('Vị trí mới nhất:'), findsOneWidget);
     await tester.scrollUntilVisible(find.text('Chờ xác nhận thanh toán'), 250,

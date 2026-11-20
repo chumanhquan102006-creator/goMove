@@ -2,8 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show Factory, visibleForTesting;
-import 'package:flutter/gestures.dart'
-    show EagerGestureRecognizer, OneSequenceGestureRecognizer;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 
@@ -26,6 +25,11 @@ class CustomerTripTrackingMap extends StatefulWidget {
   final TripRealtimeConnectionState connectionState;
   final bool fullBleed;
   final String? bookingPublicId;
+  final String trackingStatus;
+
+  /// Settled sheet extent, not every drag frame. Zero for embedded maps.
+  final double sheetExtent;
+  final bool enableCameraFollow;
 
   /// Driven only by the authenticated Booking status, never a local timer.
   final bool searchingForDriver;
@@ -45,11 +49,16 @@ class CustomerTripTrackingMap extends StatefulWidget {
     super.key,
     required this.location,
     required this.connectionState,
+    required this.trackingStatus,
     this.route,
     this.pickup,
     this.dropoff,
     this.fullBleed = false,
     this.bookingPublicId,
+    this.sheetExtent = .30,
+    this.enableCameraFollow = const bool.fromEnvironment(
+        'GOMOVE_EXPERIMENTAL_CAMERA_FOLLOW',
+        defaultValue: false),
     this.searchingForDriver = false,
     this.enableMarkerInterpolation = const bool.fromEnvironment(
         'GOMOVE_EXPERIMENTAL_MARKER_INTERPOLATION',
@@ -87,6 +96,8 @@ class CustomerTripTrackingMap extends StatefulWidget {
   State<CustomerTripTrackingMap> createState() =>
       _CustomerTripTrackingMapState();
 }
+
+enum _CameraAction { automatic, locate, route, privacy }
 
 /// Presentation-only motion between two accepted GPS samples. It never
 /// publishes a location or moves the camera. A 100 ms presentation tick is not
@@ -294,6 +305,367 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
   bool _scopeChanged = false;
   bool _gpsRemovalPending = false;
 
+  // Camera operations share the controller, not the annotation worker. An
+  // Android animation Future can stay pending for its entire native duration.
+  final Stopwatch _cameraWatch = Stopwatch()..start();
+  final Map<int, Offset> _mapPointers = {};
+  Timer? _cameraTimer;
+  Timer? _cameraWatchdog;
+  _CameraAction? _pendingCamera;
+  bool _cameraInFlight = false;
+  bool _cameraDispatchScheduled = false;
+  bool _cameraBlocked = false;
+  bool _cameraPrivacyPending = false;
+  bool _privateCameraUsed = false;
+  bool _followWanted = false;
+  bool _cameraFixUsable = false;
+  bool _multiTouch = false;
+  int _cameraRevision = 0;
+  int _cameraFlight = 0;
+  Duration? _lastAutomaticCamera;
+  Duration? _lastMapTap;
+  Offset? _lastMapTapPosition;
+  CustomerLiveLocation? _cameraReference;
+  CustomerLiveLocation? _lastCameraFix;
+  Size _mapSize = Size.zero;
+  EdgeInsets? _appliedCameraPadding;
+
+  bool get _trackingActive => const {
+        'DRIVER_ACCEPTED',
+        'DRIVER_ARRIVED',
+        'PASSENGER_ONBOARD',
+        'IN_PROGRESS'
+      }.contains(widget.trackingStatus);
+  bool get _trackingTerminal => const {
+        'COMPLETED',
+        'CANCELLED',
+        'NO_DRIVER_AVAILABLE'
+      }.contains(widget.trackingStatus);
+  Duration get _cameraElapsed =>
+      widget.motionElapsed?.call() ?? _cameraWatch.elapsed;
+  EdgeInsets get _followPadding {
+    final attribution = TextPainter(
+      text: TextSpan(
+          text: CustomerMapSource.visibleAttribution,
+          style: Theme.of(context).textTheme.labelSmall),
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+      maxLines: 3,
+      ellipsis: '\u2026',
+    )..layout(
+        maxWidth: math.max(
+            1.0, _mapSize.width - (widget.enableCameraFollow ? 92 : 160)));
+    final top =
+        widget.fullBleed ? math.max(112.0, attribution.height + 28) : 64.0;
+    attribution.dispose();
+    return EdgeInsets.only(
+        left: 12,
+        right: 12,
+        top: top,
+        bottom: widget.fullBleed
+            ? _mapSize.height * widget.sheetExtent.clamp(0.0, 1.0) + 12
+            : 12);
+  }
+
+  bool get _cameraReady =>
+      mounted &&
+      !_scopeChanged &&
+      !_paused &&
+      _controller != null &&
+      _styleLoaded &&
+      !_mapUnavailable &&
+      !_setupFailed;
+  bool get _canLocate =>
+      _cameraReady &&
+      !_cameraBlocked &&
+      !_cameraPrivacyPending &&
+      _trackingActive &&
+      _hasDisplayLocation &&
+      _mapSize.height - _followPadding.vertical >= 48;
+  bool get _canFollow => _canLocate && _cameraFixUsable;
+
+  // The flag-OFF M4.2A locate action accepts every fresh/renderable fix.
+  // Follow (including the flag-ON Follow button) keeps its quality policy.
+  bool _cameraQualityAllowed(_CameraAction action) =>
+      (action == _CameraAction.locate && !widget.enableCameraFollow) ||
+      _cameraFixUsable;
+  bool _canTargetCamera(_CameraAction action) =>
+      _canLocate && _cameraQualityAllowed(action);
+  bool get _cameraCover =>
+      _cameraPrivacyPending ||
+      (!_trackingActive && _hasDisplayLocation) ||
+      (_cameraInFlight && (!_hasDisplayLocation || _paused));
+  String get _cameraMode => !_canFollow
+      ? 'unavailable'
+      : _followWanted
+          ? 'follow'
+          : 'free';
+
+  void _invalidateCamera({bool forgetPrivate = false}) {
+    _cameraRevision++;
+    _cameraTimer?.cancel();
+    _cameraTimer = null;
+    _pendingCamera = null;
+    if (forgetPrivate) {
+      _cameraReference = null;
+      _lastCameraFix = null;
+      _lastMapTap = null;
+      _lastMapTapPosition = null;
+    }
+  }
+
+  LatLng? get _publicCameraPoint {
+    if (widget.route?.available == true) {
+      final p = widget.route!.points.first;
+      return LatLng(p.latitude, p.longitude);
+    }
+    final p = widget.pickup?.isValid == true ? widget.pickup : widget.dropoff;
+    return p?.isValid == true ? LatLng(p!.latitude, p.longitude) : null;
+  }
+
+  void _enterCameraPrivacy() {
+    _invalidateCamera(forgetPrivate: true);
+    _followWanted = false;
+    _cameraPrivacyPending = true;
+    _firstCenter = _publicCameraPoint;
+    if (_firstCenter == null) {
+      // No authorized public seed: remove the native view rather than expose
+      // its retained private viewport. MapLibre owns disposal of that view.
+      _mapVersion++;
+      _styleLoaded = false;
+      _controller = null;
+    }
+    _queueCamera(_CameraAction.privacy);
+  }
+
+  void _acceptCameraFix(CustomerLiveLocation fix) {
+    final previous = _cameraReference;
+    _cameraFixUsable = fix.hasInterpolationAccuracy;
+    if (previous != null && previous.isFreshAt(_now)) {
+      final gap = fix.updatedAt.difference(previous.updatedAt);
+      if (gap > Duration.zero) {
+        final distance = CustomerMarkerMotion._distanceMeters(previous, fix);
+        if (distance > CustomerMarkerMotion.maxDistanceMeters ||
+            distance / (gap.inMicroseconds / Duration.microsecondsPerSecond) >
+                CustomerMarkerMotion.maxSpeedMetersPerSecond) {
+          _cameraFixUsable = false;
+        }
+      }
+    }
+    _cameraReference = fix;
+    if (_trackingActive) _privateCameraUsed = true;
+    // A rejected camera target never changes GPS admission or user preference.
+    _queueCamera(_CameraAction.automatic);
+  }
+
+  void _queueCamera(_CameraAction action) {
+    if (!mounted || _scopeChanged) return;
+    if (_cameraPrivacyPending) action = _CameraAction.privacy;
+    if (action == _CameraAction.automatic &&
+        (!_trackingActive ||
+            !widget.enableCameraFollow ||
+            !_followWanted ||
+            (_pendingCamera != null &&
+                _pendingCamera != _CameraAction.automatic))) {
+      return;
+    }
+    _pendingCamera = action;
+    if (action != _CameraAction.automatic) {
+      _cameraTimer?.cancel();
+      _cameraTimer = null;
+    }
+    // Let didUpdateWidget finish accepting GPS/status/insets before capturing
+    // a target. One scheduled drain coalesces all intents in the same turn.
+    if (!_cameraDispatchScheduled) {
+      _cameraDispatchScheduled = true;
+      scheduleMicrotask(() {
+        _cameraDispatchScheduled = false;
+        _scheduleCamera();
+      });
+    }
+  }
+
+  void _scheduleCamera() {
+    if (!_cameraReady ||
+        _cameraBlocked ||
+        _cameraInFlight ||
+        _mapPointers.isNotEmpty ||
+        _pendingCamera == null) {
+      return;
+    }
+    final action = _pendingCamera!;
+    if (action == _CameraAction.privacy) {
+      if (_publicCameraPoint == null) return;
+    } else if (action != _CameraAction.route &&
+        (!_canTargetCamera(action) || _gpsRemovalPending)) {
+      return;
+    }
+    if (action == _CameraAction.automatic) {
+      if (!widget.enableCameraFollow || !_followWanted) {
+        _pendingCamera = null;
+        return;
+      }
+      final last = _lastCameraFix;
+      if (last != null &&
+          _appliedCameraPadding == _followPadding &&
+          CustomerMarkerMotion._distanceMeters(last, _shownLocation!) < 10) {
+        _pendingCamera = null;
+        return;
+      }
+      final since = _lastAutomaticCamera == null
+          ? const Duration(seconds: 1)
+          : _cameraElapsed - _lastAutomaticCamera!;
+      if (since < const Duration(seconds: 1)) {
+        _cameraTimer ??= Timer(const Duration(seconds: 1) - since, () {
+          _cameraTimer = null;
+          _scheduleCamera();
+        });
+        return;
+      }
+    }
+    _pendingCamera = null;
+    _cameraTimer?.cancel();
+    _cameraTimer = null;
+    unawaited(_runCamera(action));
+  }
+
+  Future<void> _runCamera(_CameraAction action) async {
+    final controller = _controller!;
+    final version = _mapVersion;
+    final revision = _cameraRevision;
+    final booking = widget.bookingPublicId;
+    final flight = ++_cameraFlight;
+    final fix =
+        action == _CameraAction.automatic || action == _CameraAction.locate
+            ? _shownLocation
+            : null;
+    final update = fix != null
+        ? CameraUpdate.newLatLng(_point(fix))
+        : action == _CameraAction.route
+            ? _routeCameraUpdate()
+            : CameraUpdate.newLatLng(_publicCameraPoint!);
+    if (update == null) return;
+    _cameraInFlight = true;
+    if (action == _CameraAction.automatic) {
+      _lastAutomaticCamera = _cameraElapsed;
+    }
+    if (fix != null) _privateCameraUsed = true;
+    bool current({bool exactFix = true}) =>
+        mounted &&
+        !_scopeChanged &&
+        !_paused &&
+        _controller == controller &&
+        version == _mapVersion &&
+        revision == _cameraRevision &&
+        booking == widget.bookingPublicId &&
+        !_cameraBlocked &&
+        (action == _CameraAction.privacy
+            ? _cameraPrivacyPending && !_trackingActive
+            : action == _CameraAction.route ||
+                (_trackingActive &&
+                    _hasDisplayLocation &&
+                    (!exactFix || identical(fix, _shownLocation)) &&
+                    fix!.isFreshAt(_now) &&
+                    _cameraQualityAllowed(action)));
+    _cameraWatchdog = Timer(const Duration(seconds: 3), () {
+      if (!mounted || !_cameraInFlight || flight != _cameraFlight) return;
+      // A timeout is not native cancellation. Keep this lane occupied until
+      // the original Future settles; never launch an overlapping retry.
+      setState(() {
+        _cameraBlocked = true;
+        _invalidateCamera();
+      });
+    });
+    try {
+      final padding = fix != null ? _followPadding : EdgeInsets.zero;
+      if (_appliedCameraPadding != padding) {
+        await controller.setPadding(
+            left: padding.left,
+            top: padding.top,
+            right: padding.right,
+            bottom: padding.bottom);
+        if (!current()) return;
+        _appliedCameraPadding = padding;
+      }
+      if (!current()) return;
+      final moved = action == _CameraAction.privacy || _reducedMotion
+          ? await controller.moveCamera(update)
+          : await controller.animateCamera(update,
+              duration: const Duration(milliseconds: 300));
+      if (!current(exactFix: false)) return;
+      if (moved != true) {
+        setState(() => _cameraBlocked = true);
+        return;
+      }
+      if (action == _CameraAction.privacy) {
+        setState(() {
+          _cameraPrivacyPending = false;
+          _privateCameraUsed = false;
+        });
+      } else if (fix != null) {
+        _lastCameraFix = fix;
+      }
+    } catch (_) {
+      if (current(exactFix: false)) setState(() => _cameraBlocked = true);
+    } finally {
+      if (flight == _cameraFlight) {
+        _cameraWatchdog?.cancel();
+        _cameraWatchdog = null;
+        _cameraInFlight = false;
+        if (mounted) {
+          setState(() {});
+          _scheduleCamera();
+        }
+      }
+    }
+  }
+
+  void _freeExplore() {
+    if (!mounted || _cameraPrivacyPending) return;
+    setState(() {
+      _followWanted = false;
+      _invalidateCamera();
+    });
+  }
+
+  void _mapPointerDown(PointerDownEvent event) {
+    _mapPointers[event.pointer] = event.localPosition;
+    _cameraTimer?.cancel();
+    _cameraTimer = null;
+    if (_mapPointers.length > 1) {
+      _multiTouch = true;
+      _freeExplore();
+    } else if (_lastMapTap != null &&
+        _cameraElapsed - _lastMapTap! <= kDoubleTapTimeout &&
+        (event.localPosition - _lastMapTapPosition!).distance <=
+            kDoubleTapSlop) {
+      _lastMapTap = null;
+      _freeExplore();
+    }
+  }
+
+  void _mapPointerMove(PointerMoveEvent event) {
+    final start = _mapPointers[event.pointer];
+    if (start != null && (event.localPosition - start).distance > kTouchSlop) {
+      _freeExplore();
+    }
+  }
+
+  void _mapPointerUp(PointerEvent event) {
+    final start = _mapPointers.remove(event.pointer);
+    if (event is PointerUpEvent &&
+        !_multiTouch &&
+        start != null &&
+        (event.localPosition - start).distance <= kTouchSlop) {
+      _lastMapTap = _cameraElapsed;
+      _lastMapTapPosition = event.localPosition;
+    }
+    if (_mapPointers.isEmpty) {
+      _multiTouch = false;
+      _scheduleCamera();
+    }
+  }
+
   DateTime get _now => (widget.motionNow ?? DateTime.now)().toUtc();
   bool get _hasDisplayLocation =>
       !_scopeChanged &&
@@ -319,6 +691,7 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
     _locationStale = CustomerTripTrackingMap.isRenderable(_shownLocation) &&
         !_shownLocation!.isFreshAt(_now);
     if (_locationStale) {
+      _invalidateCamera();
       _motion.dispose();
       _motion = _createMotion();
       _visualPoint = null;
@@ -354,6 +727,10 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
             CustomerTripTrackingMap.shouldAcceptNewFix(null, initial, now: _now)
         ? initial
         : null;
+    _followWanted = widget.enableCameraFollow && !_trackingTerminal;
+    _cameraReference = _shownLocation;
+    _cameraFixUsable = _shownLocation?.hasInterpolationAccuracy == true;
+    _privateCameraUsed = _shownLocation != null && _trackingActive;
     _motion = _createMotion();
     _refreshFreshness();
     if (_hasDisplayLocation) {
@@ -367,6 +744,7 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
       _firstCenter =
           LatLng(widget.dropoff!.latitude, widget.dropoff!.longitude);
     }
+    if (!_trackingActive) _firstCenter = _publicCameraPoint;
     _mapReady = _configureMapRequests();
   }
 
@@ -377,6 +755,7 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
     if (reduced && !_reducedMotion) _motion.snap();
     _reducedMotion = reduced;
     _refreshRadar();
+    _queueCamera(_CameraAction.automatic);
   }
 
   @override
@@ -386,8 +765,14 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
       _refreshFreshness();
       _queueMarkerSync();
       _refreshRadar();
+      _queueCamera(_cameraPrivacyPending
+          ? _CameraAction.privacy
+          : _CameraAction.automatic);
     } else {
       _paused = true;
+      _invalidateCamera();
+      _mapPointers.clear();
+      _lastMapTap = null;
       _freshnessTimer?.cancel();
       _freshnessTimer = null;
       _freshnessRevision++;
@@ -420,6 +805,8 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
       // The caller normally changes the widget key on Booking replacement.
       // If it does not, fail closed instead of retaining another trip's map.
       _scopeChanged = true;
+      _invalidateCamera(forgetPrivate: true);
+      _followWanted = false;
       _freshnessTimer?.cancel();
       _freshnessRevision++;
       _motion.dispose();
@@ -427,6 +814,27 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
       _radarTimer = null;
       _mapVersion++;
       return;
+    }
+    if (!_trackingActive &&
+        !_cameraPrivacyPending &&
+        (_privateCameraUsed ||
+            (_trackingTerminal &&
+                oldWidget.trackingStatus != widget.trackingStatus))) {
+      if (_privateCameraUsed) {
+        _enterCameraPrivacy();
+      } else {
+        _invalidateCamera(forgetPrivate: true);
+        _followWanted = false;
+      }
+    }
+    if (oldWidget.enableCameraFollow != widget.enableCameraFollow) {
+      _invalidateCamera();
+      _followWanted = widget.enableCameraFollow && !_trackingTerminal;
+    }
+    if (oldWidget.sheetExtent != widget.sheetExtent) {
+      _invalidateCamera();
+      _appliedCameraPadding = null;
+      _queueCamera(_CameraAction.automatic);
     }
     if (!identical(widget.route, oldWidget.route)) {
       if (_firstCenter == null && widget.route?.available == true) {
@@ -466,6 +874,7 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
             now: _now)) {
       _shownLocation = widget.location;
       _refreshFreshness();
+      _acceptCameraFix(_shownLocation!);
       if (_hasDisplayLocation) {
         _firstCenter ??= _point(_shownLocation!);
         _motion.accept(_shownLocation!,
@@ -475,10 +884,21 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
                 _styleLoaded);
       }
     }
+    if (_cameraPrivacyPending) {
+      _queueCamera(_CameraAction.privacy);
+    } else if (oldWidget.enableCameraFollow != widget.enableCameraFollow ||
+        (oldWidget.trackingStatus != widget.trackingStatus &&
+            _trackingActive)) {
+      _queueCamera(_CameraAction.automatic);
+    }
   }
 
   @override
   void dispose() {
+    _invalidateCamera(forgetPrivate: true);
+    _cameraWatchdog?.cancel();
+    _cameraWatch.stop();
+    _mapPointers.clear();
     WidgetsBinding.instance.removeObserver(this);
     _mapVersion++;
     _styleTimeout?.cancel();
@@ -506,6 +926,15 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
 
   void _onMapCreated(MapLibreMapController controller) {
     if (!mounted) return;
+    _invalidateCamera();
+    if (_controller != controller) {
+      _cameraFlight++;
+      _cameraWatchdog?.cancel();
+      _cameraInFlight = false;
+      _cameraBlocked = false;
+    }
+    _appliedCameraPadding = null;
+    _lastCameraFix = null;
     _refreshFreshness();
     _motion.snap();
     _controller = controller;
@@ -524,6 +953,9 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
 
   void _onStyleLoaded() {
     if (!mounted) return;
+    _invalidateCamera();
+    _appliedCameraPadding = null;
+    if (!_cameraInFlight) _cameraBlocked = false;
     _refreshFreshness();
     _motion.snap();
     _styleTimeout?.cancel();
@@ -539,6 +971,9 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
     _queueRouteSync();
     _queueStaticMarkerSync();
     _refreshRadar();
+    _queueCamera(_cameraPrivacyPending
+        ? _CameraAction.privacy
+        : _CameraAction.automatic);
   }
 
   void _startNativeWorker() {
@@ -792,6 +1227,7 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
       }
       if (_gpsRemovalPending) {
         setState(() => _gpsRemovalPending = false);
+        _scheduleCamera();
         if (_hasDisplayLocation) {
           _queueMarkerSync();
         }
@@ -882,26 +1318,31 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
   }
 
   Future<void> _recenter() async {
-    final controller = _controller;
-    if (controller == null || !_styleLoaded || !_hasDisplayLocation) {
+    if (!_cameraReady ||
+        !_trackingActive ||
+        !_hasDisplayLocation ||
+        _cameraPrivacyPending) {
       return;
     }
-    try {
-      // newLatLng changes the target, not the user's current zoom level.
-      await controller.animateCamera(
-        CameraUpdate.newLatLng(_point(_shownLocation!)),
-        duration:
-            AppMotion.duration(context, const Duration(milliseconds: 300)),
-      );
-    } catch (_) {
-      if (mounted) setState(() => _mapUnavailable = true);
+    if (!_cameraInFlight && !_cameraPrivacyPending && _cameraBlocked) {
+      setState(() => _cameraBlocked = false);
     }
+    if (!_canTargetCamera(_CameraAction.locate)) return;
+    setState(() {
+      _invalidateCamera();
+      _followWanted = widget.enableCameraFollow;
+    });
+    _queueCamera(_CameraAction.locate);
   }
 
   Future<void> _fitRoute() async {
-    final controller = _controller;
+    _freeExplore();
+    if (_cameraReady && !_cameraBlocked) _queueCamera(_CameraAction.route);
+  }
+
+  CameraUpdate? _routeCameraUpdate() {
     final route = widget.route;
-    if (!_styleLoaded || controller == null || route?.available != true) return;
+    if (route?.available != true) return null;
     var south = route!.points.first.latitude;
     var north = south;
     var west = route.points.first.longitude;
@@ -912,23 +1353,16 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
       if (point.longitude < west) west = point.longitude;
       if (point.longitude > east) east = point.longitude;
     }
-    try {
-      await controller.animateCamera(
-        CameraUpdate.newLatLngBounds(
-          LatLngBounds(
-              southwest: LatLng(south, west), northeast: LatLng(north, east)),
-          left: 40,
-          right: 40,
-          top: 56,
-          bottom:
-              widget.fullBleed ? MediaQuery.sizeOf(context).height * .38 : 48,
-        ),
-        duration:
-            AppMotion.duration(context, const Duration(milliseconds: 300)),
-      );
-    } catch (_) {
-      // Camera controls are optional; never replace confirmed route/GPS data.
-    }
+    return CameraUpdate.newLatLngBounds(
+      LatLngBounds(
+          southwest: LatLng(south, west), northeast: LatLng(north, east)),
+      left: 40,
+      right: 40,
+      top: 56,
+      bottom: widget.fullBleed
+          ? _mapSize.height * widget.sheetExtent.clamp(0.0, .86) + 12
+          : 48,
+    );
   }
 
   String get _connectionLabel => switch (widget.connectionState) {
@@ -950,105 +1384,181 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
               child: Text('Không thể khởi tạo bản đồ trên thiết bị này.'),
             );
           }
-          return Stack(fit: StackFit.expand, children: [
-            // In full-bleed mode only the sheet intercepts gestures. The map
-            // remains directly interactive in all uncovered areas.
-            IgnorePointer(
-              ignoring: !widget.fullBleed && !_mapInteractive,
-              child: MapLibreMap(
-                initialCameraPosition:
-                    CameraPosition(target: _firstCenter!, zoom: 14),
-                styleString: CustomerMapSource.styleUrl,
-                myLocationEnabled: false,
-                logoEnabled: true,
-                gestureRecognizers: _mapGestures,
-                annotationOrder: const [
-                  AnnotationType.line,
-                  AnnotationType.circle,
-                  AnnotationType.symbol,
-                ],
-                annotationConsumeTapEvents: const [AnnotationType.circle],
-                onMapCreated: _onMapCreated,
-                onStyleLoadedCallback: _onStyleLoaded,
+          return LayoutBuilder(builder: (context, constraints) {
+            final size = Size(constraints.maxWidth, constraints.maxHeight);
+            if (size != _mapSize) {
+              _mapSize = size;
+              _invalidateCamera();
+              _appliedCameraPadding = null;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted && _mapSize == size) {
+                  _queueCamera(_cameraPrivacyPending
+                      ? _CameraAction.privacy
+                      : _CameraAction.automatic);
+                }
+              });
+            }
+            return Stack(fit: StackFit.expand, children: [
+              // In full-bleed mode only the sheet intercepts gestures. The map
+              // remains directly interactive in all uncovered areas.
+              IgnorePointer(
+                ignoring: !widget.fullBleed && !_mapInteractive,
+                child: Listener(
+                    key: const ValueKey('customer-native-map-input'),
+                    onPointerDown: _mapPointerDown,
+                    onPointerMove: _mapPointerMove,
+                    onPointerUp: _mapPointerUp,
+                    onPointerCancel: _mapPointerUp,
+                    onPointerSignal: (_) => _freeExplore(),
+                    child: MapLibreMap(
+                      initialCameraPosition:
+                          CameraPosition(target: _firstCenter!, zoom: 14),
+                      styleString: CustomerMapSource.styleUrl,
+                      myLocationEnabled: false,
+                      logoEnabled: true,
+                      gestureRecognizers: _mapGestures,
+                      annotationOrder: const [
+                        AnnotationType.line,
+                        AnnotationType.circle,
+                        AnnotationType.symbol,
+                      ],
+                      annotationConsumeTapEvents: const [AnnotationType.circle],
+                      onMapCreated: _onMapCreated,
+                      onStyleLoadedCallback: _onStyleLoaded,
+                    )),
               ),
-            ),
-            if (!widget.fullBleed)
-              Positioned(
-                top: 8,
-                left: 8,
-                child: Material(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(8),
-                  elevation: 2,
-                  child: IconButton(
-                    tooltip: _mapInteractive
-                        ? 'Cuộn trang'
-                        : 'Kéo và thu phóng bản đồ',
-                    onPressed: () =>
-                        setState(() => _mapInteractive = !_mapInteractive),
-                    icon: Icon(_mapInteractive
-                        ? Icons.swipe_vertical
-                        : Icons.pan_tool_alt),
-                  ),
-                ),
-              ),
-            if (widget.fullBleed)
-              Positioned(
-                top: 8,
-                left: 8,
-                right: 140,
-                child: Material(
-                  color: Theme.of(context).colorScheme.surface.withAlpha(240),
-                  borderRadius: BorderRadius.circular(8),
-                  child: Padding(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                    child: Text(
-                      CustomerMapSource.visibleAttribution,
-                      maxLines: 3,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.labelSmall,
+              if (!widget.fullBleed)
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  child: Material(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(8),
+                    elevation: 2,
+                    child: IconButton(
+                      tooltip: _mapInteractive
+                          ? 'Cuộn trang'
+                          : 'Kéo và thu phóng bản đồ',
+                      onPressed: () =>
+                          setState(() => _mapInteractive = !_mapInteractive),
+                      icon: Icon(_mapInteractive
+                          ? Icons.swipe_vertical
+                          : Icons.pan_tool_alt),
                     ),
                   ),
                 ),
-              ),
-            if (widget.route?.available == true)
-              Positioned(
-                top: 8,
-                right: 8,
-                child: Material(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(8),
-                  elevation: 2,
-                  child: TextButton.icon(
-                    onPressed: _styleLoaded ? _fitRoute : null,
-                    icon: const Icon(Icons.route),
-                    label: const Text('Xem tuyến'),
+              if (widget.fullBleed)
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  right: widget.enableCameraFollow ? 72 : 140,
+                  child: Material(
+                    color: Theme.of(context).colorScheme.surface.withAlpha(240),
+                    borderRadius: BorderRadius.circular(8),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 4),
+                      child: Text(
+                        CustomerMapSource.visibleAttribution,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            if (_hasDisplayLocation)
-              Positioned(
-                top: widget.route?.available == true ? 54 : 8,
-                right: 8,
-                child: Material(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(8),
-                  elevation: 2,
-                  child: TextButton.icon(
-                    onPressed: _styleLoaded ? _recenter : null,
-                    icon: const Icon(Icons.my_location),
-                    label: const Text('Tìm tài xế'),
+              if (widget.enableCameraFollow)
+                Positioned(
+                    top: 8,
+                    right: 8,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (widget.route?.available == true) ...[
+                          Material(
+                              color: Theme.of(context).colorScheme.surface,
+                              borderRadius: BorderRadius.circular(12),
+                              child: IconButton(
+                                  constraints: const BoxConstraints(
+                                      minWidth: 48, minHeight: 48),
+                                  tooltip: 'Xem tuyến',
+                                  onPressed: _cameraReady &&
+                                          !_cameraBlocked &&
+                                          !_cameraPrivacyPending
+                                      ? _fitRoute
+                                      : null,
+                                  icon: const Icon(Icons.route))),
+                          const SizedBox(height: 8),
+                        ],
+                        if (_trackingActive)
+                          Semantics(
+                              key: const ValueKey('customer-camera-mode'),
+                              value: _cameraMode,
+                              child: Material(
+                                  color: Theme.of(context).colorScheme.surface,
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: IconButton(
+                                    key: const ValueKey(
+                                        'customer-follow-button'),
+                                    constraints: const BoxConstraints(
+                                        minWidth: 48, minHeight: 48),
+                                    tooltip: !_canFollow
+                                        ? 'Theo dõi chưa sẵn sàng'
+                                        : _followWanted
+                                            ? 'Đang theo dõi tài xế'
+                                            : 'Theo dõi tài xế',
+                                    isSelected: _followWanted && _canFollow,
+                                    onPressed: _canFollow ||
+                                            (_cameraReady &&
+                                                _cameraBlocked &&
+                                                !_cameraInFlight &&
+                                                !_cameraPrivacyPending &&
+                                                _hasDisplayLocation &&
+                                                _cameraFixUsable)
+                                        ? _recenter
+                                        : null,
+                                    icon: const Icon(Icons.my_location),
+                                  ))),
+                      ],
+                    )),
+              if (!widget.enableCameraFollow && widget.route?.available == true)
+                Positioned(
+                  top: 8,
+                  right: 8,
+                  child: Material(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(8),
+                    elevation: 2,
+                    child: TextButton.icon(
+                      onPressed: _styleLoaded ? _fitRoute : null,
+                      icon: const Icon(Icons.route),
+                      label: const Text('Xem tuyến'),
+                    ),
                   ),
                 ),
-              ),
-            if (_gpsRemovalPending)
-              const Positioned.fill(
-                child: AbsorbPointer(
-                  child: ColoredBox(color: Color(0xFFF8F9FA)),
+              if (!widget.enableCameraFollow && _hasDisplayLocation)
+                Positioned(
+                  top: widget.route?.available == true ? 54 : 8,
+                  right: 8,
+                  child: Material(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(8),
+                    elevation: 2,
+                    child: TextButton.icon(
+                      onPressed: _styleLoaded ? _recenter : null,
+                      icon: const Icon(Icons.my_location),
+                      label: const Text('Tìm tài xế'),
+                    ),
+                  ),
                 ),
-              ),
-          ]);
+              if (_gpsRemovalPending || _cameraCover)
+                const Positioned.fill(
+                  child: AbsorbPointer(
+                    child: ColoredBox(color: Color(0xFFF8F9FA)),
+                  ),
+                ),
+            ]);
+          });
         },
       );
 
@@ -1058,6 +1568,7 @@ class _CustomerTripTrackingMapState extends State<CustomerTripTrackingMap>
       return const Text('Phiên theo dõi đã thay đổi. Hãy mở lại chuyến.');
     }
     if (_firstCenter == null) {
+      if (_cameraPrivacyPending) return const Text('Vị trí tài xế đã được ẩn.');
       return Text(_locationStale
           ? 'Vị trí tài xế chưa được cập nhật.'
           : 'Chưa có tọa độ GPS hợp lệ để hiển thị trên bản đồ.');

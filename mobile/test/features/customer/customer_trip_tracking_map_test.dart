@@ -131,6 +131,7 @@ void main() {
           home: Scaffold(
               body: SizedBox.expand(
         child: CustomerTripTrackingMap(
+          trackingStatus: 'IN_PROGRESS',
           motionElapsed: () => _elapsed(tester),
           motionNow: () => _wallNow(tester),
           bookingPublicId: 'booking-radar',
@@ -278,6 +279,7 @@ void main() {
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
         body: CustomerTripTrackingMap(
+          trackingStatus: 'IN_PROGRESS',
           motionElapsed: () => _elapsed(tester),
           motionNow: () => _wallNow(tester),
           location: CustomerLiveLocation(21.1, 105.1, 4, 90, firstFix),
@@ -310,6 +312,7 @@ void main() {
       await tester.pumpWidget(MaterialApp(
         home: Scaffold(
           body: CustomerTripTrackingMap(
+            trackingStatus: 'IN_PROGRESS',
             motionElapsed: () => _elapsed(tester),
             motionNow: () => _wallNow(tester),
             location: location,
@@ -333,6 +336,7 @@ void main() {
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
         body: CustomerTripTrackingMap(
+          trackingStatus: 'IN_PROGRESS',
           motionElapsed: () => _elapsed(tester),
           motionNow: () => _wallNow(tester),
           location:
@@ -363,6 +367,7 @@ void main() {
         home: Scaffold(
           body: SizedBox.expand(
             child: CustomerTripTrackingMap(
+              trackingStatus: 'IN_PROGRESS',
               motionElapsed: () => _elapsed(tester),
               motionNow: () => _wallNow(tester),
               bookingPublicId: bookingId,
@@ -455,6 +460,7 @@ void main() {
         home: Scaffold(
           body: SizedBox.expand(
             child: CustomerTripTrackingMap(
+              trackingStatus: 'IN_PROGRESS',
               motionElapsed: () => _elapsed(tester),
               motionNow: () => _wallNow(tester),
               bookingPublicId: 'booking-a',
@@ -672,6 +678,7 @@ void main() {
         home: Scaffold(
           body: SizedBox.expand(
             child: CustomerTripTrackingMap(
+              trackingStatus: 'IN_PROGRESS',
               motionElapsed: () => _elapsed(tester),
               bookingPublicId: 'booking-a',
               fullBleed: true,
@@ -718,6 +725,801 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     expect(positions.length, afterStyle);
   });
+  testWidgets('Environment flags control camera and marker behavior',
+      (tester) async {
+    _installFakeMapLibre(tester);
+    const camera = bool.fromEnvironment('GOMOVE_EXPERIMENTAL_CAMERA_FOLLOW');
+    const marker =
+        bool.fromEnvironment('GOMOVE_EXPERIMENTAL_MARKER_INTERPOLATION');
+    final positions = <LatLng>[];
+    Future<void> show(CustomerLiveLocation location) async {
+      await tester.pumpWidget(MaterialApp(
+          home: Scaffold(
+              body: CustomerTripTrackingMap(
+                  trackingStatus: 'IN_PROGRESS',
+                  bookingPublicId: 'env-booking',
+                  fullBleed: true,
+                  location: location,
+                  connectionState: TripRealtimeConnectionState.connected,
+                  motionNow: () => _wallNow(tester),
+                  motionElapsed: () => _elapsed(tester),
+                  onVisualPosition: positions.add))));
+      await tester.pump();
+    }
+
+    await show(_cameraFix(tester));
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    final controller = _RecordingTrackingController();
+    map.onMapCreated!(controller);
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    expect(controller.cameraUpdates.length, camera ? 1 : 0);
+    await tester.pump(const Duration(seconds: 1));
+    await show(_cameraFix(tester, latitude: 21.0302));
+    await tester.pump(CustomerMarkerMotion.tick);
+    await _flushNativeWrites(tester);
+    expect(controller.cameraUpdates.length, camera ? 2 : 0);
+    if (marker) {
+      expect(positions.last.latitude, inExclusiveRange(21.03, 21.0302));
+    } else {
+      expect(positions.last.latitude, closeTo(21.0302, 1e-8));
+    }
+    await tester.pump(CustomerMarkerMotion.duration);
+    await _flushNativeWrites(tester);
+    expect(positions.last.latitude, closeTo(21.0302, 1e-8));
+    expect(controller.cameraUpdates.length, camera ? 2 : 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Terminal before any GPS clears pending follow intent',
+      (tester) async {
+    final controller = await _startCameraMap(tester, location: null);
+    await _showNativeTrackingMap(tester,
+        cameraFollow: true,
+        status: 'COMPLETED',
+        route: _warningTestRoute(),
+        location: null);
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    expect(controller.cameraUpdates, isEmpty);
+    expect(find.byKey(const ValueKey('customer-follow-button')), findsNothing);
+    expect(_cameraPrivacyCover(), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  for (final accuracy in <double?>[101, null]) {
+    testWidgets('Manual locate OFF accepts fresh accuracy $accuracy',
+        (tester) async {
+      final fix =
+          CustomerLiveLocation(21.031, 105.85, accuracy, 90, _wallNow(tester));
+      final controller =
+          await _startCameraMap(tester, follow: false, location: fix);
+      expect(controller.cameraUpdates, isEmpty);
+      await tester.tap(find.text('Tìm tài xế'));
+      await _flushNativeWrites(tester);
+      expect(controller.cameraUpdates, hasLength(1));
+      expect(controller.cameraUpdates.single.toJson(), [
+        'newLatLng',
+        [closeTo(21.031, 1e-8), closeTo(105.85, 1e-8)]
+      ]);
+      expect(controller.maxActiveCameras, 1);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
+    testWidgets('Flag ON rejects initial camera accuracy $accuracy',
+        (tester) async {
+      final controller = await _startCameraMap(tester,
+          location: CustomerLiveLocation(
+              21.031, 105.85, accuracy, 90, _wallNow(tester)));
+      expect(_cameraMode(tester), 'unavailable');
+      expect(controller.cameraUpdates, isEmpty);
+      expect(
+          tester
+              .widget<IconButton>(
+                  find.byKey(const ValueKey('customer-follow-button')))
+              .onPressed,
+          isNull);
+      await tester.pump(const Duration(seconds: 1));
+      await _flushNativeWrites(tester);
+      expect(controller.cameraUpdates, isEmpty);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets('Manual locate OFF rejects a stale captured button callback',
+      (tester) async {
+    final controller = await _startCameraMap(tester,
+        follow: false, location: _cameraFix(tester));
+    final locate = _manualLocateCallback(tester);
+    await tester.pump(CustomerLiveLocation.displayTtl);
+    await _flushNativeWrites(tester);
+    expect(find.text('Tìm tài xế'), findsNothing);
+    locate();
+    await _flushNativeWrites(tester);
+    expect(controller.cameraUpdates, isEmpty);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  for (final terminal in ['COMPLETED', 'CANCELLED']) {
+    testWidgets('Manual locate OFF cannot reuse private GPS after $terminal',
+        (tester) async {
+      final controller = await _startCameraMap(tester,
+          follow: false, location: _cameraFix(tester, latitude: 21.031));
+      final locate = _manualLocateCallback(tester);
+      await _showNativeTrackingMap(tester,
+          status: terminal, location: null, route: _warningTestRoute());
+      await _flushNativeWrites(tester);
+      expect(controller.cameraMoves, 0);
+      expect(controller.instantCameraMoves, 1);
+      expect(controller.cameraUpdates.single.toJson(), [
+        'newLatLng',
+        [closeTo(21.03, 1e-8), closeTo(105.85, 1e-8)]
+      ]);
+      locate();
+      await _flushNativeWrites(tester);
+      expect(controller.cameraUpdates, hasLength(1),
+          reason: 'Only the public privacy reset may move the camera.');
+      expect(controller.circles, isEmpty);
+      expect(controller.symbols, isEmpty);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets('Manual locate OFF keeps single-flight and uses latest fresh fix',
+      (tester) async {
+    final controller = _RecordingTrackingController()
+      ..delayCamera = Completer<void>();
+    final first =
+        CustomerLiveLocation(21.03, 105.85, null, 90, _wallNow(tester));
+    await _startCameraMap(tester,
+        follow: false, controller: controller, location: first);
+    await tester.tap(find.text('Tìm tài xế'));
+    await _flushNativeWrites(tester);
+    expect(controller.cameraUpdates, hasLength(1));
+    await tester.pump(const Duration(seconds: 1));
+    await _showNativeTrackingMap(tester,
+        location:
+            CustomerLiveLocation(21.0302, 105.85, 101, 90, _wallNow(tester)),
+        route: _warningTestRoute());
+    await tester.tap(find.text('Tìm tài xế'));
+    await _flushNativeWrites(tester);
+    expect(controller.cameraUpdates, hasLength(1));
+    controller.delayCamera!.complete();
+    await _flushNativeWrites(tester);
+    expect(controller.cameraUpdates, hasLength(2));
+    expect(controller.cameraUpdates.last.toJson(), [
+      'newLatLng',
+      [closeTo(21.0302, 1e-8), closeTo(105.85, 1e-8)]
+    ]);
+    expect(controller.maxActiveCameras, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Manual locate OFF does not inherit the automatic jump guard',
+      (tester) async {
+    final controller = await _startCameraMap(tester,
+        follow: false, location: _cameraFix(tester));
+    await tester.pump(const Duration(seconds: 1));
+    await _showNativeTrackingMap(tester,
+        location: _cameraFix(tester, latitude: 21.034),
+        route: _warningTestRoute());
+    await tester.tap(find.text('Tìm tài xế'));
+    await _flushNativeWrites(tester);
+    expect(controller.cameraUpdates, hasLength(1));
+    expect(controller.cameraUpdates.single.toJson(), [
+      'newLatLng',
+      [closeTo(21.034, 1e-8), closeTo(105.85, 1e-8)]
+    ]);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+      'Manual locate OFF ignores a disposed callback after camera failure',
+      (tester) async {
+    final controller = _RecordingTrackingController()..throwCamera = true;
+    await _startCameraMap(tester,
+        follow: false, controller: controller, location: _cameraFix(tester));
+    final locate = _manualLocateCallback(tester);
+    locate();
+    await _flushNativeWrites(tester);
+    expect(controller.cameraUpdates, hasLength(1));
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(locate, returnsNormally);
+    await tester.pump();
+    expect(controller.cameraUpdates, hasLength(1));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Camera flag OFF never automatically moves the camera',
+      (tester) async {
+    final controller = await _startCameraMap(tester,
+        follow: false, location: _cameraFix(tester));
+    await tester.pump(const Duration(seconds: 1));
+    await _showNativeTrackingMap(tester,
+        location: _cameraFix(tester, latitude: 21.0302));
+    await _flushNativeWrites(tester);
+    expect(controller.cameraUpdates, isEmpty);
+    expect(controller.circles.single.options.geometry!.latitude, 21.0302);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('First fresh GPS follows without replacing the native map',
+      (tester) async {
+    final controller = await _startCameraMap(tester, location: null);
+    final native = tester.state(find.byType(MapLibreMap));
+    expect(controller.cameraUpdates, isEmpty);
+    await _showNativeTrackingMap(tester,
+        cameraFollow: true,
+        route: _warningTestRoute(),
+        location: _cameraFix(tester, latitude: 21.0302));
+    await _flushNativeWrites(tester);
+    expect(_cameraMode(tester), 'follow');
+    expect(controller.cameraUpdates.single.toJson(), [
+      'newLatLng',
+      [closeTo(21.0302, 1e-8), closeTo(105.85, 1e-8)]
+    ]);
+    expect(
+        controller.cameraDurations.single, const Duration(milliseconds: 300));
+    expect(tester.state(find.byType(MapLibreMap)), same(native));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  for (final interpolation in [false, true]) {
+    testWidgets(
+        'Camera burst is bounded and latest-wins with interpolation $interpolation',
+        (tester) async {
+      final controller = _RecordingTrackingController()
+        ..delayCamera = Completer<void>();
+      final start = _wallNow(tester);
+      await _startCameraMap(tester,
+          controller: controller,
+          interpolation: interpolation,
+          location: _cameraFix(tester));
+      expect(controller.cameraUpdates, hasLength(1));
+      for (var i = 1; i <= 100; i++) {
+        await _showNativeTrackingMap(tester,
+            cameraFollow: true,
+            interpolation: interpolation,
+            route: _warningTestRoute(),
+            location: CustomerLiveLocation(21.03 + i * .000002, 105.85, 4, 90,
+                start.add(Duration(milliseconds: i * 10))));
+      }
+      await tester.pump(const Duration(milliseconds: 300));
+      await _flushNativeWrites(tester);
+      expect(controller.cameraUpdates, hasLength(1));
+      expect(controller.circles.single.options.geometry!.latitude,
+          closeTo(21.0302, 1e-9),
+          reason: 'A camera Future must not block annotation work.');
+      controller.delayCamera!.complete();
+      await _flushNativeWrites(tester);
+      await tester.pump(const Duration(milliseconds: 700));
+      await _flushNativeWrites(tester);
+      expect(controller.cameraUpdates, hasLength(2));
+      expect(controller.cameraUpdates.last.toJson(), [
+        'newLatLng',
+        [closeTo(21.0302, 1e-8), closeTo(105.85, 1e-8)]
+      ]);
+      expect(controller.maxActiveCameras, 1);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets('Stationary newer GPS avoids extra camera writes',
+      (tester) async {
+    final controller =
+        await _startCameraMap(tester, location: _cameraFix(tester));
+    for (var i = 0; i < 3; i++) {
+      await tester.pump(const Duration(seconds: 1));
+      await _showNativeTrackingMap(tester,
+          cameraFollow: true,
+          location: _cameraFix(tester),
+          route: _warningTestRoute());
+      await _flushNativeWrites(tester);
+    }
+    expect(controller.cameraUpdates, hasLength(1));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  for (final gestureKind in ['drag', 'pinch', 'double tap']) {
+    testWidgets(
+        'Map $gestureKind enters free explore; Follow restores preference',
+        (tester) async {
+      final controller =
+          await _startCameraMap(tester, location: _cameraFix(tester));
+      final point = tester
+          .getCenter(find.byKey(const ValueKey('customer-native-map-input')));
+      if (gestureKind == 'drag') {
+        await tester.dragFrom(point, const Offset(50, 0));
+      } else if (gestureKind == 'pinch') {
+        final a = await tester.startGesture(point, pointer: 1);
+        final b =
+            await tester.startGesture(point + const Offset(30, 0), pointer: 2);
+        await a.up();
+        await b.up();
+      } else {
+        await tester.tapAt(point);
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.tapAt(point);
+      }
+      await tester.pump();
+      expect(_cameraMode(tester), 'free');
+      await tester.pump(const Duration(seconds: 1));
+      await _showNativeTrackingMap(tester,
+          cameraFollow: true,
+          location: _cameraFix(tester, latitude: 21.0302),
+          route: _warningTestRoute());
+      await _flushNativeWrites(tester);
+      expect(controller.cameraUpdates, hasLength(1));
+      expect(controller.circles.single.options.geometry!.latitude, 21.0302);
+      await tester.tap(find.byKey(const ValueKey('customer-follow-button')));
+      await _flushNativeWrites(tester);
+      expect(_cameraMode(tester), 'follow');
+      expect(controller.cameraUpdates, hasLength(2));
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets('Pointer down holds camera; a single tap keeps follow',
+      (tester) async {
+    final controller =
+        await _startCameraMap(tester, location: _cameraFix(tester));
+    await tester.pump(const Duration(seconds: 1));
+    final point = tester
+        .getCenter(find.byKey(const ValueKey('customer-native-map-input')));
+    final touch = await tester.startGesture(point);
+    await _showNativeTrackingMap(tester,
+        cameraFollow: true, location: _cameraFix(tester, latitude: 21.0302));
+    await _flushNativeWrites(tester);
+    expect(controller.cameraUpdates, hasLength(1));
+    await touch.up();
+    await _flushNativeWrites(tester);
+    expect(_cameraMode(tester), 'follow');
+    expect(controller.cameraUpdates, hasLength(2));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Fit Route stays free despite later GPS and native idle activity',
+      (tester) async {
+    final controller =
+        await _startCameraMap(tester, location: _cameraFix(tester));
+    await tester.tap(find.byTooltip('Xem tuyến'));
+    await _flushNativeWrites(tester);
+    expect(_cameraMode(tester), 'free');
+    expect(controller.cameraUpdates.last.toJson().first, 'newLatLngBounds');
+    final calls = controller.cameraUpdates.length;
+    await tester.pump(const Duration(seconds: 1));
+    await _showNativeTrackingMap(tester,
+        cameraFollow: true,
+        route: _warningTestRoute(),
+        location: _cameraFix(tester, latitude: 21.0302));
+    await _flushNativeWrites(tester);
+    expect(controller.cameraUpdates, hasLength(calls));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  for (final free in [false, true]) {
+    testWidgets('Camera stale then fresh preserves free preference $free',
+        (tester) async {
+      final controller =
+          await _startCameraMap(tester, location: _cameraFix(tester));
+      if (free) {
+        await tester.dragFrom(
+            tester.getCenter(find.byType(MapLibreMap)), const Offset(40, 0));
+      }
+      await tester.pump(CustomerLiveLocation.displayTtl);
+      await _flushNativeWrites(tester);
+      expect(_cameraMode(tester), 'unavailable');
+      expect(controller.cameraUpdates, hasLength(1));
+      await _showNativeTrackingMap(tester,
+          cameraFollow: true,
+          location: _cameraFix(tester, latitude: 21.0302),
+          route: _warningTestRoute());
+      await _flushNativeWrites(tester);
+      expect(_cameraMode(tester), free ? 'free' : 'follow');
+      expect(controller.cameraUpdates, hasLength(free ? 1 : 2));
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  for (final bad in ['jump', 'accuracy', 'unknown accuracy']) {
+    testWidgets('Camera skips $bad without changing GPS or follow preference',
+        (tester) async {
+      final controller =
+          await _startCameraMap(tester, location: _cameraFix(tester));
+      await tester.pump(const Duration(seconds: 1));
+      final latitude = bad == 'jump' ? 21.034 : 21.0302;
+      await _showNativeTrackingMap(tester,
+          cameraFollow: true,
+          location: CustomerLiveLocation(
+              latitude,
+              105.85,
+              bad == 'accuracy'
+                  ? 101
+                  : bad == 'unknown accuracy'
+                      ? null
+                      : 4,
+              90,
+              _wallNow(tester)),
+          route: _warningTestRoute());
+      await _flushNativeWrites(tester);
+      expect(_cameraMode(tester), 'unavailable');
+      expect(controller.cameraUpdates, hasLength(1));
+      expect(controller.circles.single.options.geometry!.latitude, latitude);
+      await tester.pump(const Duration(seconds: 1));
+      await _showNativeTrackingMap(tester,
+          cameraFollow: true,
+          location: _cameraFix(tester, latitude: latitude + .00001),
+          route: _warningTestRoute());
+      await _flushNativeWrites(tester);
+      expect(_cameraMode(tester), 'follow');
+      expect(controller.cameraUpdates, hasLength(2));
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  for (final terminal in ['COMPLETED', 'CANCELLED']) {
+    testWidgets(
+        '$terminal covers camera until late animation and public reset finish',
+        (tester) async {
+      final controller = _RecordingTrackingController()
+        ..delayCamera = Completer<void>()
+        ..delayMoveCamera = Completer<void>();
+      await _startCameraMap(tester,
+          controller: controller,
+          location: _cameraFix(tester, latitude: 21.031));
+      final native = tester.state(find.byType(MapLibreMap));
+      await _showNativeTrackingMap(tester,
+          cameraFollow: true,
+          status: terminal,
+          location: null,
+          route: _warningTestRoute());
+      await _flushNativeWrites(tester);
+      expect(_cameraPrivacyCover(), findsOneWidget);
+      expect(controller.cameraUpdates, hasLength(1));
+      controller.delayCamera!.complete();
+      await _flushNativeWrites(tester);
+      expect(controller.instantCameraMoves, 1);
+      expect(_cameraPrivacyCover(), findsOneWidget);
+      expect(controller.cameraUpdates.last.toJson(), [
+        'newLatLng',
+        [closeTo(21.03, 1e-8), closeTo(105.85, 1e-8)]
+      ]);
+      controller.delayMoveCamera!.complete();
+      await _flushNativeWrites(tester);
+      expect(_cameraPrivacyCover(), findsNothing);
+      expect(controller.circles, isEmpty);
+      expect(controller.symbols, isEmpty);
+      expect(controller.maxActiveCameras, 1);
+      expect(tester.state(find.byType(MapLibreMap)), same(native));
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  for (final end in ['replacement', 'dispose']) {
+    testWidgets('Camera late completion cannot revive $end scope',
+        (tester) async {
+      final controller = _RecordingTrackingController()
+        ..delayCamera = Completer<void>();
+      await _startCameraMap(tester,
+          controller: controller, location: _cameraFix(tester));
+      if (end == 'replacement') {
+        await _showNativeTrackingMap(tester,
+            cameraFollow: true,
+            bookingId: 'other-booking',
+            location: _cameraFix(tester, latitude: 21.0302));
+      } else {
+        await tester.pumpWidget(const MaterialApp(home: Text('session ended')));
+      }
+      controller.delayCamera!.complete();
+      await _flushNativeWrites(tester);
+      await tester.pump(const Duration(seconds: 4));
+      expect(find.byType(MapLibreMap), findsNothing);
+      expect(controller.cameraUpdates, hasLength(1));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  for (final result in ['false', 'throw', 'timeout']) {
+    testWidgets('Camera $result fails closed without blocking marker updates',
+        (tester) async {
+      final controller = _RecordingTrackingController()
+        ..cameraResult = result != 'false'
+        ..throwCamera = result == 'throw';
+      if (result == 'timeout') controller.delayCamera = Completer<void>();
+      await _startCameraMap(tester,
+          controller: controller, location: _cameraFix(tester));
+      await tester.pump(const Duration(seconds: 3));
+      await _flushNativeWrites(tester);
+      expect(_cameraMode(tester), 'unavailable');
+      await _showNativeTrackingMap(tester,
+          cameraFollow: true,
+          location: _cameraFix(tester, latitude: 21.0302),
+          route: _warningTestRoute());
+      await _flushNativeWrites(tester);
+      expect(controller.circles.single.options.geometry!.latitude, 21.0302);
+      expect(controller.cameraUpdates, hasLength(1));
+      if (result == 'timeout') {
+        controller.delayCamera!.complete();
+        await _flushNativeWrites(tester);
+        expect(controller.cameraUpdates, hasLength(1));
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  for (final interpolation in [false, true]) {
+    testWidgets(
+        'Camera rate ignores normal marker ticks with interpolation $interpolation',
+        (tester) async {
+      final controller = await _startCameraMap(tester,
+          interpolation: interpolation, location: _cameraFix(tester));
+      await tester.pump(const Duration(seconds: 1));
+      await _showNativeTrackingMap(tester,
+          cameraFollow: true,
+          interpolation: interpolation,
+          location: _cameraFix(tester, latitude: 21.0302),
+          route: _warningTestRoute());
+      for (var i = 0; i < 3; i++) {
+        await tester.pump(CustomerMarkerMotion.tick);
+        await _flushNativeWrites(tester);
+        expect(controller.cameraUpdates, hasLength(2));
+      }
+      expect(controller.circles.single.options.geometry!.latitude,
+          closeTo(21.0302, 1e-8));
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  for (final layout in [
+    (const Size(800, 1280), 1.0),
+    (const Size(1280, 800), 1.0),
+    (const Size(320, 568), 1.0),
+    (const Size(320, 568), 2.0),
+    (const Size(320, 568), 3.0),
+  ]) {
+    testWidgets('Follow controls fit ${layout.$1} at text scale ${layout.$2}',
+        (tester) async {
+      tester.view.physicalSize = layout.$1;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      _installFakeMapLibre(tester);
+      await _showNativeTrackingMap(tester,
+          cameraFollow: true,
+          textScale: layout.$2,
+          theme: AppTheme.light,
+          location: _cameraFix(tester),
+          route: _warningTestRoute());
+      final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+      final native = tester.state(find.byType(MapLibreMap));
+      map.onMapCreated!(_RecordingTrackingController());
+      map.onStyleLoadedCallback!();
+      await _flushNativeWrites(tester);
+      final follow = find.byKey(const ValueKey('customer-follow-button'));
+      final route = find.byTooltip('Xem tuyến');
+      expect(tester.getSize(follow).width, greaterThanOrEqualTo(48));
+      expect(tester.getSize(follow).height, greaterThanOrEqualTo(48));
+      expect(route.hitTestable(), findsOneWidget);
+      expect(tester.getRect(follow).overlaps(tester.getRect(route)), isFalse);
+      final attribution =
+          tester.getRect(find.text(CustomerMapSource.visibleAttribution));
+      expect(attribution.overlaps(tester.getRect(route)), isFalse);
+      expect(attribution.overlaps(tester.getRect(follow)), isFalse);
+      await tester.pump(CustomerLiveLocation.displayTtl);
+      await _flushNativeWrites(tester);
+      final warning = tester
+          .getRect(find.byKey(const ValueKey('customer-gps-stale-warning')));
+      expect(warning.overlaps(tester.getRect(follow)), isFalse);
+      expect(warning.overlaps(tester.getRect(route)), isFalse);
+      expect(warning.overlaps(attribution), isFalse);
+      expect(tester.takeException(), isNull);
+      expect(tester.state(find.byType(MapLibreMap)), same(native));
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets('Terminal viewport privacy also applies with camera flag OFF',
+      (tester) async {
+    final controller = await _startCameraMap(tester,
+        follow: false, location: _cameraFix(tester));
+    await _showNativeTrackingMap(tester,
+        status: 'CANCELLED', location: null, route: _warningTestRoute());
+    await _flushNativeWrites(tester);
+    expect(controller.cameraMoves, 0);
+    expect(controller.instantCameraMoves, 1);
+    expect(_cameraPrivacyCover(), findsNothing);
+    expect(controller.cameraUpdates.single.toJson(), [
+      'newLatLng',
+      [closeTo(21.03, 1e-8), closeTo(105.85, 1e-8)]
+    ]);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('User drag wins over an in-flight animation and its late result',
+      (tester) async {
+    final controller = _RecordingTrackingController()
+      ..delayCamera = Completer<void>();
+    await _startCameraMap(tester,
+        controller: controller, location: _cameraFix(tester));
+    await tester.dragFrom(
+        tester.getCenter(find.byType(MapLibreMap)), const Offset(60, 0));
+    await tester.pump(const Duration(seconds: 1));
+    await _showNativeTrackingMap(tester,
+        cameraFollow: true,
+        location: _cameraFix(tester, latitude: 21.0302),
+        route: _warningTestRoute());
+    controller.delayCamera!.complete();
+    await _flushNativeWrites(tester);
+    expect(_cameraMode(tester), 'free');
+    expect(controller.cameraUpdates, hasLength(1));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Pending padding never dispatches an obsolete private target',
+      (tester) async {
+    final controller = _RecordingTrackingController()
+      ..delayPadding = Completer<void>();
+    await _startCameraMap(tester,
+        controller: controller, location: _cameraFix(tester));
+    expect(controller.cameraUpdates, isEmpty);
+    await _showNativeTrackingMap(tester,
+        cameraFollow: true,
+        status: 'COMPLETED',
+        location: null,
+        route: _warningTestRoute());
+    controller.delayPadding!.complete();
+    await _flushNativeWrites(tester);
+    expect(controller.cameraMoves, 0);
+    expect(controller.instantCameraMoves, 1);
+    expect(controller.cameraUpdates.single.toJson(), [
+      'newLatLng',
+      [closeTo(21.03, 1e-8), closeTo(105.85, 1e-8)]
+    ]);
+    expect(_cameraPrivacyCover(), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+      'Timed-out camera cannot uncover terminal viewport after late success',
+      (tester) async {
+    final controller = _RecordingTrackingController()
+      ..delayCamera = Completer<void>();
+    await _startCameraMap(tester,
+        controller: controller, location: _cameraFix(tester));
+    await tester.pump(const Duration(seconds: 3));
+    await _showNativeTrackingMap(tester,
+        cameraFollow: true,
+        status: 'CANCELLED',
+        location: null,
+        route: _warningTestRoute());
+    await _flushNativeWrites(tester);
+    expect(_cameraPrivacyCover(), findsOneWidget);
+    controller.delayCamera!.complete();
+    await _flushNativeWrites(tester);
+    expect(controller.cameraUpdates, hasLength(1));
+    expect(_cameraPrivacyCover(), findsOneWidget);
+    expect(controller.circles, isEmpty);
+    expect(controller.symbols, isEmpty);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+      'Terminal without a public seed removes the retained native viewport',
+      (tester) async {
+    final controller =
+        await _startCameraMap(tester, location: _cameraFix(tester));
+    await _showNativeTrackingMap(tester,
+        cameraFollow: true, status: 'COMPLETED', location: null);
+    await _flushNativeWrites(tester);
+    expect(find.byType(MapLibreMap), findsNothing);
+    expect(find.text('Vị trí tài xế đã được ẩn.'), findsOneWidget);
+    expect(controller.cameraUpdates, hasLength(1));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Style reload cannot uncover a pending public camera reset',
+      (tester) async {
+    final controller = _RecordingTrackingController()
+      ..delayMoveCamera = Completer<void>();
+    await _startCameraMap(tester,
+        controller: controller, location: _cameraFix(tester));
+    await _showNativeTrackingMap(tester,
+        cameraFollow: true,
+        status: 'COMPLETED',
+        location: null,
+        route: _warningTestRoute());
+    await _flushNativeWrites(tester);
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    expect(_cameraPrivacyCover(), findsOneWidget);
+    expect(controller.instantCameraMoves, 1);
+    controller.delayMoveCamera!.complete();
+    await _flushNativeWrites(tester);
+    expect(controller.instantCameraMoves, 2);
+    expect(controller.maxActiveCameras, 1);
+    expect(_cameraPrivacyCover(), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+      'Duplicate older and future GPS cannot enqueue new camera targets',
+      (tester) async {
+    final original = _cameraFix(tester);
+    final controller = await _startCameraMap(tester, location: original);
+    for (final stamp in [
+      original.updatedAt,
+      original.updatedAt.subtract(const Duration(seconds: 1)),
+      original.updatedAt.add(const Duration(seconds: 6))
+    ]) {
+      await _showNativeTrackingMap(tester,
+          cameraFollow: true,
+          location: CustomerLiveLocation(22, 106, 4, 90, stamp),
+          route: _warningTestRoute());
+      await _flushNativeWrites(tester);
+    }
+    expect(controller.cameraUpdates, hasLength(1));
+    expect(controller.circles.single.options.geometry!.latitude, 21.03);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+      'Reduced motion moves once and padding follows settled sheet only',
+      (tester) async {
+    final controller = await _startCameraMap(tester,
+        reducedMotion: true, location: _cameraFix(tester));
+    expect(controller.cameraMoves, 0);
+    expect(controller.instantCameraMoves, 1);
+    expect(controller.cameraUpdates.single.toJson().first, 'newLatLng');
+    await tester.pump(const Duration(seconds: 1));
+    await _showNativeTrackingMap(tester,
+        cameraFollow: true,
+        reducedMotion: true,
+        sheetExtent: .58,
+        route: _warningTestRoute(),
+        location: _cameraFix(tester));
+    await _flushNativeWrites(tester);
+    expect(
+        controller.cameraPaddings.last.bottom,
+        closeTo(
+            tester.getSize(find.byType(MapLibreMap)).height * .58 + 12, .1));
+    expect(controller.instantCameraMoves, 2);
+    expect(controller.cameraMoves, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+      'Camera pause resume and style reload revalidate latest fresh target',
+      (tester) async {
+    final controller = _RecordingTrackingController()
+      ..delayCamera = Completer<void>();
+    await _startCameraMap(tester,
+        controller: controller, location: _cameraFix(tester));
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    controller.delayCamera!.complete();
+    await _flushNativeWrites(tester);
+    expect(controller.cameraUpdates, hasLength(1));
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    expect(controller.maxActiveCameras, 1);
+    expect(_cameraMode(tester), 'follow');
+    await tester.pump(CustomerLiveLocation.displayTtl);
+    await _flushNativeWrites(tester);
+    expect(_cameraMode(tester), 'unavailable');
+    final calls = controller.cameraUpdates.length;
+    map.onStyleLoadedCallback!();
+    await _flushNativeWrites(tester);
+    expect(controller.cameraUpdates, hasLength(calls));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets(
       'GPS expires at 20s without a frame and keeps native map and route',
       (tester) async {
@@ -1216,6 +2018,7 @@ void main() {
     await tester.pumpWidget(MaterialApp(
         home: Scaffold(
             body: CustomerTripTrackingMap(
+                trackingStatus: 'IN_PROGRESS',
                 location: null,
                 pickup: const Coordinates(21.03, 105.85),
                 searchingForDriver: true,
@@ -1239,6 +2042,44 @@ void main() {
     expect(controller.circles, isEmpty);
   });
 }
+
+CustomerLiveLocation _cameraFix(WidgetTester tester,
+        {double latitude = 21.03}) =>
+    CustomerLiveLocation(latitude, 105.85, 4, 90, _wallNow(tester));
+
+String? _cameraMode(WidgetTester tester) => tester
+    .widget<Semantics>(find.byKey(const ValueKey('customer-camera-mode')))
+    .properties
+    .value;
+
+Finder _cameraPrivacyCover() => find.byWidgetPredicate(
+    (w) => w is ColoredBox && w.color == const Color(0xFFF8F9FA));
+
+Future<_RecordingTrackingController> _startCameraMap(WidgetTester tester,
+    {required CustomerLiveLocation? location,
+    bool follow = true,
+    bool interpolation = false,
+    bool reducedMotion = false,
+    _RecordingTrackingController? controller}) async {
+  _installFakeMapLibre(tester);
+  await _showNativeTrackingMap(tester,
+      cameraFollow: follow,
+      interpolation: interpolation,
+      reducedMotion: reducedMotion,
+      location: location,
+      route: _warningTestRoute());
+  final map = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
+  final recording = controller ?? _RecordingTrackingController();
+  map.onMapCreated!(recording);
+  map.onStyleLoadedCallback!();
+  await _flushNativeWrites(tester);
+  return recording;
+}
+
+VoidCallback _manualLocateCallback(WidgetTester tester) => tester
+    .widget<TextButton>(find.ancestor(
+        of: find.text('Tìm tài xế'), matching: find.byType(TextButton)))
+    .onPressed!;
 
 class _FakeMapLibrePlatform extends Fake implements MapLibrePlatform {
   @override
@@ -1327,24 +2168,33 @@ Future<void> _showNativeTrackingMap(WidgetTester tester,
     Coordinates? dropoff,
     RoadRoute? route,
     bool interpolation = false,
+    bool cameraFollow = false,
+    String status = 'IN_PROGRESS',
+    String bookingId = 'booking-symbol-lifecycle',
+    double sheetExtent = .30,
+    bool? reducedMotion,
     ThemeData? theme,
     double textScale = 1,
     ValueChanged<bool>? onStale}) async {
   await tester.pumpWidget(MaterialApp(
       theme: theme,
       builder: (context, child) => MediaQuery(
-          data: MediaQuery.of(context)
-              .copyWith(textScaler: TextScaler.linear(textScale)),
+          data: MediaQuery.of(context).copyWith(
+              textScaler: TextScaler.linear(textScale),
+              disableAnimations: reducedMotion),
           child: child!),
       home: Scaffold(
           body: SizedBox.expand(
               child: CustomerTripTrackingMap(
+        trackingStatus: status,
         motionElapsed: () => _elapsed(tester),
         motionNow: () => _wallNow(tester),
-        bookingPublicId: 'booking-symbol-lifecycle',
+        bookingPublicId: bookingId,
         fullBleed: true,
         route: route,
         enableMarkerInterpolation: interpolation,
+        enableCameraFollow: cameraFollow,
+        sheetExtent: sheetExtent,
         onGpsStaleChanged: onStale,
         location: location,
         pickup: pickup,
@@ -1363,6 +2213,17 @@ Future<void> _flushNativeWrites(WidgetTester tester) async {
 class _RecordingTrackingController extends Fake
     implements MapLibreMapController {
   int cameraMoves = 0;
+  int instantCameraMoves = 0;
+  int activeCameras = 0;
+  int maxActiveCameras = 0;
+  final cameraUpdates = <CameraUpdate>[];
+  final cameraDurations = <Duration?>[];
+  final cameraPaddings = <EdgeInsets>[];
+  Completer<void>? delayCamera;
+  Completer<void>? delayMoveCamera;
+  Completer<void>? delayPadding;
+  bool cameraResult = true;
+  bool throwCamera = false;
   int circleUpdates = 0;
   int circleAdds = 0;
   int circleRemovals = 0;
@@ -1483,6 +2344,38 @@ class _RecordingTrackingController extends Fake
   Future<bool?> animateCamera(CameraUpdate cameraUpdate,
       {Duration? duration}) async {
     cameraMoves++;
-    return true;
+    cameraDurations.add(duration);
+    return _recordCamera(cameraUpdate, delayCamera);
+  }
+
+  @override
+  Future<bool?> moveCamera(CameraUpdate cameraUpdate) async {
+    instantCameraMoves++;
+    return _recordCamera(cameraUpdate, delayMoveCamera);
+  }
+
+  Future<bool?> _recordCamera(
+      CameraUpdate update, Completer<void>? delay) async {
+    cameraUpdates.add(update);
+    activeCameras++;
+    if (activeCameras > maxActiveCameras) maxActiveCameras = activeCameras;
+    try {
+      await delay?.future;
+      if (throwCamera) throw StateError('camera unavailable');
+      return cameraResult;
+    } finally {
+      activeCameras--;
+    }
+  }
+
+  @override
+  Future<void> setPadding(
+      {double left = 0,
+      double top = 0,
+      double right = 0,
+      double bottom = 0,
+      bool animated = false}) async {
+    cameraPaddings.add(EdgeInsets.fromLTRB(left, top, right, bottom));
+    await delayPadding?.future;
   }
 }

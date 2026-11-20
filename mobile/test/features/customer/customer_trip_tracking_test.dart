@@ -443,6 +443,49 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('Tracking map receives only settled sheet extent without remount',
+      (tester) async {
+    final base = DateTime.utc(2026, 11, 19, 8);
+    trips.value = tracking('IN_PROGRESS',
+        latitude: 21,
+        longitude: 105,
+        accuracy: 4,
+        bearing: 90,
+        locationUpdatedAt: base);
+    registerScreenServices();
+    await tester.pumpWidget(MaterialApp(
+        home:
+            BookingStatusScreen(booking: booking(), trackingNow: () => base)));
+    await tester.pump();
+    await tester.pump();
+    final native = tester.state(find.byType(CustomerTripTrackingMap));
+    final context =
+        tester.element(find.byKey(const ValueKey('customer-trip-sheet')));
+    for (final extent in [.40, .50, .58]) {
+      DraggableScrollableNotification(
+              extent: extent,
+              minExtent: .30,
+              maxExtent: .86,
+              initialExtent: .30,
+              context: context)
+          .dispatch(context);
+      await tester.pump(const Duration(milliseconds: 30));
+    }
+    expect(
+        tester
+            .widget<CustomerTripTrackingMap>(
+                find.byType(CustomerTripTrackingMap))
+            .sheetExtent,
+        .30);
+    await tester.pump(const Duration(milliseconds: 150));
+    final map = tester
+        .widget<CustomerTripTrackingMap>(find.byType(CustomerTripTrackingMap));
+    expect(map.sheetExtent, .58);
+    expect(map.trackingStatus, 'IN_PROGRESS');
+    expect(tester.state(find.byType(CustomerTripTrackingMap)), same(native));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   for (final terminal in ['COMPLETED', 'CANCELLED']) {
     testWidgets(
         'GPS status surfaces stay consistent through connected stale fresh and $terminal',
@@ -555,6 +598,8 @@ void main() {
           findsOneWidget);
       expect(find.text(stale), findsNothing);
       expect(find.text(updating), findsNothing);
+      expect(find.byType(CustomerTripTrackingMap), findsNothing,
+          reason: 'No GPS or authorized public points remain in this fixture.');
       expect(find.text('Chờ xác nhận thanh toán'),
           terminal == 'COMPLETED' ? findsOneWidget : findsNothing);
       expect(trips.transitionCalls, 0);

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../../core/config/app_config.dart';
@@ -121,6 +123,29 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
   int _pointsRequest = 0;
   String? _customerPublicId;
   bool _gpsStale = false;
+  double _settledSheetExtent = .30;
+  Timer? _sheetSettleTimer;
+  int _sheetLayoutRevision = 0;
+
+  bool _onSheetExtent(DraggableScrollableNotification notification) {
+    final revision = ++_sheetLayoutRevision;
+    final booking = widget.booking.publicId;
+    _sheetSettleTimer?.cancel();
+    _sheetSettleTimer = Timer(const Duration(milliseconds: 150), () {
+      if (!mounted ||
+          revision != _sheetLayoutRevision ||
+          _cubit.state.sessionEnded ||
+          widget.booking.publicId != booking ||
+          _cubit.state.booking.publicId != booking) {
+        return;
+      }
+      final extent = notification.extent.clamp(.30, .86);
+      if ((extent - _settledSheetExtent).abs() > .001) {
+        setState(() => _settledSheetExtent = extent);
+      }
+    });
+    return false;
+  }
 
   @override
   void initState() {
@@ -221,6 +246,8 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
       });
       _loadPoints();
     } else {
+      _sheetSettleTimer?.cancel();
+      _sheetLayoutRevision++;
       _cubit.stop();
       _pointsRequest++;
       setState(() {
@@ -234,6 +261,8 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
 
   @override
   void dispose() {
+    _sheetSettleTimer?.cancel();
+    _sheetLayoutRevision++;
     WidgetsBinding.instance.removeObserver(this);
     _pointsRequest++;
     _cubit.stop();
@@ -294,7 +323,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
             final motionDuration = AppMotion.duration(context, AppMotion.card);
             final cashDuration = AppMotion.duration(context, AppMotion.cash);
             final reduceMotion = AppMotion.reduceMotion(context);
-            return SafeArea(
+            final content = SafeArea(
               child: Stack(children: [
                 Positioned.fill(
                   child: AuthorizedRoadRoute(
@@ -315,6 +344,8 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                                 key: ValueKey(
                                     'customer-trip-map-${booking.publicId}'),
                                 bookingPublicId: booking.publicId,
+                                trackingStatus: state.status,
+                                sheetExtent: _settledSheetExtent,
                                 searchingForDriver:
                                     state.status == 'SEARCHING_DRIVER',
                                 motionNow: widget.trackingNow,
@@ -803,6 +834,8 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                 ),
               ]),
             );
+            return NotificationListener<DraggableScrollableNotification>(
+                onNotification: _onSheetExtent, child: content);
           }),
         ),
       );

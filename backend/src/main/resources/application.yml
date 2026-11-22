@@ -38,6 +38,8 @@ gomove:
     radius-meters: 5000
     retry-seconds: 5
     search-timeout-seconds: 120
+    reputation-tie-break-enabled: ${GOMOVE_DISPATCH_REPUTATION_TIE_BREAK_ENABLED:false}
+    near-equal-meters: ${GOMOVE_DISPATCH_NEAR_EQUAL_METERS:50}
   routing:
     osrm:
       base-url: ${OSRM_BASE_URL:http://localhost:5000}

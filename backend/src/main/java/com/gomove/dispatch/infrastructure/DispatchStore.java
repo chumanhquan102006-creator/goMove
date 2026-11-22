@@ -19,6 +19,49 @@ import java.util.UUID;
 
 @Repository
 public class DispatchStore {
+    // Restrict ratings aggregation to the near-equal eligible group, using V18's driver index.
+    // The outer Driver row is locked; the materialized distance set is this attempt's snapshot.
+    static final String REPUTATION_CANDIDATE_SQL = """
+            WITH eligible AS MATERIALIZED (
+                SELECT d.id AS driver_id, v.id AS vehicle_id,
+                       ST_Distance(dl.current_location, b.pickup_location) AS distance_meters
+                FROM bookings b
+                JOIN driver_locations dl ON ST_DWithin(dl.current_location, b.pickup_location, ?)
+                JOIN drivers d ON d.id = dl.driver_id
+                JOIN vehicles v ON v.driver_id = d.id AND v.is_active = TRUE
+                WHERE b.id = ? AND d.approval_status = 'APPROVED'
+                  AND d.operating_status = 'ONLINE'
+                  AND v.vehicle_type = b.vehicle_type
+                  AND dl.updated_at >= ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM booking_driver_offers previous
+                      WHERE previous.booking_id = b.id AND previous.driver_id = d.id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM booking_driver_offers pending
+                      WHERE pending.driver_id = d.id AND pending.status = 'PENDING'
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM bookings assigned
+                      WHERE assigned.assigned_driver_id = d.id AND assigned.driver_released_at IS NULL
+                  )
+            ), near_equal AS MATERIALIZED (
+                SELECT * FROM eligible
+                WHERE distance_meters <= (SELECT min(distance_meters) FROM eligible) + ?
+            )
+            SELECT d.id AS driver_id, c.vehicle_id
+            FROM near_equal c JOIN drivers d ON d.id = c.driver_id
+            CROSS JOIN LATERAL (
+                -- MVP prior: ten neutral 4-star ratings; never use rounded averages or GoPoints.
+                SELECT (COALESCE(sum(r.stars), 0)::numeric + 10 * 4.0)
+                       / (count(*) + 10) AS score
+                FROM trip_ratings r WHERE r.driver_id = c.driver_id
+            ) reputation
+            WHERE d.approval_status = 'APPROVED' AND d.operating_status = 'ONLINE'
+            ORDER BY reputation.score DESC, c.distance_meters, d.id
+            LIMIT 1 FOR UPDATE OF d SKIP LOCKED
+            """;
+
     private final JdbcTemplate jdbc;
 
     public DispatchStore(JdbcTemplate jdbc) { this.jdbc = jdbc; }
@@ -117,6 +160,13 @@ public class DispatchStore {
                 LIMIT 1 FOR UPDATE OF d SKIP LOCKED
                 """, (rs, row) -> new Candidate(rs.getLong("driver_id"), rs.getLong("vehicle_id")),
                 radiusMeters, bookingId, ts(freshnessCutoff)).stream().findFirst();
+    }
+
+    public Optional<Candidate> reputationCandidate(Long bookingId, Instant freshnessCutoff,
+                                                  double radiusMeters, double nearEqualMeters) {
+        return jdbc.query(REPUTATION_CANDIDATE_SQL,
+                (rs, row) -> new Candidate(rs.getLong("driver_id"), rs.getLong("vehicle_id")),
+                radiusMeters, bookingId, ts(freshnessCutoff), nearEqualMeters).stream().findFirst();
     }
 
     public boolean createOffer(Long bookingId, Candidate candidate, Instant offeredAt) {

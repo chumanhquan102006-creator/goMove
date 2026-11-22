@@ -18,6 +18,9 @@ public class DispatchProperties {
     @Min(15)
     @Max(3600)
     private long searchTimeoutSeconds = 120;
+    private boolean reputationTieBreakEnabled = false;
+    @Min(0) @Max(5000)
+    private int nearEqualMeters = 50;
 
     public double getRadiusMeters() { return radiusMeters; }
     public void setRadiusMeters(double radiusMeters) { this.radiusMeters = radiusMeters; }
@@ -27,4 +30,8 @@ public class DispatchProperties {
     public void setRetrySeconds(long retrySeconds) { this.retrySeconds = retrySeconds; }
     public long getSearchTimeoutSeconds() { return searchTimeoutSeconds; }
     public void setSearchTimeoutSeconds(long searchTimeoutSeconds) { this.searchTimeoutSeconds = searchTimeoutSeconds; }
+    public boolean isReputationTieBreakEnabled() { return reputationTieBreakEnabled; }
+    public void setReputationTieBreakEnabled(boolean reputationTieBreakEnabled) { this.reputationTieBreakEnabled = reputationTieBreakEnabled; }
+    public int getNearEqualMeters() { return nearEqualMeters; }
+    public void setNearEqualMeters(int nearEqualMeters) { this.nearEqualMeters = nearEqualMeters; }
 }

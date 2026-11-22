@@ -67,9 +67,11 @@ public class DispatchTransactionService {
             return;
         }
 
-        var candidate = store.nearestCandidate(bookingId,
-                now.minusSeconds(locationProperties.getDispatchFreshnessSeconds()),
-                properties.getRadiusMeters());
+        Instant freshnessCutoff = now.minusSeconds(locationProperties.getDispatchFreshnessSeconds());
+        var candidate = properties.isReputationTieBreakEnabled()
+                ? store.reputationCandidate(bookingId, freshnessCutoff,
+                        properties.getRadiusMeters(), properties.getNearEqualMeters())
+                : store.nearestCandidate(bookingId, freshnessCutoff, properties.getRadiusMeters());
         if (candidate.isPresent()) {
             // The query owns the Driver lock; acquire Vehicle next, then recheck mutable eligibility.
             var vehicle = store.lockVehicle(candidate.get().vehicleId());

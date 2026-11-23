@@ -1,0 +1,81 @@
+// Pipeline from SCM; checkout, tests and new artifacts all use the same GitHub revision.
+def demoStep(String action) {
+    withEnv(["DEMO_ACTION=${action}"]) {
+        int rc = bat(returnStatus: true, script: '''
+@echo off
+pwsh -NoLogo -NoProfile -NonInteractive -File "%DEMO_SOURCE%\\ci\\Invoke-GoMoveDemo.ps1" -Action "%DEMO_ACTION%"
+''')
+        echo "GoMove demo ${action} exitCode=${rc}"
+        if (rc != 0) { error("GoMove demo ${action} failed; dependent stages are blocked.") }
+    }
+}
+pipeline {
+    agent any
+    options {
+        skipDefaultCheckout(true)
+        disableConcurrentBuilds()
+        disableResume()
+        timestamps()
+        timeout(time: 90, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+    triggers { githubPush() }
+    parameters {
+        string(name: 'OSRM_DATA_DIR', defaultValue: 'D:/GoMove-routing',
+               description: 'Existing reviewed Hanoi MLD dataset; mounted read-only.')
+    }
+    environment {
+        // Build-scoped only. The controller launcher also fixes SCM bootstrap before this file loads.
+        GIT_CONFIG_COUNT = '0'
+        GIT_TERMINAL_PROMPT = '0'
+        MAVEN_OPTS = '-Xmx512m -XX:MaxMetaspaceSize=256m -XX:ActiveProcessorCount=2'
+    }
+    stages {
+        stage('01 Checkout') {
+            steps {
+                script {
+                    if (isUnix()) { error('This demo requires the isolated Windows controller.') }
+                    if (currentBuild.getBuildCauses('com.cloudbees.jenkins.GitHubPushCause').isEmpty()) {
+                        error('This demo requires a real GitHub push cause; manual builds/pings are not proof.')
+                    }
+                    env.DEMO_PUSH_CAUSE_VERIFIED = 'true'
+                    int preflight = bat(returnStatus: true, script: '''
+@echo off
+pwsh -NoLogo -NoProfile -NonInteractive -Command "$ErrorActionPreference='Stop'; $h=Join-Path ([Environment]::GetFolderPath('UserProfile')) 'AppData/Local/GoMove/JenkinsPhase5/controller-20261123-df0804b/home'; if([IO.Path]::GetFullPath($env:JENKINS_HOME) -ne [IO.Path]::GetFullPath($h) -or $env:JOB_NAME -ne 'GoMove-GitHub-Demo-CI'){throw 'Wrong controller/job'}; if(([long](Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory*1024) -lt 6GB){exit 42}"
+''')
+                    if (preflight != 0) { error("Checkout preflight failed: ${preflight}") }
+                    if (fileExists("runs/${env.BUILD_NUMBER}")) { error('Refuse reusing a previous run directory.') }
+                    dir("runs/${env.BUILD_NUMBER}/source") {
+                        def checked = checkout scm
+                        env.DEMO_COMMIT_SHA = checked.GIT_COMMIT
+                        env.DEMO_SOURCE = pwd()
+                    }
+                    demoStep('Init')
+                }
+            }
+        }
+        stage('02 Restore Dependencies') { steps { script { demoStep('Restore') } } }
+        stage('03 Validate') { steps { script { demoStep('Validate') } } }
+        stage('04 Unit Test') { steps { script { demoStep('FlutterTests') } } }
+        stage('05 Integration Test') {
+            steps { script { demoStep('BackendTests') } }
+            post {
+                always {
+                    junit allowEmptyResults: false,
+                          testResults: "runs/${env.BUILD_NUMBER}/source/backend/target/surefire-reports/TEST-*.xml"
+                }
+            }
+        }
+        stage('06 Build JAR') { steps { script { demoStep('BuildJar') } } }
+        stage('07 Docker Build') { steps { script { demoStep('BuildImage') } } }
+        stage('08 Verify Image') { steps { script { demoStep('VerifyImage') } } }
+        stage('09 Deploy Isolated Staging') { steps { script { demoStep('Deploy') } } }
+        stage('10 Smoke Test') { steps { script { demoStep('Smoke') } } }
+    }
+    post {
+        always {
+            archiveArtifacts allowEmptyArchive: true,
+                artifacts: "runs/${env.BUILD_NUMBER}/evidence/*.json,runs/${env.BUILD_NUMBER}/evidence/*.jar"
+        }
+    }
+}

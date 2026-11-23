@@ -1,3 +1,9 @@
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 4
+      minimum-idle: 1
+
 gomove:
   dispatch:
     enabled: false

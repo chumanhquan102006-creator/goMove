@@ -6,13 +6,13 @@ import com.gomove.auth.domain.*;
 import com.gomove.auth.infrastructure.JwtTokenProvider;
 import com.gomove.booking.domain.*;
 import com.gomove.booking.service.BookingApplicationService;
-import com.gomove.common.BaseIntegrationTest;
 import com.gomove.dispatch.service.DispatchProperties;
 import com.gomove.dispatch.service.DispatchWorker;
 import com.gomove.driver.domain.*;
 import com.gomove.pricing.domain.*;
 import com.gomove.pricing.engine.PricingEngine;
 import com.gomove.vehicle.domain.*;
+import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,8 +27,13 @@ import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.config.ScheduledTaskHolder;
 import org.springframework.test.annotation.DirtiesContext;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
 
 import javax.sql.DataSource;
 import java.math.BigDecimal;
@@ -60,7 +65,30 @@ import static org.awaitility.Awaitility.await;
 })
 @Import(DispatchReputationRuntimeE2ETest.ClockConfiguration.class)
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
-class DispatchReputationRuntimeE2ETest extends BaseIntegrationTest {
+@ActiveProfiles("test")
+class DispatchReputationRuntimeE2ETest {
+    // The live worker and whole-database assertions require an empty database.
+    // Keep committed HTTP fixtures out of the shared integration-test container,
+    // including when an assertion fails. Ryuk owns this container's lifecycle.
+    private static final PostgreSQLContainer<?> postgres;
+
+    static {
+        String image = System.getProperty("gomove.test.postgis-image", "postgis/postgis:16-3.5");
+        postgres = new PostgreSQLContainer<>(DockerImageName.parse(image)
+                .asCompatibleSubstituteFor("postgres"))
+                .withDatabaseName("dispatch_runtime")
+                .withUsername("test")
+                .withPassword("test");
+        postgres.start();
+    }
+
+    @DynamicPropertySource
+    static void configureProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.username", postgres::getUsername);
+        registry.add("spring.datasource.password", postgres::getPassword);
+    }
+
     private static final Instant NOW = Instant.parse("2030-01-01T01:00:00Z");
     private static final double LAT = 21.0287;
     private static final double LON = 105.8524;
@@ -87,6 +115,10 @@ class DispatchReputationRuntimeE2ETest extends BaseIntegrationTest {
     @Test
     @Timeout(45)
     void e2eDispatch01SchedulerOffersOnlyHigherReputationDriverThroughRealHttp() throws Exception {
+        assertThat(dataSource).isInstanceOf(HikariDataSource.class);
+        HikariDataSource pool = (HikariDataSource) dataSource;
+        assertThat(pool.getMaximumPoolSize()).isEqualTo(4);
+        assertThat(pool.getMinimumIdle()).isEqualTo(1);
         assertThat(properties.isReputationTieBreakEnabled()).isTrue();
         assertThat(properties.getNearEqualMeters()).isEqualTo(50);
         assertThat(environment.getProperty("gomove.dispatch.enabled", Boolean.class)).isTrue();

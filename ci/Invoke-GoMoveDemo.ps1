@@ -397,8 +397,21 @@ try {
                 $relative=[IO.Path]::GetRelativePath($context,$file.FullName)
                 if($relative -notin @('Dockerfile','app.jar','.dockerignore') -and $relative -notmatch '^health[\\/][A-Za-z0-9_$]+\.class$'){throw 'Unexpected file in minimal Docker build context'}
             }
-            # Fetch only the immutable official runtime base; this is not an application-image reuse.
-            Native docker @('pull','--platform','linux/amd64','eclipse-temurin:21-jre@sha256:0b99b3376fbb50dbf9c0af8535fdd5b8eb0d3fdfc8b1e4967f383b6919f6901a') -Show|Out-Null
+            $baseReference='eclipse-temurin:21-jre@sha256:0b99b3376fbb50dbf9c0af8535fdd5b8eb0d3fdfc8b1e4967f383b6919f6901a'
+            $baseDigest=$baseReference.Split('@')[1]
+            # A successful inventory proves absence. Docker/JSON errors must propagate, not
+            # become cache misses. Never depend on registry DNS when this exact ref is cached.
+            $inventory=Native docker @('image','ls','--all','--digests','--no-trunc','--format','{{json .}}')
+            $inventoryRows=@($inventory -split '\r?\n'|Where-Object{$_}|ForEach-Object{$_|ConvertFrom-Json})
+            foreach($row in $inventoryRows){if(!$row.Repository -or !$row.Digest -or $row.ID -notmatch '^sha256:[a-f0-9]{64}$'){throw 'Invalid Docker image inventory'}}
+            $cachedBase=@($inventoryRows|Where-Object{
+                $_.Repository -in @('eclipse-temurin','docker.io/library/eclipse-temurin','index.docker.io/library/eclipse-temurin') -and $_.Digest -ceq $baseDigest
+            }).Count -gt 0
+            if(!$cachedBase){Native docker @('pull','--platform','linux/amd64',$baseReference) -Show|Out-Null}
+            $base=Native docker @('image','inspect','--platform','linux/amd64','--format','{{json .}}',$baseReference)|ConvertFrom-Json
+            if($base.Id -notmatch '^sha256:[a-f0-9]{64}$' -or $base.Os -cne 'linux' -or $base.Architecture -cne 'amd64' -or
+               @($base.RepoDigests|Where-Object{$_ -cin @(('eclipse-temurin@'+$baseDigest),('docker.io/library/eclipse-temurin@'+$baseDigest),('index.docker.io/library/eclipse-temurin@'+$baseDigest))}).Count -eq 0){throw 'Pinned base digest/platform mismatch'}
+            Write-Host ('Pinned linux/amd64 base verified; pulled='+(!$cachedBase))
             $tag='gomove-demo-ci:'+ $Revision.Substring(0,12)+'-b'+$env:BUILD_NUMBER
             $iid=Join-Path $Evidence 'image-id'
             Native docker @('build','--platform','linux/amd64','--pull=false','--network','none','--label',('org.opencontainers.image.revision='+$Revision),'--label',('org.opencontainers.image.source='+$RepositoryUrl),'--label',('gomove.jar.sha256='+$script:DemoState.steps.BuildJar.data.sha256),'--label',('gomove.jenkins.build='+$env:BUILD_NUMBER),'--iidfile',$iid,'-t',$tag,(Join-Path $Run 'image-context')) -Show|Out-Null

@@ -223,10 +223,10 @@ function WaitPostgresTcp {
     if((Sql 'SELECT 1;').Trim() -ne '1'){throw 'Authenticated TCP SELECT 1 failed'}
 }
 function ImageGate {
-    $image=Native docker @('image','inspect','--format','{{json .}}',$Image)|ConvertFrom-Json -AsHashtable
-    if($image.Id -ne $Image -or $image.Os -ne 'linux' -or $image.Architecture -ne 'amd64' -or $image.Config.User -ne '10001:10001' -or
-       $image.Config.Labels['org.opencontainers.image.revision'] -ne $Revision -or $image.Config.Labels['gomove.jar.sha256'] -ne $script:DemoState.steps.BuildJar.data.sha256){throw 'New image provenance mismatch'}
-    @{id=$image.Id;revision=$Revision;jarSha256=$image.Config.Labels['gomove.jar.sha256'];os=$image.Os;architecture=$image.Architecture}
+    $metadata=Native docker @('image','inspect','--format','{{json .}}',$Image)|ConvertFrom-Json -AsHashtable
+    if($metadata.Id -ne $Image -or $metadata.Os -ne 'linux' -or $metadata.Architecture -ne 'amd64' -or $metadata.Config.User -ne '10001:10001' -or
+       $metadata.Config.Labels['org.opencontainers.image.revision'] -ne $Revision -or $metadata.Config.Labels['gomove.jar.sha256'] -ne $script:DemoState.steps.BuildJar.data.sha256){throw 'New image provenance mismatch'}
+    @{id=$metadata.Id;revision=$Revision;jarSha256=$metadata.Config.Labels['gomove.jar.sha256'];os=$metadata.Os;architecture=$metadata.Architecture}
 }
 function ComposeGate {
     $dataRoot=TrustedPath $env:DEMO_OSRM_DATA_DIR '$env:DEMO_OSRM_DATA_DIR'

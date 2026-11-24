@@ -146,16 +146,16 @@ function Record([string]$Name,$Data) {
 function SaveState {
     if($null -ne $script:DemoState){[IO.File]::WriteAllText($StatePath,($script:DemoState|ConvertTo-Json -Depth 24),[Text.UTF8Encoding]::new($false))}
 }
-function TrustedPath([string]$Path) {
-    if([string]::IsNullOrWhiteSpace($Path) -or ![IO.Path]::IsPathFullyQualified($Path) -or $Path -match '["\r\n%!]'){throw 'Invalid absolute Windows path'}
+function TrustedPath([string]$Path, [string]$Name="path") {
+    if([string]::IsNullOrWhiteSpace($Path) -or ![IO.Path]::IsPathFullyQualified($Path) -or $Path -match '["\r\n%!]'){throw "Invalid absolute Windows path: $Name"}
     FullPath $Path
 }
 function ContextGate {
     $expectedHome=Join-Path ([Environment]::GetFolderPath('UserProfile')) 'AppData/Local/GoMove/JenkinsPhase5/controller-20261123-df0804b/home'
-    if(!$IsWindows -or (TrustedPath $env:JENKINS_HOME) -ne (TrustedPath $expectedHome) -or $env:JOB_NAME -ne 'GoMove-GitHub-Demo-CI'){throw 'Wrong isolated controller/job'}
+    if(!$IsWindows -or (TrustedPath $env:JENKINS_HOME '$env:JENKINS_HOME') -ne (TrustedPath $expectedHome '$expectedHome') -or $env:JOB_NAME -ne 'GoMove-GitHub-Demo-CI'){throw 'Wrong isolated controller/job'}
     if($env:BUILD_NUMBER -notmatch '^[1-9][0-9]{0,8}$' -or $env:DEMO_COMMIT_SHA -notmatch '^[0-9a-fA-F]{40}$'){throw 'Missing actual SCM revision/build number'}
-    $script:Source=TrustedPath $env:DEMO_SOURCE
-    $workspace=TrustedPath $env:WORKSPACE
+    $script:Source=TrustedPath $env:DEMO_SOURCE '$env:DEMO_SOURCE'
+    $workspace=TrustedPath $env:WORKSPACE '$env:WORKSPACE'
     if(!(IsWithin $workspace (Join-Path $expectedHome 'workspace')) -or !(IsWithin $Source $workspace)){throw 'Source is not inside the isolated Jenkins workspace'}
     if($env:DEMO_PUSH_CAUSE_VERIFIED -ne 'true'){throw 'Real GitHub push cause was not verified'}
     if((Native git @('-C',$Source,'rev-parse','HEAD')) -ne $env:DEMO_COMMIT_SHA){throw 'SCM revision mismatch'}
@@ -208,7 +208,7 @@ function ImageGate {
     @{id=$image.Id;revision=$Revision;jarSha256=$image.Config.Labels['gomove.jar.sha256'];os=$image.Os;architecture=$image.Architecture}
 }
 function ComposeGate {
-    $dataRoot=TrustedPath $env:DEMO_OSRM_DATA_DIR
+    $dataRoot=TrustedPath $env:DEMO_OSRM_DATA_DIR '$env:DEMO_OSRM_DATA_DIR'
     foreach($file in @('hanoi.osrm.properties','hanoi.osrm.cells','hanoi.osrm.partition','hanoi.osrm.mldgr')){
         $dataFile=Join-Path $dataRoot $file
         if(!(Test-Path $dataFile -PathType Leaf) -or (Get-Item $dataFile).Length -le 0){throw 'Missing reviewed OSRM MLD data'}
@@ -226,7 +226,7 @@ function ComposeGate {
        @($cfg.services.backend.networks.Keys).Count -ne 2 -or !$cfg.services.backend.networks.ContainsKey('private') -or !$cfg.services.backend.networks.ContainsKey('ingress') -or
        $cfg.services.backend.environment.SPRING_PROFILES_ACTIVE -ne 'container' -or $cfg.services.backend.environment.SPRING_DATASOURCE_USERNAME -ne 'gomove_demo_app' -or
        $cfg.services.postgres.environment.POSTGRES_DB -ne 'gomove_demo_ci' -or $cfg.services.backend.user -ne '10001:10001' -or !$cfg.services.backend.read_only){throw 'Resource identity/profile/network guard failed'}
-    if((TrustedPath $cfg.services.osrm.volumes[0].source) -ne $dataRoot){throw 'OSRM dataset mount changed'}
+    if((TrustedPath $cfg.services.osrm.volumes[0].source '$cfg.services.osrm.volumes[0].source') -ne $dataRoot){throw 'OSRM dataset mount changed'}
     foreach($secret in $cfg.secrets.Values){if(!(IsWithin $secret.file $SecretRoot)){throw 'Secret source outside dedicated directory'}}
 }
 $priorEnvironment=@{}
@@ -250,7 +250,7 @@ try {
     $SecretRoot=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) ('GoMove\JenkinsDemoStaging\'+$Project)
     $EmptyEnv=Join-Path $Run 'empty.env'
     foreach($name in @('DEMO_IMAGE','DEMO_SECRET_DIR','DEMO_OSRM_DATA_DIR')){$priorEnvironment[$name]=[Environment]::GetEnvironmentVariable($name,'Process')}
-    $env:DEMO_SECRET_DIR=$SecretRoot;$env:DEMO_OSRM_DATA_DIR=TrustedPath $env:OSRM_DATA_DIR
+    $env:DEMO_SECRET_DIR=$SecretRoot;$env:DEMO_OSRM_DATA_DIR=TrustedPath $env:OSRM_DATA_DIR '$env:OSRM_DATA_DIR'
     $env:DEMO_IMAGE='gomove-demo-ci:pending-b'+$env:BUILD_NUMBER
     SourceGate
     if($Action -eq 'Init'){

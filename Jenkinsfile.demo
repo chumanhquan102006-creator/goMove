@@ -1,6 +1,7 @@
 // Pipeline from SCM; checkout, tests and new artifacts all use the same GitHub revision.
 def demoStep(String action) {
-    withEnv(["DEMO_ACTION=${action}"]) {
+    def osrmDir = params.OSRM_DATA_DIR == null ? 'D:/GoMove-routing' : params.OSRM_DATA_DIR
+    withEnv(["DEMO_ACTION=${action}", "OSRM_DATA_DIR=${osrmDir}"]) {
         int rc = bat(returnStatus: true, script: '''
 @echo off
 pwsh -NoLogo -NoProfile -NonInteractive -File "%DEMO_SOURCE%\\ci\\Invoke-GoMoveDemo.ps1" -Action "%DEMO_ACTION%"

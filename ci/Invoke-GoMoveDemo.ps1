@@ -79,7 +79,16 @@ function Native([string]$File, [string[]]$Arguments, [string]$InputText, [switch
     if ($Show) { $out | ForEach-Object { Write-Host (SafeLine $_.ToString()) } }
     if ($code -ne 0) {
         $operationSuffix = if ($GitOperation) { " operation=$GitOperation" } else { '' }
-        throw "Native command $File failed with exitCode=$code$operationSuffix"
+        $operation = ''
+        if ($File -eq 'docker' -and $Arguments.Count -gt 0) {
+            $operation = ' ' + $Arguments[0]
+            if ($Arguments[0] -in @('info','ps')) {
+                $out | Select-Object -First 10 | ForEach-Object {
+                    Write-Host (SafeGitLine $_.ToString())
+                }
+            }
+        }
+        throw "Native command $File$operation failed with exitCode=$code$operationSuffix"
     }
     $text.Trim()
 }
@@ -116,7 +125,7 @@ function ProtectedSnapshot {
         Where-Object { $_ -match '^gomove-platform-|^gomove-phase4d-|^gomove-manual-staging-|^gomove-jenkins-demo-' }
     foreach ($name in $names) {
         $name = $name.Trim()
-        $result[$name] = Native docker @('inspect','--format','{{.Id}}|{{.State.StartedAt}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}',$name)
+        $result[$name] = Native docker @('inspect','--format','{{.Id}}|{{.State.StartedAt}}|{{.State.Status}}|{{with (index .State "Health")}}{{.Status}}{{else}}none{{end}}',$name)
     }
     if ($result.Count -lt 12) { throw 'Protected Platform/sandbox baseline not found' }
     $result

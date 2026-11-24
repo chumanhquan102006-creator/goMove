@@ -74,7 +74,16 @@ pwsh -NoLogo -NoProfile -NonInteractive -Command "$ErrorActionPreference='Stop';
         stage('10 Smoke Test') { steps { script { demoStep('Smoke') } } }
     }
     post {
-        always {
+        unsuccessful {
+            script {
+                // Best effort after an abort; the durable journal blocks later cutovers if the
+                // agent/controller died or the exact-ID recovery could not be verified.
+                if (env.DEMO_SOURCE && fileExists("runs/${env.BUILD_NUMBER}/evidence/state.json")) {
+                    demoStep('RecoverDeployment')
+                }
+            }
+        }
+        cleanup {
             archiveArtifacts allowEmptyArchive: true,
                 artifacts: "runs/${env.BUILD_NUMBER}/evidence/*.json,runs/${env.BUILD_NUMBER}/evidence/*.jar"
         }

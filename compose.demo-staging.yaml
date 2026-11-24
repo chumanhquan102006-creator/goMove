@@ -4,6 +4,8 @@ services:
   postgres:
     image: postgis/postgis@sha256:94146ac37bc61e2322f88016056c5920729cb8c64c8542ed590af8fc2abdac07
     restart: "no"
+    labels:
+      gomove.demo.transaction: ${DEMO_RELEASE_TOKEN:?Set durable deployment transaction token}
     environment:
       POSTGRES_DB: gomove_demo_ci
       POSTGRES_USER: gomove_demo_bootstrap
@@ -29,6 +31,8 @@ services:
   osrm:
     image: ghcr.io/project-osrm/osrm-backend@sha256:55dbfd47d984c2cacd64e32901b4321c86b5ec761438e69aa053dc78698a786f
     restart: "no"
+    labels:
+      gomove.demo.transaction: ${DEMO_RELEASE_TOKEN:?Set durable deployment transaction token}
     command: ["osrm-routed", "--algorithm", "mld", "/data/hanoi.osrm"]
     volumes:
       - type: bind
@@ -54,6 +58,8 @@ services:
   backend:
     image: ${DEMO_IMAGE:?Set verified image ID}
     restart: "no"
+    labels:
+      gomove.demo.transaction: ${DEMO_RELEASE_TOKEN:?Set durable deployment transaction token}
     environment:
       SPRING_PROFILES_ACTIVE: container
       LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_BOOT_AUTOCONFIGURE_LOGGING: DEBUG

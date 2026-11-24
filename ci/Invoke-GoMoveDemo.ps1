@@ -1,10 +1,12 @@
 #requires -Version 7.2
 [CmdletBinding()]
-param([Parameter(Mandatory)][ValidateSet('StaticPreflight','Init','Restore','Validate','FlutterTests','BackendTests','BuildJar','BuildImage','VerifyImage','Deploy','Smoke')][string]$Action)
+param([Parameter(Mandatory)][ValidateSet('StaticPreflight','AdoptBaseline','DeploymentStatus','RestoreActiveDeployment','RecoverInterruptedDeployment','RecoverDeployment','Init','Restore','Validate','FlutterTests','BackendTests','BuildJar','BuildImage','VerifyImage','Deploy','Smoke')][string]$Action,
+    [int]$RecoveryBuild, [switch]$ConfirmRecovery, [switch]$ConfirmRestore)
 $ErrorActionPreference='Stop'
 $PSNativeCommandUseErrorActionPreference=$false
 $RepositoryUrl='https://github.com/chumanhquan102006-creator/goMove.git'
 $script:DemoState=$null
+. (Join-Path $PSScriptRoot 'GoMoveDemoLifecycle.ps1')
 
 function FullPath([string]$Path) { [IO.Path]::GetFullPath($Path).TrimEnd('\','/') }
 
@@ -119,12 +121,13 @@ function ResourceGate {
     if ($parts[0] -ne 'linux' -or [int64]$parts[1] -lt 4GB) { throw 'Docker Linux resources not ready' }
 }
 
-function ProtectedSnapshot {
+function ProtectedSnapshot([string[]]$ExcludeProjects=@()) {
     $result = @{}
-    $names = (Native docker @('ps','-a','--format','{{.Names}}')).Split([char]10) |
-        Where-Object { $_ -match '^gomove-platform-|^gomove-phase4d-|^gomove-manual-staging-|^gomove-jenkins-demo-' }
+    $names = (Native docker @('ps','-a','--format','{{.Names}}')).Split([char]10) | Where-Object { $_ }
     foreach ($name in $names) {
         $name = $name.Trim()
+        $owner=Native docker @('inspect','--format','{{json .Config.Labels}}',$name)|ConvertFrom-Json -AsHashtable
+        if($owner['com.docker.compose.project'] -in $ExcludeProjects -or $owner['gomove.demo.audit'] -in $ExcludeProjects -or $owner['gomove.demo.probe'] -in $ExcludeProjects){continue}
         $result[$name] = Native docker @('inspect','--format','{{.Id}}|{{.State.StartedAt}}|{{.State.Status}}|{{with (index .State "Health")}}{{.Status}}{{else}}none{{end}}',$name)
     }
     if ($result.Count -lt 12) { throw 'Protected Platform/sandbox baseline not found' }
@@ -184,7 +187,7 @@ function ContextGate {
 }
 function ConfigHashes {
     $proof=@{}
-    foreach($name in @('Jenkinsfile.demo','ci/Invoke-GoMoveDemo.ps1','ci/Dockerfile.demo','compose.demo-staging.yaml')){$proof[$name]=HashFile (Join-Path $Source $name)}
+    foreach($name in @('Jenkinsfile.demo','ci/Invoke-GoMoveDemo.ps1','ci/GoMoveDemoLifecycle.ps1','ci/Dockerfile.demo','compose.demo-staging.yaml')){$proof[$name]=HashFile (Join-Path $Source $name)}
     $proof
 }
 function SourceGate {
@@ -249,16 +252,51 @@ function ComposeGate {
        $cfg.services.postgres.environment.POSTGRES_DB -ne 'gomove_demo_ci' -or $cfg.services.backend.user -ne '10001:10001' -or !$cfg.services.backend.read_only){throw 'Resource identity/profile/network guard failed'}
     if((TrustedPath $cfg.services.osrm.volumes[0].source '$cfg.services.osrm.volumes[0].source') -ne $dataRoot){throw 'OSRM dataset mount changed'}
     foreach($secret in $cfg.secrets.Values){if(!(IsWithin $secret.file $SecretRoot)){throw 'Secret source outside dedicated directory'}}
+    foreach($service in @('postgres','osrm','backend')){
+        if(!$env:DEMO_RELEASE_TOKEN -or $cfg.services[$service].labels['gomove.demo.transaction'] -cne $env:DEMO_RELEASE_TOKEN){throw 'Missing per-transaction container ownership label'}
+    }
 }
 $priorEnvironment=@{}
 try {
+    if($Action -eq 'AdoptBaseline'){
+        DemoAdoptBaseline|ConvertTo-Json -Depth 5;exit 0
+    }
+    if($Action -in @('DeploymentStatus','RecoverInterruptedDeployment','RestoreActiveDeployment')){
+        $registryLock=DemoOpenRegistry
+        try{
+            $registry=DemoLoadRegistry
+            if($Action -eq 'DeploymentStatus'){
+                if($registry.active){DemoAssertRelease $registry.active}
+                @{activeProject=$registry.active.project;activeImage=$registry.active.image;activeIdentityVerified=$true;transaction=$registry.transaction;historyCount=@($registry.history).Count}|ConvertTo-Json -Depth 35
+            }else{
+                if($Action -eq 'RestoreActiveDeployment'){
+                    if(!$ConfirmRestore){throw 'RestoreActiveDeployment requires -ConfirmRestore'}
+                    if($registry.transaction){throw 'Unresolved transaction; active restoration refused'}
+                }elseif(!$ConfirmRecovery -or !$registry.transaction -or $RecoveryBuild -ne [int]$registry.transaction.build){throw 'Explicit confirmation and exact interrupted build number required'}
+                # An operator may recover only after Jenkins has recorded the build as completed.
+                # The exclusive registry lock also excludes any surviving deployment process.
+                $homePath=DemoHome
+                $queuePath=Join-Path $homePath 'queue.xml'
+                if(Test-Path $queuePath){[xml]$q=([IO.File]::ReadAllText($queuePath)-replace '^<\?xml[^?]*\?>','');if($q.SelectNodes('/queue/items/*').Count){throw 'Jenkins queue must be empty before operator recovery'}}
+                foreach($b in Get-ChildItem (Join-Path $homePath 'jobs/GoMove-GitHub-Demo-CI/builds') -Directory|Where-Object Name -match '^\d+$'){
+                    [xml]$m=([IO.File]::ReadAllText((Join-Path $b.FullName 'build.xml'))-replace '^<\?xml[^?]*\?>','')
+                    if($m.'flow-build'.completed -ne 'true'){throw 'A CI build is still active; operator recovery refused'}
+                }
+                if($Action -eq 'RestoreActiveDeployment'){
+                    DemoRestoreActiveDeployment $registry -Confirmed:$ConfirmRestore|ConvertTo-Json -Depth 8
+                }else{DemoRecoverBuild $registry ([string]$RecoveryBuild) -Explicit|ConvertTo-Json -Depth 8}
+            }
+        }finally{$registryLock.Dispose()}
+        exit 0
+    }
     if($Action -eq 'StaticPreflight'){
         $Source=FullPath (Split-Path $PSScriptRoot -Parent)
         $Project='gomove-demo-ci-static-preflight'
         $EmptyEnv=[IO.Path]::GetTempFileName()
         $SecretRoot=Join-Path ([IO.Path]::GetTempPath()) ('gomove-demo-unprovisioned-'+[guid]::NewGuid().ToString('N'))
-        foreach($name in @('DEMO_IMAGE','DEMO_SECRET_DIR','DEMO_OSRM_DATA_DIR')){$priorEnvironment[$name]=[Environment]::GetEnvironmentVariable($name,'Process')}
+        foreach($name in @('DEMO_IMAGE','DEMO_SECRET_DIR','DEMO_OSRM_DATA_DIR','DEMO_RELEASE_TOKEN')){$priorEnvironment[$name]=[Environment]::GetEnvironmentVariable($name,'Process')}
         $env:DEMO_IMAGE='gomove-demo-ci:static-not-built';$env:DEMO_SECRET_DIR=$SecretRoot;$env:DEMO_OSRM_DATA_DIR='D:\GoMove-routing'
+        $env:DEMO_RELEASE_TOKEN='static-preflight-not-deployed'
         ComposeGate
         $os=Get-CimInstance Win32_OperatingSystem
         @{configuration='STATIC_VERIFIED_ONLY';configHashes=(ConfigHashes);compose='PASS';runtimeResourceGate=(([long]$os.FreePhysicalMemory*1024)-ge 2.5GB);availableBytes=([long]$os.FreePhysicalMemory*1024);buildStarted=$false;deployStarted=$false}|ConvertTo-Json -Depth 5
@@ -270,12 +308,19 @@ try {
     $Project='gomove-demo-ci-b'+$env:BUILD_NUMBER+'-'+$Revision.Substring(0,12)
     $SecretRoot=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) ('GoMove\JenkinsDemoStaging\'+$Project)
     $EmptyEnv=Join-Path $Run 'empty.env'
-    foreach($name in @('DEMO_IMAGE','DEMO_SECRET_DIR','DEMO_OSRM_DATA_DIR')){$priorEnvironment[$name]=[Environment]::GetEnvironmentVariable($name,'Process')}
+    foreach($name in @('DEMO_IMAGE','DEMO_SECRET_DIR','DEMO_OSRM_DATA_DIR','DEMO_RELEASE_TOKEN')){$priorEnvironment[$name]=[Environment]::GetEnvironmentVariable($name,'Process')}
     $env:DEMO_SECRET_DIR=$SecretRoot;$env:DEMO_OSRM_DATA_DIR=TrustedPath $env:OSRM_DATA_DIR '$env:OSRM_DATA_DIR'
     $env:DEMO_IMAGE='gomove-demo-ci:pending-b'+$env:BUILD_NUMBER
+    $env:DEMO_RELEASE_TOKEN=DemoContainerToken $env:BUILD_NUMBER $null
     SourceGate
     if($Action -eq 'Init'){
         ResourceGate
+        $initLock=DemoOpenRegistry
+        try{
+            $initialRegistry=DemoLoadRegistry
+            if($initialRegistry.transaction){throw 'Unresolved deployment transaction; recover before starting another CI workload'}
+            if($initialRegistry.active){DemoAssertRelease $initialRegistry.active}
+        }finally{$initLock.Dispose()}
         if(Test-Path $Evidence){throw 'Refuse existing build evidence'}
         New-Item -ItemType Directory -Path $Evidence|Out-Null
         [IO.File]::WriteAllText($EmptyEnv,'',[Text.UTF8Encoding]::new($false))
@@ -288,6 +333,11 @@ try {
     $hashes=ConfigHashes
     foreach($key in $hashes.Keys){if($hashes[$key] -ne $script:DemoState.configHashes[$key]){throw 'CI source changed after checkout'}}
     if($script:DemoState.steps.BuildImage){$Image=$script:DemoState.steps.BuildImage.data.id;$env:DEMO_IMAGE=$Image}
+    if($Action -in @('Deploy','Smoke','RecoverDeployment')){
+        $deploymentLock=DemoOpenRegistry
+        $script:ReleaseRegistry=DemoLoadRegistry
+        $env:DEMO_RELEASE_TOKEN=DemoContainerToken $env:BUILD_NUMBER $script:ReleaseRegistry.transaction
+    }
     switch($Action){
         Restore {
             ResourceGate
@@ -299,6 +349,7 @@ try {
         Validate {
             ResourceGate
             Push-Location (Join-Path $Source 'mobile');try{Native flutter @('analyze','--no-pub') -Show|Out-Null}finally{Pop-Location}
+            Native pwsh @('-NoProfile','-NonInteractive','-File',(Join-Path $Source 'ci/Test-GoMoveDemoLifecycle.ps1')) -Show|Out-Null
             ComposeGate
             Record Validate @{flutterAnalyze='PASS';compose='PASS';exitCode=0}
         }
@@ -367,10 +418,15 @@ try {
         Deploy {
             ResourceGate
             if(!$script:DemoState.steps.VerifyImage){throw 'No image verification'}
-            FreePort 18094
+            # Check the old active release stayed untouched throughout stages 01-08.
+            $now=ProtectedSnapshot
+            foreach($name in $script:DemoState.protectedBefore.Keys){if($now[$name] -cne $script:DemoState.protectedBefore[$name]){throw 'Protected environment changed before cutover'}}
             foreach($kind in @('volume','network')){if(Native docker @($kind,'ls','--filter',('name='+$Project),'--format','{{.Name}}')){throw 'Existing staging volume/network'}}
             if(Native docker @('ps','-a','--filter',('label=com.docker.compose.project='+$Project),'--format','{{.ID}}')){throw 'Existing staging project'}
             if(Test-Path $SecretRoot){throw 'Refuse existing secret directory'}
+            $env:DEMO_RELEASE_TOKEN=[guid]::NewGuid().ToString('N')
+            $candidate=@{build=$env:BUILD_NUMBER;revision=$Revision;project=$Project;image=$Image;jar=$script:DemoState.steps.BuildJar.data.sha256;secretRoot=$SecretRoot;token=$env:DEMO_RELEASE_TOKEN}
+            DemoBeginTransaction $script:ReleaseRegistry $candidate $env:BUILD_NUMBER
             New-Item -ItemType Directory -Path $SecretRoot|Out-Null
             $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
             Native icacls @($SecretRoot,'/inheritance:r','/grant:r',('*'+$sid+':(OI)(CI)F'),'*S-1-5-18:(OI)(CI)F')|Out-Null
@@ -387,7 +443,14 @@ try {
                 '--mount',('type=bind,src='+(Join-Path $SecretRoot 'app-db-password')+',dst=/run/secrets/spring.datasource.password,readonly'),
                 $Image,'-c','test -r /run/secrets/JWT_SECRET && test -s /run/secrets/JWT_SECRET && test -r /run/secrets/spring.datasource.password && test -s /run/secrets/spring.datasource.password')|Out-Null
             Record SecretProbe @{containerName=$probeName;uid10001Readable=$true;retainedForAudit=$true;exitCode=0}
-            Compose @('up','-d','--no-deps','--no-build','--pull','never','postgres')|Out-Null
+            # Allocate stopped containers first, then durably record exact identities before stopping
+            # the previous release. No second full stack runs beside the old one.
+            Compose @('create','--no-build','--no-recreate','--pull','never','postgres','osrm','backend')|Out-Null
+            $created=@{};foreach($service in @('postgres','osrm','backend')){$created[$service]=(Container $service).Id}
+            $script:ReleaseRegistry.transaction.candidate=DemoCaptureRelease $candidate $created
+            $script:ReleaseRegistry.transaction.phase='Prepared';DemoSaveRegistry $script:ReleaseRegistry
+            DemoCutover $script:ReleaseRegistry
+            Native docker @('start',$created.postgres)|Out-Null
             $pg=WaitHealthy 'postgres';WaitPostgresTcp
             if([int](Sql "SELECT count(*) FROM pg_tables WHERE schemaname='public' AND tablename IN ('users','bookings','flyway_schema_history');") -ne 0){throw 'Target DB not empty'}
             Sql @'
@@ -398,14 +461,18 @@ END $setup$;
 ALTER DATABASE gomove_demo_ci OWNER TO gomove_demo_app;
 ALTER SCHEMA public OWNER TO gomove_demo_app;
 '@ -Write|Out-Null
-            Compose @('up','-d','--no-deps','--no-build','--pull','never','osrm')|Out-Null
+            DemoAssertRelease $script:ReleaseRegistry.transaction.candidate
+            Native docker @('start',$created.osrm)|Out-Null
             $osrm=WaitHealthy 'osrm'
-            Compose @('up','-d','--no-deps','--no-build','--pull','never','backend')|Out-Null
+            DemoAssertRelease $script:ReleaseRegistry.transaction.candidate
+            Native docker @('start',$created.backend)|Out-Null
             $backend=WaitHealthy 'backend'
             Record Deploy @{project=$Project;backendId=$backend.Id;postgresId=$pg.Id;osrmId=$osrm.Id;port=18094;worker='OFF';exitCode=0}
+            $script:ReleaseRegistry.transaction.phase='AwaitingSmoke';DemoSaveRegistry $script:ReleaseRegistry
         }
         Smoke {
             if(!$script:DemoState.steps.Deploy){throw 'No actual deployment'}
+            if($script:ReleaseRegistry.transaction.build -ne $env:BUILD_NUMBER -or $script:ReleaseRegistry.transaction.phase -ne 'AwaitingSmoke'){throw 'Wrong durable deployment transaction'}
             $http=@(HttpUp '/actuator/health';HttpUp '/actuator/health/readiness')
             $backend=Container 'backend';$pg=Container 'postgres';$osrm=Container 'osrm'
             if($backend.Image -ne $Image -or $backend.Config.Env -notcontains 'GOMOVE_DISPATCH_ENABLED=false' -or $backend.Config.Env -notcontains 'SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/gomove_demo_ci'){throw 'Actual runtime image/config mismatch'}
@@ -423,19 +490,32 @@ ALTER SCHEMA public OWNER TO gomove_demo_app;
             Native docker @('exec','--user','10001:10001',$backend.Id,'java','-Xmx32m','-cp','/app/health','HealthProbe','http://osrm:5000/route/v1/driving/105.8524,21.0287;105.8576,21.0245?overview=false','"code":"Ok"')|Out-Null
             $logs=Native docker @('logs',$backend.Id)
             if($logs -notmatch '(?s)DispatchWorker:\s+Did not match:\s+- @ConditionalOnProperty \(gomove\.dispatch\.enabled=true\) found different value in property ''enabled'''){throw 'Effective Worker OFF not proven'}
-            $after=ProtectedSnapshot
-            foreach($name in $script:DemoState.protectedBefore.Keys){if($after[$name] -ne $script:DemoState.protectedBefore[$name]){throw 'Protected environment changed'}}
+            DemoAssertProtected $script:ReleaseRegistry.transaction.protected $script:ReleaseRegistry.transaction.excludedProjects
             Record Smoke @{http=$http;database=$db;tableRows=$rows;osrmHttpStatus=200;osrmCode='Ok';worker='OFF';protectedUnchanged=$true;image=(ImageGate);exitCode=0}
+            DemoPromote $script:ReleaseRegistry $script:DemoState.steps.Smoke.data
             $script:DemoState.result='JENKINS_DEMO_STAGING_PASS';SaveState
+        }
+        RecoverDeployment {
+            if($script:ReleaseRegistry.transaction){
+                Record Rollback (DemoRecoverBuild $script:ReleaseRegistry $env:BUILD_NUMBER)
+            }
         }
     }
     exit 0
 }catch{
-    if($null -ne $script:DemoState){$script:DemoState.result='FAILURE';$script:DemoState.failedAction=$Action;$script:DemoState.error=SafeLine $_.Exception.Message;SaveState}
-    Write-Error ('Demo '+$Action+': '+(SafeLine $_.Exception.Message)) -ErrorAction Continue
-    if($_.Exception.Message.StartsWith('RESOURCE_GATE:')){exit 42}
+    $actionFailure=$_
+    # Keep the original action failed even when restoration is verified. A hard kill leaves the
+    # atomic journal for post/explicit recovery; it never silently promotes or clears a transaction.
+    if($deploymentLock -and $script:ReleaseRegistry.transaction -and $script:ReleaseRegistry.transaction.build -eq $env:BUILD_NUMBER -and
+       $script:ReleaseRegistry.transaction.cutover -and $script:ReleaseRegistry.transaction.phase -ne 'RollbackFailed' -and $Action -ne 'RecoverDeployment'){
+        try{Record Rollback (DemoRollback $script:ReleaseRegistry)}catch{Write-Host 'Rollback NOT VERIFIED; inspect durable transaction. No automatic retry.'}
+    }
+    if($null -ne $script:DemoState){$script:DemoState.result='FAILURE';$script:DemoState.failedAction=$Action;$script:DemoState.error=SafeLine $actionFailure.Exception.Message;SaveState}
+    Write-Error ('Demo '+$Action+': '+(SafeLine $actionFailure.Exception.Message)) -ErrorAction Continue
+    if($actionFailure.Exception.Message.StartsWith('RESOURCE_GATE:')){exit 42}
     exit 1
 }finally{
+    if($deploymentLock){$deploymentLock.Dispose()}
     foreach($name in $priorEnvironment.Keys){[Environment]::SetEnvironmentVariable($name,$priorEnvironment[$name],'Process')}
     if($Action -eq 'StaticPreflight' -and $EmptyEnv -and (Test-Path $EmptyEnv) -and (Get-Item $EmptyEnv).Length -eq 0 -and (IsWithin $EmptyEnv ([IO.Path]::GetTempPath()))){[IO.File]::Delete($EmptyEnv)}
 }

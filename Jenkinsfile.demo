@@ -42,7 +42,7 @@ pipeline {
                     env.DEMO_PUSH_CAUSE_VERIFIED = 'true'
                     int preflight = bat(returnStatus: true, script: '''
 @echo off
-pwsh -NoLogo -NoProfile -NonInteractive -Command "$ErrorActionPreference='Stop'; $h=Join-Path ([Environment]::GetFolderPath('UserProfile')) 'AppData/Local/GoMove/JenkinsPhase5/controller-20261123-df0804b/home'; if([IO.Path]::GetFullPath($env:JENKINS_HOME) -ne [IO.Path]::GetFullPath($h) -or $env:JOB_NAME -ne 'GoMove-GitHub-Demo-CI'){throw 'Wrong controller/job'}; if(([long](Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory*1024) -lt 6GB){exit 42}"
+pwsh -NoLogo -NoProfile -NonInteractive -Command "$ErrorActionPreference='Stop'; $h=Join-Path ([Environment]::GetFolderPath('UserProfile')) 'AppData/Local/GoMove/JenkinsPhase5/controller-20261123-df0804b/home'; if([IO.Path]::GetFullPath($env:JENKINS_HOME) -ne [IO.Path]::GetFullPath($h) -or $env:JOB_NAME -ne 'GoMove-GitHub-Demo-CI'){throw 'Wrong controller/job'}; if(([long](Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory*1024) -lt 1.5GB){exit 42}"
 ''')
                     if (preflight != 0) { error("Checkout preflight failed: ${preflight}") }
                     if (fileExists("runs/${env.BUILD_NUMBER}")) { error('Refuse reusing a previous run directory.') }

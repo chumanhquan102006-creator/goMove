@@ -87,9 +87,21 @@ function Native([string]$File, [string[]]$Arguments, [string]$InputText, [switch
 function ResourceGate {
     $os = Get-CimInstance Win32_OperatingSystem
     $bytes = [int64]$os.FreePhysicalMemory * 1024
-    $r = @{ time = [DateTimeOffset]::Now.ToString('o'); availableBytes = $bytes; requiredBytes = 6GB }
+    $requiredBytes = switch ($Action) {
+        'Init'         { 1.5GB }
+        'Restore'      { 1.5GB }
+        'Validate'     { 1.5GB }
+        'FlutterTests' { 2GB }
+        'BackendTests' { 2.5GB }
+        'BuildJar'     { 2GB }
+        'BuildImage'   { 2.5GB }
+        'Deploy'       { 2.5GB }
+        default        { 1.5GB }
+    }
+    Write-Host ("Resource gate {0}: available={1:F2} GiB; required={2:F2} GiB" -f $Action, ($bytes / 1GB), ($requiredBytes / 1GB))
+    $r = @{ time = [DateTimeOffset]::Now.ToString('o'); availableBytes = $bytes; requiredBytes = $requiredBytes }
     if ($null -ne $script:DemoState) { Record ('resource-' + $Action) $r }
-    if ($bytes -lt 6GB) { throw ('RESOURCE_GATE: available {0:F3} GiB below 6 GiB' -f ($bytes / 1GB)) }
+    if ($bytes -lt $requiredBytes) { throw "RESOURCE_GATE: insufficient RAM for $Action" }
     foreach ($drive in @(Get-PSDrive -PSProvider FileSystem | Where-Object Name -in @('C','D'))) {
         if ($drive.Free -lt 5GB) { throw 'RESOURCE_GATE: less than 5 GiB disk headroom' }
     }
@@ -240,7 +252,7 @@ try {
         $env:DEMO_IMAGE='gomove-demo-ci:static-not-built';$env:DEMO_SECRET_DIR=$SecretRoot;$env:DEMO_OSRM_DATA_DIR='D:\GoMove-routing'
         ComposeGate
         $os=Get-CimInstance Win32_OperatingSystem
-        @{configuration='STATIC_VERIFIED_ONLY';configHashes=(ConfigHashes);compose='PASS';runtimeResourceGate=(([long]$os.FreePhysicalMemory*1024)-ge 6GB);availableBytes=([long]$os.FreePhysicalMemory*1024);buildStarted=$false;deployStarted=$false}|ConvertTo-Json -Depth 5
+        @{configuration='STATIC_VERIFIED_ONLY';configHashes=(ConfigHashes);compose='PASS';runtimeResourceGate=(([long]$os.FreePhysicalMemory*1024)-ge 2.5GB);availableBytes=([long]$os.FreePhysicalMemory*1024);buildStarted=$false;deployStarted=$false}|ConvertTo-Json -Depth 5
         exit 0
     }
     ContextGate

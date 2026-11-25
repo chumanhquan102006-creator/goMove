@@ -21,5 +21,11 @@ import org.springframework.scheduling.annotation.EnableScheduling;
         OsrmProperties.class,
         DispatchProperties.class, GeocodingProperties.class})
 public class GoMoveApplication {
-    public static void main(String[] args) { SpringApplication.run(GoMoveApplication.class, args); }
+    public static void main(String[] args) {
+        SpringApplication.run(GoMoveApplication.class, args);
+
+        org.slf4j.LoggerFactory
+                .getLogger(GoMoveApplication.class)
+                .info("GoMove CI/CD classroom demo");
+    }
 }

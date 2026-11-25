@@ -26,6 +26,6 @@ public class GoMoveApplication {
 
         org.slf4j.LoggerFactory
                 .getLogger(GoMoveApplication.class)
-                .info("GoMove CI/CD classroom demo");
+                .info("GoMove CI/CD classroom deployment V2");
     }
 }

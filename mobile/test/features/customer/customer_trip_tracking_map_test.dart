@@ -2125,12 +2125,19 @@ Future<void> _loadTrackingTestFonts() async {
           .parent
           .path;
   for (final font in [
-    ('Roboto', 'roboto-regular.ttf'),
-    ('MaterialIcons', 'materialicons-regular.otf'),
+    ('Roboto', 'Roboto-Regular.ttf'),
+    ('MaterialIcons', 'MaterialIcons-Regular.otf'),
   ]) {
     final file = File.fromUri(Directory(sdk)
         .uri
         .resolve('bin/cache/artifacts/material_fonts/${font.$2}'));
+    if (!await file.exists()) {
+      throw StateError(
+        'Missing Flutter test font: ${file.path}. '
+        'Check FLUTTER_ROOT and restore the official SDK cache with '
+        'flutter precache --universal --force.',
+      );
+    }
     final loader = FontLoader(font.$1)
       ..addFont(file.readAsBytes().then(ByteData.sublistView));
     await loader.load();

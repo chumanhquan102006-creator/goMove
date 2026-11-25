@@ -25,6 +25,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.sql.Timestamp;
@@ -37,6 +38,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** PostgreSQL/PostGIS eligibility tests for aggregate-only demand and supply queries. */
+@Transactional
 class DemandSupplyPostgisIntegrationTest extends BaseIntegrationTest {
     private static final Instant NOW = Instant.parse("2030-01-01T01:00:00Z");
     private static final GeoCoordinate PICKUP = new GeoCoordinate(new BigDecimal("-30.0"), new BigDecimal("-80.0"));
@@ -44,6 +46,8 @@ class DemandSupplyPostgisIntegrationTest extends BaseIntegrationTest {
     private static final GeoCoordinate BOUNDARY_PICKUP = new GeoCoordinate(new BigDecimal("-25.0"), new BigDecimal("-70.0"));
     private static final GeoCoordinate REGIONAL_PICKUP = new GeoCoordinate(new BigDecimal("-20.0"), new BigDecimal("-65.0"));
     private static final GeoCoordinate REMOTE_STALE_PICKUP = new GeoCoordinate(new BigDecimal("-10.0"), new BigDecimal("-55.0"));
+    // Keep the benchmark separate from fixtures committed by HTTP integration tests.
+    private static final GeoCoordinate EXPLAIN_PICKUP = new GeoCoordinate(new BigDecimal("-40.0"), new BigDecimal("-50.0"));
     private static final GeoCoordinate DROPOFF = new GeoCoordinate(new BigDecimal("-30.01"), new BigDecimal("-80.01"));
 
     @Autowired PostgresDemandSupplyProvider provider;
@@ -251,11 +255,11 @@ class DemandSupplyPostgisIntegrationTest extends BaseIntegrationTest {
         properties.setRadiusMeters(5_000);
         User customer = user(UserRole.CUSTOMER);
         Driver historicalDriver = driver(DriverApprovalStatus.APPROVED, DriverOperatingStatus.OFFLINE,
-                VehicleType.MOTORBIKE, true, NOW, PICKUP);
+                VehicleType.MOTORBIKE, true, NOW, EXPLAIN_PICKUP);
         seedExplainDistribution(customer.getId(), historicalDriver.getId(), activeVehicle(historicalDriver).getId());
         jdbc.execute("ANALYZE bookings");
 
-        Instant evaluatedAt = Instant.now().plusSeconds(1);
+        Instant evaluatedAt = NOW;
         String baselinePlan;
         jdbc.execute("DROP INDEX " + INDEX_NAME);
         try {
@@ -300,24 +304,26 @@ class DemandSupplyPostgisIntegrationTest extends BaseIntegrationTest {
         List<String> plan = jdbc.query("EXPLAIN (ANALYZE, BUFFERS) " + DEMAND_QUERY,
                 (rs, rowNum) -> rs.getString(1), VehicleType.MOTORBIKE.name(),
                 ts(evaluatedAt.minus(properties.getLookback())), ts(evaluatedAt),
-                PICKUP.longitude().doubleValue(), PICKUP.latitude().doubleValue(), properties.getRadiusMeters());
+                EXPLAIN_PICKUP.longitude().doubleValue(), EXPLAIN_PICKUP.latitude().doubleValue(), properties.getRadiusMeters());
         return String.join(System.lineSeparator(), plan);
     }
 
     private long countDemand(Instant evaluatedAt) {
         Long count = jdbc.queryForObject(DEMAND_QUERY, Long.class, VehicleType.MOTORBIKE.name(),
                 ts(evaluatedAt.minus(properties.getLookback())), ts(evaluatedAt),
-                PICKUP.longitude().doubleValue(), PICKUP.latitude().doubleValue(), properties.getRadiusMeters());
+                EXPLAIN_PICKUP.longitude().doubleValue(), EXPLAIN_PICKUP.latitude().doubleValue(), properties.getRadiusMeters());
         return count == null ? 0L : count;
     }
 
     private void seedExplainDistribution(Long customerId, Long driverId, Long vehicleId) {
         jdbc.update("""
-                WITH sample_rows AS (
+                WITH evaluation_clock AS (
+                    SELECT CAST(? AS timestamptz) AS evaluated_at
+                ), sample_rows AS (
                     SELECT n,
-                           CASE WHEN n <= 30000 THEN CURRENT_TIMESTAMP - INTERVAL '30 days'
-                                WHEN n % 4 = 0 THEN CURRENT_TIMESTAMP - INTERVAL '10 minutes'
-                                ELSE CURRENT_TIMESTAMP - INTERVAL '30 seconds' END AS booking_created_at,
+                           CASE WHEN n <= 30000 THEN clock.evaluated_at - INTERVAL '30 days'
+                                WHEN n % 4 = 0 THEN clock.evaluated_at - INTERVAL '10 minutes'
+                                ELSE clock.evaluated_at - INTERVAL '30 seconds' END AS booking_created_at,
                            CASE WHEN n > 30000 AND n % 100 = 1
                                 THEN ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography
                                 WHEN n % 2 = 0
@@ -325,6 +331,7 @@ class DemandSupplyPostgisIntegrationTest extends BaseIntegrationTest {
                                 ELSE ST_SetSRID(ST_MakePoint(-170 + (n % 50), -80 + (n % 20)), 4326)::geography
                            END AS pickup
                     FROM generate_series(1, 32000) n
+                    CROSS JOIN evaluation_clock clock
                 ), inserted_quotes AS (
                     INSERT INTO quotes (
                         public_id, customer_id, pickup_location, dropoff_location,
@@ -353,28 +360,29 @@ class DemandSupplyPostgisIntegrationTest extends BaseIntegrationTest {
                     driver_released_at
                 )
                 SELECT gen_random_uuid(), ?, q.id,
-                       CASE WHEN q.created_at < CURRENT_TIMESTAMP - INTERVAL '1 day'
+                       CASE WHEN q.created_at < clock.evaluated_at - INTERVAL '1 day'
                             THEN 'COMPLETED' ELSE 'REQUESTED' END,
                        q.pickup_location, ST_SetSRID(ST_MakePoint(-80.01, -30.01), 4326)::geography,
                        1000, 60, 'M2B_EXPLAIN', 'MOTORBIKE', 'VND', 1, 'M2B_EXPLAIN', '{}'::jsonb,
                        q.created_at, q.created_at,
-                       CASE WHEN q.created_at < CURRENT_TIMESTAMP - INTERVAL '1 day' THEN ? ELSE NULL END,
-                       CASE WHEN q.created_at < CURRENT_TIMESTAMP - INTERVAL '1 day' THEN ? ELSE NULL END,
-                       CASE WHEN q.created_at < CURRENT_TIMESTAMP - INTERVAL '1 day'
+                       CASE WHEN q.created_at < clock.evaluated_at - INTERVAL '1 day' THEN ? ELSE NULL END,
+                       CASE WHEN q.created_at < clock.evaluated_at - INTERVAL '1 day' THEN ? ELSE NULL END,
+                       CASE WHEN q.created_at < clock.evaluated_at - INTERVAL '1 day'
                             THEN q.created_at + INTERVAL '5 seconds' ELSE NULL END,
                        q.created_at,
-                       CASE WHEN q.created_at < CURRENT_TIMESTAMP - INTERVAL '1 day'
+                       CASE WHEN q.created_at < clock.evaluated_at - INTERVAL '1 day'
                             THEN q.created_at + INTERVAL '10 seconds' ELSE NULL END,
-                       CASE WHEN q.created_at < CURRENT_TIMESTAMP - INTERVAL '1 day'
+                       CASE WHEN q.created_at < clock.evaluated_at - INTERVAL '1 day'
                             THEN q.created_at + INTERVAL '20 seconds' ELSE NULL END,
-                       CASE WHEN q.created_at < CURRENT_TIMESTAMP - INTERVAL '1 day'
+                       CASE WHEN q.created_at < clock.evaluated_at - INTERVAL '1 day'
                             THEN q.created_at + INTERVAL '30 seconds' ELSE NULL END,
-                       CASE WHEN q.created_at < CURRENT_TIMESTAMP - INTERVAL '1 day'
+                       CASE WHEN q.created_at < clock.evaluated_at - INTERVAL '1 day'
                             THEN q.created_at + INTERVAL '40 seconds' ELSE NULL END,
-                       CASE WHEN q.created_at < CURRENT_TIMESTAMP - INTERVAL '1 day'
+                       CASE WHEN q.created_at < clock.evaluated_at - INTERVAL '1 day'
                             THEN q.created_at + INTERVAL '50 seconds' ELSE NULL END
                 FROM inserted_quotes q
-                """, PICKUP.longitude().doubleValue(), PICKUP.latitude().doubleValue(), customerId, customerId,
+                CROSS JOIN evaluation_clock clock
+                """, ts(NOW), EXPLAIN_PICKUP.longitude().doubleValue(), EXPLAIN_PICKUP.latitude().doubleValue(), customerId, customerId,
                 driverId, vehicleId);
     }
 
